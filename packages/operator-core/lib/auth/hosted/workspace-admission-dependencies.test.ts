@@ -29,8 +29,9 @@ vi.mock('../../workspace-host/observability-store', () => ({
   readWorkspaceHostDestroyTarget: async () => ({ id: 'host-a', observedState: h.stopped ? 'stopped' : 'running', resources: h.disks }),
 }));
 
-const { resolveHostedPoolAdmission } = await import('./workspace-admission-dependencies');
-const { refreshHostedStoppedOwnerObservation } = await import('../../workspace-host/hosted-lifecycle-store');
+const { resolveHostedPoolAdmission, createDefaultHostedWorkspaceAdmissionDependencies } = await import('./workspace-admission-dependencies');
+const { refreshHostedStoppedOwnerObservation, admitHostedLifecycleJob, readHostedLifecycleAdmission } = await import('../../workspace-host/hosted-lifecycle-store');
+const { readWorkspaceHostConnection } = await import('../../workspace-host/observability-store');
 const input: HostedWorkspaceProvisioningRequest = {
   controlPlaneWorkspaceId: 'control-a', customerWorkspaceId: 'customer-a', connectionId: 'connection-a',
   hostId: 'host-a', name: 'Trial', operationId: 'operation-a', actorId: 'user-a',
@@ -53,6 +54,30 @@ describe('server-owned hosted pool requirements', () => {
   it('refuses an unknown zero quote rather than granting free capacity', async () => {
     h.confidence = 'unknown'; h.monthly = 0;
     await expect(resolveHostedPoolAdmission(input, stored)).rejects.toMatchObject({ code: 'lifecycle_admission_unavailable' });
+  });
+
+  it.each(['gcp', 'aws'] as const)('quotes, admits and replays the same on-demand %s fallback without mutating the spot profile', async target => {
+    const original = { ...input, desiredSpec: { ...input.desiredSpec, target,
+      provider: { provisioningModel: 'spot', preserveSetting: 'same' } } };
+    const receipt = { operationId: input.operationId, hostId: input.hostId, placement: { kind: 'provision' } } as any;
+    vi.mocked(readWorkspaceHostConnection).mockResolvedValue({ ...stored,
+      connection: { ...stored.connection, target } } as any);
+    vi.mocked(readHostedLifecycleAdmission).mockResolvedValueOnce(null).mockResolvedValueOnce(receipt);
+    vi.mocked(admitHostedLifecycleJob).mockResolvedValueOnce(receipt);
+    const quote = vi.fn(async (_request: HostedWorkspaceProvisioningRequest) => ({ pool: { minimum: { cpuCount: 4, memoryMiB: 8192 } },
+      estimate: { cents: 124 } }) as any);
+    const startWorkflow = vi.fn();
+    const deps = createDefaultHostedWorkspaceAdmissionDependencies({ pooled: true,
+      resolveDesiredSpec: async () => original.desiredSpec, resolvePoolAdmission: quote, startWorkflow });
+    await deps.admitAndStart!(original);
+    await deps.admitAndStart!(original);
+    expect(quote).toHaveBeenCalledTimes(1);
+    const effective = { ...original.desiredSpec, provider: { ...original.desiredSpec.provider, provisioningModel: 'standard' } };
+    expect(quote.mock.calls[0]![0]).toMatchObject({ desiredSpec: effective });
+    expect(vi.mocked(admitHostedLifecycleJob).mock.calls[0]![0]).toMatchObject({ request: { desired: effective } });
+    expect(startWorkflow).toHaveBeenCalledTimes(2);
+    for (const [request] of startWorkflow.mock.calls) expect(request).toMatchObject({ desired: effective });
+    expect(original.desiredSpec.provider.provisioningModel).toBe('spot');
   });
 
   it('measures an existing stopped owner before returning the pool requirements and propagates safety refusal', async () => {

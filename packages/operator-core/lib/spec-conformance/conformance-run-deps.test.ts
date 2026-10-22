@@ -149,18 +149,22 @@ describe('conformance test-run evidence', () => {
 
   const file = 'packages/operator-core/lib/storage/retention-pins.test.ts';
   const finishedAt = new Date('2026-10-22T05:30:51.536Z');
-  const testRunRow = (status: 'error' | 'fail') => ({
-    id: status === 'error' ? 21720473 : 21720474,
+  const testRunRow = (status: 'error' | 'fail' | 'pass') => ({
+    id: status === 'error' ? 21720473 : status === 'fail' ? 21720474 : 21720475,
     file_path: file,
     status,
     finished_at: finishedAt,
-    commit_sha: null,
+    commit_sha: status === 'error' ? null : 'a'.repeat(40),
     worktree_dirty: status === 'error',
     execution_details: {
       schemaVersion: 1,
       testLayer: 'unit',
-      passed: status === 'error' ? 18 : 17,
-      failed: status === 'error' ? 0 : 1,
+      filePath: file,
+      testNamePattern: null,
+      worktreeDirty: status === 'error',
+      commitSha: status === 'error' ? null : 'a'.repeat(40),
+      passed: status === 'error' ? 18 : status === 'fail' ? 17 : 1,
+      failed: status === 'error' ? 0 : status === 'fail' ? 1 : 0,
       skipped: 0,
       collectionFailed: false,
     },
@@ -171,6 +175,7 @@ describe('conformance test-run evidence', () => {
     const error = await judgeTestsFromLedger({
       files: [file],
       workspaceId: 'workspace',
+      currentBuildSha: 'a'.repeat(40),
       now: () => finishedAt,
     });
     expect(error).toMatchObject({ kind: 'tests', verdict: 'error', value: null, unit: 'files' });
@@ -180,8 +185,42 @@ describe('conformance test-run evidence', () => {
     const failure = await judgeTestsFromLedger({
       files: [file],
       workspaceId: 'workspace',
+      currentBuildSha: 'a'.repeat(40),
       now: () => finishedAt,
     });
     expect(failure).toMatchObject({ kind: 'tests', verdict: 'fail', value: 0, unit: 'files' });
+  });
+
+  it('rejects a clean pass recorded on an older build as current evidence', async () => {
+    sqlMock.mockImplementationOnce(async () => [testRunRow('pass')] as never[]);
+
+    const result = await judgeTestsFromLedger({
+      files: [file],
+      workspaceId: 'workspace',
+      currentBuildSha: 'b'.repeat(40),
+      now: () => finishedAt,
+    });
+
+    expect(result).toMatchObject({ kind: 'tests', verdict: 'error', value: null, unit: 'files' });
+    expect(result.detail).toContain(`test-run commit ${'a'.repeat(40)} does not match current build ${'b'.repeat(40)}`);
+    expect(result.detail).toContain('test_runs #21720475');
+  });
+
+  it('rejects named-case evidence recorded on a different build before loading case outcomes', async () => {
+    sqlMock.mockImplementationOnce(async () => [testRunRow('pass')] as never[]);
+    const caseLoader = vi.fn(async () => []);
+
+    const result = await judgeTestsFromLedger({
+      files: [file],
+      workspaceId: 'workspace',
+      cases: [{ file, testName: 'case one' }],
+      currentBuildSha: 'b'.repeat(40),
+      now: () => finishedAt,
+      caseLoader,
+    });
+
+    expect(result).toMatchObject({ kind: 'tests', verdict: 'error', value: null, unit: 'cases' });
+    expect(result.detail).toContain('does not match current build');
+    expect(caseLoader).not.toHaveBeenCalled();
   });
 });

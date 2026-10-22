@@ -11,6 +11,7 @@ import {
   cargoCanonicalTestPathRefusal,
   cargoTestRef,
   deriveBindingFromTestRun,
+  deriveFixtureSupportPaths,
   deriveSubjectSourcePaths,
   expandTestRunBinding,
   FROM_TEST_RUN_MAX_SOURCE_PATHS,
@@ -29,11 +30,15 @@ import {
 let root = '';
 const SCOPE = { workspaceId: 'ws-1', harnessSlug: 'web' };
 const TEST = 'pkg/lib/thing.test.ts';
+const CALIBRATED_TEST = 'pkg/lib/calibrated.test.ts';
 
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'bind-from-test-run-'));
   await mkdir(path.join(root, 'pkg/lib/__fixtures__'), { recursive: true });
   await mkdir(path.join(root, 'pkg/lib/wide'), { recursive: true });
+  await mkdir(path.join(root, 'pkg/test'), { recursive: true });
+  await writeFile(path.join(root, 'pkg/test/fixture-builder.ts'), 'export const buildFixture = () => ({ value: 1 });');
+  await writeFile(path.join(root, CALIBRATED_TEST), 'import { thing } from "./thing"; import { buildFixture } from "../test/fixture-builder"; void [thing, buildFixture];');
   await writeFile(path.join(root, 'pkg/lib/thing.ts'), 'export const thing = 1;\n');
   await writeFile(path.join(root, 'pkg/lib/other.ts'), 'export const other = 1;\n');
   await writeFile(path.join(root, 'pkg/lib/lazy.ts'), 'export const lazy = 1;\n');
@@ -127,6 +132,11 @@ describe('subject files are the first ring of relative runtime imports', () => {
     expect(isTestInfrastructurePath('a/test/helpers.ts')).toBe(true);
     expect(isTestInfrastructurePath('a/testing/helpers.ts')).toBe(false);
     expect(isTestInfrastructurePath('a/b.ts')).toBe(false);
+  });
+
+  it('derives direct first-party test-support imports separately from subject sources', () => {
+    expect(deriveFixtureSupportPaths(root, CALIBRATED_TEST)).toEqual(['pkg/test/fixture-builder.ts']);
+    expect(deriveSubjectSourcePaths(root, CALIBRATED_TEST)).toEqual(['pkg/lib/thing.ts']);
   });
 
   it('normalizes absolute run paths into the checkout and rejects paths outside it', () => {
@@ -557,18 +567,32 @@ describe('deriveBindingFromTestRun', () => {
       fixtureRootHarnessSlug: 'web',
       details: { adequacy: { fixtureCalibrated: true } },
     }));
-    const derived = deriveBindingFromTestRun(parsed, run(), root, 'run');
+    const derived = deriveBindingFromTestRun(parsed, run({ file_path: CALIBRATED_TEST }), root, 'run');
     expect(derived.ok).toBe(true);
     if (!derived.ok) throw new Error(derived.message);
     expect(repoFilesEvidenceMeasurementSchema.parse(derived.binding.measurement)).toMatchObject({
-      fixturePaths: ['pkg/lib/__fixtures__/seed.ts'],
+      fixturePaths: ['pkg/lib/__fixtures__/seed.ts', 'pkg/test/fixture-builder.ts'],
       fixtureGlobs: ['pkg/lib/__fixtures__/**/*.ts'],
       fixtureRootHarnessSlug: 'web',
-      testPaths: [TEST],
+      testPaths: [CALIBRATED_TEST],
     });
     expect(derived.binding).toMatchObject({ testRunId: 42,
       details: { adequacy: { fixtureCalibrated: true }, testRun: { id: 42 } } });
     expect(() => testRunBindingSchema.parse(input({ fixturePaths: ['../outside.ts'] }))).toThrow();
+  });
+
+  it('includes imported test helpers in calibrated fixture paths even when only inline fixtures are declared', () => {
+    const derived = deriveBindingFromTestRun(input({
+      fixturePaths: [CALIBRATED_TEST],
+      details: { adequacy: { fixtureCalibrated: true } },
+    }), run({ file_path: CALIBRATED_TEST }), root, 'run');
+    expect(derived).toMatchObject({
+      ok: true,
+      binding: { measurement: {
+        fixturePaths: [CALIBRATED_TEST, 'pkg/test/fixture-builder.ts'],
+        sourcePaths: ['pkg/lib/thing.ts'],
+      } },
+    });
   });
 });
 

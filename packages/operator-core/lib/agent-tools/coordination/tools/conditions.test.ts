@@ -33,6 +33,7 @@ import tool, {
   computeConditionStates,
   readConditionEnvelopes,
   readConditionEnvelopesForKey,
+  readConditionEnvelopesForPrefix,
   readLatestConditionEnvelope,
 } from "./conditions";
 
@@ -487,6 +488,54 @@ describe("coord:conditions handler", () => {
       "target",
       "target",
     ]);
+  });
+
+  it("reads prefix-matched alarms and singular or plural resolutions on the non-PG seam", async () => {
+    const prefix = "alarm:carry-delivery:host:";
+    const other = "alarm:other:host:key";
+    M.readLines.mockImplementation(async () => [
+      alarm(1, `${prefix}orphan:one`),
+      resolution(2, `${prefix}orphan:one`),
+      resolutionMany(3, [other, `${prefix}orphan:two`]),
+      alarm(4, other),
+    ]);
+
+    const envelopes = await readConditionEnvelopesForPrefix(prefix);
+
+    expect(envelopes).toHaveLength(3);
+    expect(envelopes.some((envelope) => envelope["resolves_conditions"])).toBe(true);
+    expect(envelopes.every((envelope) =>
+      envelope["condition_key"] === other || envelope["resolves_condition"] === other
+        ? Array.isArray(envelope["resolves_conditions"]) && envelope["resolves_conditions"].some(
+            (key) => typeof key === "string" && key.startsWith(prefix),
+          )
+        : true,
+    )).toBe(true);
+  });
+
+  it("pages a prefix history beyond the aggregate condition-row cap", async () => {
+    const prefix = "alarm:carry-delivery:host:orphan:";
+    const firstPage = Array.from({ length: CONDITIONS_FAST_PATH_ROW_CAP }, (_, index) => ({
+      id: String(index + 1),
+      body: alarm(1, `${prefix}attempt-${index}`),
+    }));
+    const oldKey = `${prefix}attempt-before-window`;
+    M.pgFastPath = true;
+    M.pgQuery
+      .mockImplementationOnce(async () => firstPage)
+      .mockImplementationOnce(async () => [{ id: String(CONDITIONS_FAST_PATH_ROW_CAP + 1), body: alarm(2, oldKey) }]);
+
+    const envelopes = await readConditionEnvelopesForPrefix(prefix);
+
+    expect(M.pgQuery).toHaveBeenCalledTimes(2);
+    expect(envelopes).toHaveLength(CONDITIONS_FAST_PATH_ROW_CAP + 1);
+    expect(envelopes.at(-1)).toMatchObject({ condition_key: oldKey });
+    const [template, ...params] = M.pgQuery.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    expect(template.join("?")).toContain("body->>'condition_key' LIKE ? ESCAPE '!'");
+    expect(template.join("?")).toContain("id > ?::bigint");
+    expect(params).toContain(`${prefix}%`);
+    const [, ...nextParams] = M.pgQuery.mock.calls[1] as [TemplateStringsArray, ...unknown[]];
+    expect(nextParams).toContain(String(CONDITIONS_FAST_PATH_ROW_CAP));
   });
 
   it("keeps recent PG resolutions inside the capped window and folds it chronologically", async () => {

@@ -143,10 +143,10 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     return db.adminSql`SELECT id, host_id, admission_receipt FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws}`;
   }
 
-  async function capacityDemand(ws: string) {
+  async function capacityDemand(ws: string, organizationId?: string) {
     const digest = randomUUID().replace(/-/g, '').slice(0, 24);
     const id = `ws-${digest}`, hostId = `host-${digest}`;
-    await customer(ws, id, hostId);
+    await customer(ws, id, hostId, organizationId);
     await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'provisioning'
       WHERE workspace_id = ${ws} AND id = ${id}`;
     const target = { id: hostId, connectionId: 'pool-connection', hostGeneration: 1, desiredRevision: 1,
@@ -172,6 +172,8 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(first.enqueued).toEqual([`prov-${demand.hostId.slice(5)}`]);
     expect(second.enqueued).toEqual(first.enqueued);
     expect(await operations(ws)).toHaveLength(1);
+    expect((await operations(ws))[0].admission_receipt.result.resourceAdmission.capacityDecision)
+      .toMatchObject({ kind: 'provision', market: 'on-demand', generation: 1, controllerFence: 7 });
     expect(demand.enqueue).toHaveBeenCalledTimes(2);
     expect(demand.enqueue.mock.calls[1]![0].name).toBe(demand.id);
   });
@@ -184,6 +186,79 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     const result = await reconcileHostedPoolDemand(ws, { ...demand.deps, readTarget: async () => target as any });
     expect(result.enqueued).toHaveLength(1);
     expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('P539 holds unknown provider quotes through the maintained capacity policy without reserving a VM', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    await expect(admitHostedLifecycleJob({ ...input(ws, demand.id, demand.hostId), action: 'provision',
+      estimate: { ...input(ws, demand.id).estimate, estimatedAt: new Date(Date.now() - 100_000).toISOString() },
+      capacityReconcile: { hostGeneration: 1, controllerFence: 7, observedAtMs: Date.now() } }))
+      .rejects.toThrow('hosted_pool_capacity_policy_rejected');
+    expect(await operations(ws)).toEqual([]);
+  });
+
+  it.each(['request', 'persisted'] as const)('P539 refuses unqualified spot from %s even outside automatic reconciliation', async source => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    if (source === 'persisted') await db.adminSql`UPDATE harness_shared.workspace_hosts
+      SET desired_spec = desired_spec || '{"provider":{"provisioningModel":"spot"}}'::jsonb
+      WHERE workspace_id = ${ws} AND id = ${demand.hostId}`;
+    await expect(admitHostedLifecycleJob({ ...input(ws, demand.id, demand.hostId), action: 'provision',
+      ...(source === 'request' ? { request: { desired: { provider: { provisioningModel: 'spot' } } } } : {}) }))
+      .rejects.toThrow('hosted_pool_spot_reclaim_recovery_unverified');
+    expect(await operations(ws)).toEqual([]);
+  });
+
+  it('P539 provisions on demand instead of assigning an otherwise clean unqualified spot spare', async () => {
+    const ws = fresh();
+    await customer(ws, 'on-demand');
+    await host(ws, 'spot-spare');
+    await db.adminSql`UPDATE harness_shared.workspace_hosts
+      SET desired_spec = desired_spec || '{"provider":{"provisioningModel":"spot"}}'::jsonb
+      WHERE workspace_id = ${ws} AND id = 'spot-spare'`;
+    expect(await admitHostedLifecycleJob({ ...input(ws, 'on-demand'), action: 'provision' }))
+      .toMatchObject({ hostId: 'on-demand-placeholder', placement: { kind: 'provision' } });
+  });
+
+  it.each(['running', 'stopped', 'pending'] as const)('P539 counts a prior workspace\'s %s host while admitting its organization\'s new workspace', async state => {
+    const ws = fresh(), org = randomUUID();
+    const oldHost = await customer(ws, 'previous-owner', 'previous-owned-host', org);
+    if (state === 'pending') {
+      await admitHostedLifecycleJob({ ...input(ws, 'previous-owner', oldHost), action: 'provision' });
+      await db.adminSql`UPDATE harness_shared.workspace_host_operations SET created_at = now() - interval '1 hour'
+        WHERE workspace_id = ${ws}`;
+    } else {
+      await db.adminSql`UPDATE harness_shared.workspace_hosts SET observed_state = ${state},
+        pool_observation = ${JSON.stringify(observation())}::jsonb
+        WHERE workspace_id = ${ws} AND id = ${oldHost}`;
+    }
+    // The directory allows one live workspace per organization. Retiring its
+    // row does not erase a still-owned VM or an outstanding reservation.
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'deleted', deleted_at = now()
+      WHERE workspace_id = ${ws} AND id = 'previous-owner'`;
+    const demand = await capacityDemand(ws, org);
+    expect((await reconcileHostedPoolDemand(ws, demand.deps)).enqueued).toHaveLength(1);
+    const [saved] = await db.adminSql`SELECT admission_receipt->'result'->'resourceAdmission' AS resources
+      FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws} AND host_id = ${demand.hostId}`;
+    expect(saved.resources).toMatchObject({ allocated: { hosts: state === 'pending' ? 0 : 1 },
+      pending: { hosts: state === 'pending' ? 1 : 0 }, requested: { hosts: 1 },
+      capacityDecision: { kind: 'provision', readyHosts: 0, pendingHosts: 0 } });
+  });
+
+  it('P539 leaves failed provider resources with the existing recovery ledger instead of launching a replacement', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    await reconcileHostedPoolDemand(ws, demand.deps);
+    const operationId = `prov-${demand.hostId.slice(5)}`;
+    await db.adminSql`UPDATE harness_shared.workspace_host_operations SET status = 'failed',
+      error = '{"code":"provider-create-ambiguous"}'::jsonb WHERE workspace_id = ${ws} AND id = ${operationId}`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_resources
+      (workspace_id, host_id, logical_key, operation_id, state, kind, provider_id)
+      VALUES (${ws}, ${demand.hostId}, 'create-vm', ${operationId}, 'applied', 'vm', 'orphan-provider-vm')`;
+    expect(await reconcileHostedPoolDemand(ws, demand.deps)).toEqual({ considered: 0, enqueued: [], held: [] });
+    expect(await operations(ws)).toHaveLength(1);
+    expect(demand.enqueue).toHaveBeenCalledTimes(1);
+    const resources = await db.adminSql`SELECT provider_id FROM harness_shared.workspace_host_resources
+      WHERE workspace_id = ${ws} AND host_id = ${demand.hostId}`;
+    expect(resources).toEqual([expect.objectContaining({ provider_id: 'orphan-provider-vm' })]);
   });
 
   it('P539 uses the shared scope clock and holds a second customer during cooldown', async () => {
@@ -235,6 +310,58 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(result.enqueued).toEqual([]);
     expect(result.held).toHaveLength(1);
     expect(await operations(ws)).toEqual([]);
+  });
+
+  it('P539 rotates a held tenant so another queued customer can progress on the next tick', async () => {
+    const ws = fresh(), first = await capacityDemand(ws), second = await capacityDemand(ws);
+    await allowance(organization(ws, first.id), { 'pool.hosts': 0 });
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET updated_at = now() - interval '1 hour'
+      WHERE workspace_id = ${ws} AND id = ${first.hostId}`;
+    const demands = [first, second];
+    const deps = {
+      readTarget: async (_ws: string, hostId: string) => demands.find(d => d.hostId === hostId)!.target as any,
+      admitAndStart: async (request: any) => demands.find(d => d.hostId === request.hostId)!.enqueue(request),
+    };
+    const held = await reconcileHostedPoolDemand(ws, deps);
+    expect(held.held).toHaveLength(1);
+    expect(held.enqueued).toEqual([]);
+    const admitted = await reconcileHostedPoolDemand(ws, deps);
+    expect(admitted.enqueued).toEqual([`prov-${second.hostId.slice(5)}`]);
+    expect(first.enqueue).toHaveBeenCalledTimes(1);
+    expect(second.enqueue).toHaveBeenCalledTimes(1);
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('P539 checkpoints the selected demand so a workflow replay cannot choose another tenant', async () => {
+    const ws = fresh(), first = await capacityDemand(ws), second = await capacityDemand(ws);
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET updated_at = now() - interval '1 hour'
+      WHERE workspace_id = ${ws} AND id = ${first.hostId}`;
+    let saved: unknown;
+    const sampleDemand = async <T>(read: () => Promise<T>): Promise<T> => (saved ??= await read()) as T;
+    const deps = { ...first.deps, sampleDemand };
+    const original = await reconcileHostedPoolDemand(ws, deps);
+    const replay = await reconcileHostedPoolDemand(ws, deps);
+    expect(original.enqueued).toEqual([`prov-${first.hostId.slice(5)}`]);
+    expect(replay.enqueued).toEqual(original.enqueued);
+    expect(second.enqueue).not.toHaveBeenCalled();
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('P539 restores the hosted native-agent readiness configuration after a lost signup enqueue', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    const adapter = await import('../auth/hosted/workspace-admission-dependencies');
+    const { PAPERCUSP_HOSTED_BRING_UP_AGENTS } = await import('./hosted-bring-up');
+    const factory = vi.spyOn(adapter, 'createDefaultHostedWorkspaceAdmissionDependencies')
+      .mockImplementationOnce(options => {
+        expect(options.bringUp?.requestedAgents).toEqual(PAPERCUSP_HOSTED_BRING_UP_AGENTS);
+        expect(options.bringUp?.requestedAgents.length).toBeGreaterThan(0);
+        return { admitAndStart: demand.enqueue } as any;
+      });
+    try {
+      const result = await reconcileHostedPoolDemand(ws, { readTarget: demand.deps.readTarget });
+      expect(result.enqueued).toHaveLength(1);
+      expect(factory).toHaveBeenCalledTimes(1);
+    } finally { factory.mockRestore(); }
   });
 
   async function pinDiskAllocation(ws: string, operationId: string, capacity = { dbGiB: 256, workspaceGiB: 0 }) {

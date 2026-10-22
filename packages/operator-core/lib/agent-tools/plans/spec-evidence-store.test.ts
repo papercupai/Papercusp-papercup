@@ -635,16 +635,19 @@ describe('completed isolated runtime certification', () => {
     await save();
     return { ...state, basis, journey, dir, save };
   }
-  it('certifies the original operator-e2e-isolated driver at its maintained evidence root without a native manifest', async () => {
-    await setupOperatorE2e();
+  it.each(['live', 'tree'] as const)('certifies the original operator-e2e-isolated driver on the %s plane without a native manifest', async plane => {
+    const state = await setupOperatorE2e();
+    state.row.details.evidencePlane = plane;
     expect((await read()).currentness).toMatchObject({ overall: 'current',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
   });
+  describe.each(['live', 'tree'] as const)('operator-e2e-isolated %s custody', plane => {
   it.each(['missing-source', 'wrong-source', 'untested-input', 'unqualified-source', 'missing-witness', 'reused-driver',
     'wrong-driver', 'missing-suite', 'duplicate-suite', 'suite-before-verifier', 'suite-after-verifier',
     'reversed-suite', 'reversed-driver', 'driver-outside-root'])(
     'rejects operator-e2e-isolated custody or lifetime failure: %s', async failure => {
       const state = await setupOperatorE2e();
+      state.row.details.evidencePlane = plane;
       if (failure === 'wrong-source') state.receipt.files[0].sha256 = 'b'.repeat(64);
       if (failure === 'untested-input') state.receipt.testedInputs = [];
       if (failure === 'unqualified-source') state.receipt.testedInputs = state.receipt.files.filter(file => file.dimension === 'test');
@@ -666,6 +669,7 @@ describe('completed isolated runtime certification', () => {
       }
       expect((await read()).currentness.dimensions.environment).toBe('unknown');
     });
+  });
   it('retains the original operator driver receipt through pruning and rejects changed retained custody', async () => {
     const state = await setupOperatorE2e();
     await measureAndPinRepoFilesEvidenceAtRoot(root, state.basis);
@@ -1228,6 +1232,44 @@ export const census = () => APP_ROOTS.map(walk);
     } finally {
       h.fixtureMeasurementRoot = '';
       await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses repo-files evidence measured from a dirty sibling checkout', async () => {
+    const siblingRoot = await mkdtemp(join(tmpdir(), 'spec-evidence-sibling-root-'));
+    const previousRoot = h.measurementRoot;
+    const previousFixtureRoot = h.fixtureMeasurementRoot;
+    h.measurementRoot = siblingRoot;
+    h.fixtureMeasurementRoot = '';
+    const sourcePath = 'src/sibling.ts';
+    const testPath = 'test/sibling.test.ts';
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      rootHarnessSlug: 'papercup-rust-mobile',
+      sourcePaths: [sourcePath],
+      testPaths: [testPath],
+    };
+    try {
+      await mkdir(join(siblingRoot, 'src'), { recursive: true });
+      await mkdir(join(siblingRoot, 'test'), { recursive: true });
+      await writeFile(join(siblingRoot, sourcePath), 'export const sibling = 1;\n');
+      await writeFile(join(siblingRoot, testPath), 'expect(sibling).toBe(1);\n');
+      execFileSync('git', ['init', '-q', siblingRoot]);
+      execFileSync('git', ['-C', siblingRoot, 'add', sourcePath, testPath]);
+      execFileSync('git', ['-C', siblingRoot, '-c', 'user.name=Spec test', '-c', 'user.email=spec@example.invalid',
+        'commit', '-qm', 'clean sibling root']);
+
+      await expect(measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe)).resolves.toHaveProperty('pin');
+      await writeFile(join(siblingRoot, sourcePath), 'export const sibling = 2;\n');
+
+      await expect(measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe)).rejects.toThrow(
+        'repo_measurement_not_clean_at_head:papercup-rust-mobile:src/sibling.ts:dirty',
+      );
+    } finally {
+      h.measurementRoot = previousRoot;
+      h.fixtureMeasurementRoot = previousFixtureRoot;
+      await rm(siblingRoot, { recursive: true, force: true });
     }
   });
 

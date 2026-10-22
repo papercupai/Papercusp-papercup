@@ -500,6 +500,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'toolFailure reports can store this refusal code separately from the message; keep that captured shape out of the structural bug lane (EI-25280060314357525)',
   },
   {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: '{"ok":false,"reason":"volatile_reference_requires_byte_window","message":"In-memory scratch fallbacks support exact byte pages only; supply byte_offset and byte_limit from the cursor."}',
+    expectedClass: 'caller',
+    note: 'synthetic SQL/TS parity fixture for the intentional capability:read missing-byte-window refusal captured by EI-26666951819291084',
+  },
+  {
     n: 1, errorCode: 'handler_error', status: 'error',
     message: '{"ok":false,"reason":"evidence_class_not_found","message":"scratch reference has no work-item evidence."}',
     expectedClass: 'caller',

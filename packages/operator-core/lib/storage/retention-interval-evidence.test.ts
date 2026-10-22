@@ -139,6 +139,17 @@ describe('durable R-10 exact headroom targets', () => {
   it('accepts the exact decimal-byte floors for every hour and complete native run', () => {
     expect(assessDurableHeadroomTargets(fixture(), window).verdict).toBe('pass');
   });
+  it.each(['healthy', 'floor-dip', 'incomplete-run'])(
+    'keeps unset predecessor linkage unknown without hiding independent evidence (%s)', mode => {
+      const original = fixture();
+      const input = { ...original, dispositions: { ...original.dispositions, linkedSuccessor: null } };
+      if (mode === 'floor-dip') input.censuses[0]!.availableBytes--;
+      if (mode === 'incomplete-run') input.receipts[0]!.complete = false;
+      const result = assessDurableHeadroomTargets(input, window);
+      expect(result.verdict).toBe(mode === 'healthy' ? 'unknown' : 'fail');
+      expect(result.checks).toContainEqual(expect.objectContaining({ id: 'superseded-disposition', status: 'unknown' }));
+      expect(result.checks.some(check => check.id === 'exact-target:/')).toBe(true);
+    });
   it.each(['/', '/mnt/data'])('fails a one-byte middle dip on %s even with healthy endpoints', path => {
     const input = fixture(); input.censuses.find(r => r.path === path && r.id.endsWith('-30'))!.availableBytes--;
     expect(assessDurableHeadroomTargets(input, window).verdict).toBe('fail');

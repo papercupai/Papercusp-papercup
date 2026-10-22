@@ -6912,6 +6912,19 @@ export function reservedPlanLaneExclusionSql(
   const idCol = sql.unsafe(
     payloadCol === 'wi.payload' ? 'wi.feature_id' : 'harness_shared.harness_features_consolidated.feature_id',
   );
+  // WI20092: conformance alarms can carry only the canonical source plan,
+  // without a promoted payload lane. Extend the decision seam alone: existing
+  // payload-linked lifecycle/lease/dependency behavior retains its authority.
+  const sourcePlanCol = sql.unsafe(payloadCol === 'wi.payload'
+    ? 'wi.source_plan_slug' : 'harness_shared.harness_features_consolidated.source_plan_slug');
+  const sourceItemsCol = sql.unsafe(payloadCol === 'wi.payload'
+    ? 'wi.source_plan_item_ids' : 'harness_shared.harness_features_consolidated.source_plan_item_ids');
+  const hasPayloadPlan = sql`NULLIF(btrim(${col}->'plan_item'->>'plan_slug'), '') IS NOT NULL`;
+  const decisionPlan = sql`CASE WHEN ${hasPayloadPlan}
+    THEN ${col}->'plan_item'->>'plan_slug' ELSE NULLIF(btrim(${sourcePlanCol}), '') END`;
+  const decisionItems = sql`CASE WHEN ${hasPayloadPlan}
+    THEN ARRAY[${col}->'plan_item'->>'item_id']::text[]
+    ELSE COALESCE(${sourceItemsCol}, ARRAY[]::text[]) END`;
   const affirmativeDirectRoute = sql`(
     LOWER(d.title) LIKE '%self-only execution route%'
     OR (
@@ -6957,7 +6970,9 @@ export function reservedPlanLaneExclusionSql(
     SELECT * FROM harness_shared.plan_decisions
      WHERE workspace_id = ${decisionCandidates.workspaceId}
        AND plan_slug = ANY(ARRAY(
-         SELECT candidate.payload->'plan_item'->>'plan_slug'
+         SELECT CASE WHEN NULLIF(btrim(candidate.payload->'plan_item'->>'plan_slug'), '') IS NOT NULL
+           THEN candidate.payload->'plan_item'->>'plan_slug'
+           ELSE NULLIF(btrim(candidate.source_plan_slug), '') END
            FROM harness_shared.work_items candidate
           WHERE candidate.workspace_id = ${decisionCandidates.workspaceId}
             AND candidate.feature_id = ANY(${[...decisionCandidates.ids]}::text[])
@@ -7235,10 +7250,10 @@ export function reservedPlanLaneExclusionSql(
     OR EXISTS (
       SELECT 1 FROM harness_shared.plan_decisions d
       WHERE d.workspace_id = ${wsCol}
-        AND d.plan_slug = ${col}->'plan_item'->>'plan_slug'
+        AND d.plan_slug = ${decisionPlan}
         AND (
           cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) = 0
-          OR ${col}->'plan_item'->>'item_id' = ANY(COALESCE(d.item_refs, ARRAY[]::text[]))
+          OR COALESCE(d.item_refs, ARRAY[]::text[]) && ${decisionItems}
         )
         AND ${affirmativeDirectRoute}
     )
@@ -7256,7 +7271,7 @@ export function reservedPlanLaneExclusionSql(
     -- implementer, so it reserves the whole plan even when the decision's itemRefs
     -- describe only its other clauses (D-006's refs omit P-002). The durable
     -- plan_item_assignments surface is per-item and is not populated by this ruling.
-    OR COALESCE((${wsCol}, ${col}->'plan_item'->>'plan_slug') IN (
+    OR COALESCE((${wsCol}, ${decisionPlan}) IN (
       SELECT d.workspace_id, d.plan_slug FROM ${candidatePlanDecisions} d
        -- WI-6554700010009932: token prefilter on migration 1490's index (see the constant).
        WHERE ${sql.unsafe(ROUTE_A_DECISION_TOKEN_PREFILTER)}

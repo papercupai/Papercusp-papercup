@@ -3032,5 +3032,438 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Preserve the original public-docs, fixture and desktop parent receipts with their conditional skips and recorded source scope. currentFixtureStepBinding20261022 binds the two observed direct npm lifecycle calls to immutable events, while recording the missing parent/step report contract explicitly. Continue prospective per-step/report production and runtime closure on the existing collectors; do not manufacture historical reports from aggregate logs. Reuse unchanged proof only within its recorded scope; no unchanged expensive reruns. Preserve mandatory engine archive review, D020/P006 hold, six forms, P018, P028, P031/D045 and final shipment obligations. Full plan remains unshipped."
+  "currentFixtureCollectorWiring20261022": {
+    "workItemId": "WI-6554700010020084",
+    "parentWorkItemId": "WI-6554700010010682",
+    "status": "optional-existing-collector-wired-focused-native-output-verified-current-local",
+    "configuration": "apps/slack-asana-bug-drill/vitest.config.ts",
+    "observedGap": "The original configuration includes default and admin reporters but omits the existing executedSourceMapConfig reporter, worker setup, importDurations and original-source plugin. An armed focused run passes without producing its requested diagnostic OUT artifact.",
+    "beforeChangeControl": {
+      "command": "npm run test:file -- tests/dependency-preflight.test.ts",
+      "cwd": "apps/slack-asana-bug-drill",
+      "admission": "Canonical scripts/pc-heavy.sh wrapper; no admission bypass",
+      "environment": {
+        "PC_EXECUTED_SOURCE_MAP_WORKSPACE": "@bug-drill/fixture",
+        "PC_EXECUTED_SOURCE_MAP_OUT": "~/.papercusp/scratch/c0523-fixture-source-config-before-20261022.json",
+        "PC_EXECUTED_SOURCE_MAP_NO_PERSIST": "1"
+      },
+      "nativeExitCode": 0,
+      "testsPassed": 6,
+      "testsSkipped": 0,
+      "requestedDiagnosticOutputExists": false,
+      "stdoutAndStderr": {
+        "ref": "~/.papercusp/scratch/c0523-fixture-source-config-before-20261022.log",
+        "sha256": "ef92f1355394847119f52f5a0355bcad9d599aa72f8be23e492603e2f7818955"
+      },
+      "scope": "Focused existing test control on the unchanged configuration. This is not the original npm run test parent, its pretest lifecycle, or a complete source/runtime population."
+    },
+    "implementationBoundary": "Reused executedSourceMapConfig and its optional top-level source-originals plugin, paired reporter/setup and importDurations fragment. The fixture's scripts, test selection and pool remain as recorded. This does not add gateParticipationConfig unit/reuse behavior or synthesize historical step reports. The initial child admission was refused; leader persisted fleet revision13 and D-086, and the subsequent named child claim succeeded before the locked config edit.",
+    "priorSamePathWork": {
+      "workItemId": "WI-6554700010009161",
+      "finding": "The settled item fixed workspace-negation handling and exempted standalone configs from enrollment; its completion names only the enrollment scanner and guard test. It did not wire this fixture's collector. Current fixture configuration and commit history confirmed the collector was still absent before this change."
+    },
+    "afterChangeControl": {
+      "command": "npm run test:file -- tests/dependency-preflight.test.ts",
+      "cwd": "apps/slack-asana-bug-drill",
+      "admission": "Canonical scripts/pc-heavy.sh wrapper; no admission bypass",
+      "nativeExitCode": 0,
+      "testsPassed": 6,
+      "testsFailed": 0,
+      "testsSkipped": 0,
+      "firstAttemptVerdict": "pass",
+      "stdoutAndStderr": {
+        "ref": "~/.papercusp/scratch/c0523-fixture-source-config-after-20261022.log",
+        "sha256": "c6364f23f8ac5639aafdc1199daf8fbd3eb6e24d735990d7316c720887eaa613"
+      },
+      "diagnosticOutput": {
+        "ref": "~/.papercusp/scratch/c0523-fixture-source-config-after-20261022.json",
+        "sha256": "623ed9b51c5797592a5b3984c65555d68c8df491910a26caa5629732df32adeb",
+        "workspaceName": "@bug-drill/fixture",
+        "worktreeDirty": true,
+        "persistedAsReusablePass": false,
+        "nativeRun": {
+          "scope": "vitest-reporter-callbacks",
+          "terminalHook": "onTestRunEnd",
+          "reason": "passed",
+          "unhandledErrorCount": 0,
+          "modulePopulationMatched": true,
+          "reportedModulePaths": ["tests/dependency-preflight.test.ts"]
+        },
+        "workerInputsCaptured": true,
+        "preTransformSourceStatus": "stable",
+        "preTransformSourcePins": [
+          { "path": "scripts/dependency-preflight.mjs", "sha256": "616613ab35a78f288a6606f6c524545fb52767489a91dc8ddae8f19d4854544e" },
+          { "path": "tests/dependency-preflight.test.ts", "sha256": "bc1ccb780a1eba6b7a972975576f01399dfe45a772cad2b96625b871765bb1a7" }
+        ],
+        "retainedEvaluatorArtifacts": {
+          "root": "~/.papercusp/scratch/c0523-fixture-source-config-after-20261022.json.modules",
+          "verification": "Read each referenced codeRef and matched its SHA256 and byteLength to the actual saved bytes.",
+          "entries": [
+            { "sha256": "e55d5e9560b2e8da42bb40976b5d2882cd36a180fb7c8f60db634d0481be9592", "byteLength": 17007 },
+            { "sha256": "e22298e23a8ddfd9d89b7514745ed19cdc74df535bb79907eac824b9f608aaca", "byteLength": 12998 }
+          ],
+          "vmInputs": [
+            { "sha256": "d9f5fdfea5a27ffcf0bd56a40b030c6dde6d1ca231676ecab68d5161d0aa6bdc", "byteLength": 17219 },
+            { "sha256": "b3027144a6bfcde283a3c52375a850ecbc63cba4e0bdd1d99a45d6a213cf5321", "byteLength": 13210 }
+          ]
+        },
+        "remainingWorkerGaps": ["pre-setup-evaluations-unobserved", "runtime-inputs-outside-evaluator", "external-loader-bytes-unobserved"],
+        "configAndMainProcessStatus": "unknown: config inputs include shared files outside the fixture repository and no original Node config/main-process load capture was armed"
+      },
+      "provenance": "Current local focused execution. Fixture config SHA256 cd5e1540f3ee8d6e5998931ed47b659bcdc1a28a07e5d3d5894dd864e3db968c; reporter records dirty=true and NO_PERSIST=1. No complete imported-source or committed-runtime identity is inferred."
+    },
+    "unarmedControl": {
+      "command": "npm run test:file -- tests/dependency-preflight.test.ts",
+      "environment": "WORKSPACE, RESULT and INPUTS_DIR unset; fresh OUT path set without WORKSPACE",
+      "nativeExitCode": 0,
+      "testsPassed": 6,
+      "testsSkipped": 0,
+      "requestedDiagnosticOutputExists": false,
+      "stdoutAndStderr": {
+        "ref": "~/.papercusp/scratch/c0523-fixture-source-config-unarmed-20261022.log",
+        "sha256": "6bb2bdc90a3259c99bc1e19f070973ec6e5abec1810baa82926dd11a2408649a"
+      },
+      "scope": "The changed config still runs the focused fixture test without arming diagnostic capture when WORKSPACE is absent."
+    },
+    "sourcePinsAtRead": [
+      { "path": "apps/slack-asana-bug-drill/vitest.config.ts", "sha256": "cd5e1540f3ee8d6e5998931ed47b659bcdc1a28a07e5d3d5894dd864e3db968c" },
+      { "path": "libs/test-config/src/vitest-config.ts", "sha256": "8d2642e3150411348ce7c4a4f7ac0c84366625f87a0fac363d7d63c751714f27" },
+      { "path": "libs/test-config/src/executed-source-map-reporter.ts", "sha256": "a3318dc1f03d2f417bac7c12f9232c325cfd8235de20f9b44b6e3bb9e44f78db" },
+      { "path": "libs/test-config/src/executed-inputs-capture-setup.ts", "sha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233" }
+    ],
+    "engineArchiveReview": {
+      "workItemId": "EI-26014170316247986",
+      "currentRead": "work_items:get resume on 2026-10-22: nextAction blocked because a live admission review is pending. No archive implementation bypass."
+    },
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "currentFixtureConfigLoadPreparation20261022": {
+    "workItemId": "WI-6554700010010682",
+    "status": "configuration-only-native-load-observations-partial",
+    "scope": "Load the current fixture configuration through Vite's default bundle loader under the existing original-config-load preload. No test runner, original npm chain or engine-script capture was executed.",
+    "commandBoundary": {
+      "cwd": "apps/slack-asana-bug-drill",
+      "admission": "Canonical ../../scripts/pc-heavy.sh; no admission bypass",
+      "node": "node --import <canonical-root>/libs/test-config/src/executed-config-load-capture.ts --input-type=module",
+      "body": "Load vite.loadConfigFromFile({command:'serve',mode:'test'}, absoluteFixtureConfig, absoluteFixtureRoot, 'silent'); resolve its relative bundle dependencies against absoluteFixtureRoot; call the existing qualifyLoadedConfigSources and qualifyLoadedMainProcessSources with the canonical superproject root.",
+      "environment": {
+        "PC_EXECUTED_SOURCE_MAP_PRELOAD": "1",
+        "PC_EXECUTED_SOURCE_MAP_WORKSPACE": "@bug-drill/fixture",
+        "PC_EXECUTED_SOURCE_MAP_NO_PERSIST": "1",
+        "PC_EXECUTED_SOURCE_MAP_OUT": "~/.papercusp/scratch/c0523-fixture-config-load-20261022-v2.json",
+        "PC_EXECUTED_SOURCE_MAP_ROOT": "unset; the existing preload's engine/process snapshot observer was not requested"
+      },
+      "startedAt": "2026-10-22T08:57:36.036Z",
+      "completedAt": "2026-10-22T08:57:36.686Z",
+      "nativeExitCode": 0,
+      "testsExecuted": 0
+    },
+    "artifacts": {
+      "nativeObservation": {
+        "ref": "~/.papercusp/scratch/c0523-fixture-config-load-20261022-v2.json",
+        "sha256": "9605475df51c2ed7b7b684ef01694ecb2ea01f600a285b8fcfc18f2c9c4624ea",
+        "byteLength": 8001
+      },
+      "stdoutAndStderr": {
+        "ref": "~/.papercusp/scratch/c0523-fixture-config-load-20261022-v2.log",
+        "sha256": "1d0d30c8655da9dfdf57692f15769efabbefe20d4625e7ee31125d28dd6039fc",
+        "byteLength": 1222
+      }
+    },
+    "verification": {
+      "declaredPinsUnchanged": true,
+      "declaredPinScope": "Five before/after pins: fixture config/package, shared vitest-config, original-config-load capture and process-termination observer. This is not a complete imported-source census.",
+      "configEntryMatched": true,
+      "resolvedConsumer": "node environment, forks pool, maxWorkers1; executed-source-map reporter and executed-inputs setup are present in the actual loaded config.",
+      "configSourceStatus": "unknown",
+      "observedHashesMatchedCurrentBytes": [
+        {
+          "path": "apps/slack-asana-bug-drill/vitest.config.ts",
+          "sha256": "cd5e1540f3ee8d6e5998931ed47b659bcdc1a28a07e5d3d5894dd864e3db968c"
+        },
+        {
+          "path": "libs/test-config/src/tmpdir-guard.ts",
+          "sha256": "7d50fde3eab79e25c94304ed1cf93aa0c9a529142006207994c380c5a3943b10"
+        },
+        {
+          "path": "libs/test-config/src/vitest-config.ts",
+          "sha256": "8d2642e3150411348ce7c4a4f7ac0c84366625f87a0fac363d7d63c751714f27"
+        },
+        {
+          "path": "libs/test-config/src/worker-setup-files.ts",
+          "sha256": "ab82be14d0d63f2e91710c274d4939dd6d1bd227b89773a9bb40476ab8187dd0"
+        }
+      ],
+      "listedInputsWithoutOriginalLoadObservation": [
+        "libs/test-config/src/lane-split.ts",
+        "libs/test-config/src/test-pass-reuse-skip.ts"
+      ],
+      "additionalMainProcessSources": "No additional repository source observations beyond the normalized configuration dependency set. Status unknown: main-process-dependencies-unavailable and main-process-loaded-sources-unavailable. This is not proof that the process had no other inputs.",
+      "loaderChain": "unknown: node-loader-chain-not-closed and node-preload-self-unmeasured",
+      "nativeConfigurationOnly": true,
+      "engineCaptureRequested": false
+    },
+    "probeCorrection": "The first configuration-only probe passed Vite's relative bundle dependency names to an API requiring absolute paths, leaving config classification unavailable and assigning four observations to mainSources. Its v1 artifact is retained as diagnostic history, not config/main-process qualification. The v2 caller resolves dependencies against the fixture root before classification; no product code was changed and no test suite was rerun.",
+    "remaining": [
+      "Original-load observations for the two listed inputs are unavailable; no cause or applicability is inferred.",
+      "External dependencies, native runtime, loader-chain closure, preload self observation and complete process population remain unmeasured.",
+      "Configuration-load observations do not retroactively qualify the saved focused test run or original lifecycle/ordered-chain receipts.",
+      "Child WI-6554700010020084 remains done with proposed completion authority at the live read, pending automatic exact-content settlement.",
+      "EI-26014170316247986 remains live-admission-review-pending; this evidence does not implement or certify its engine archive scope."
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "currentFixtureCollectorSettlement20261022": {
+    "workItemId": "WI-6554700010020084",
+    "read": "work_items:get in continuation 01a162cb: state done, completionAuthority committed, assignee null",
+    "configSha256": "cd5e1540f3ee8d6e5998931ed47b659bcdc1a28a07e5d3d5894dd864e3db968c",
+    "fixtureHeadAtSubsequentNativeRun": "6cab997da00401124116c4cd7c222a21f175fe5c",
+    "settlement": "Automatic exact-content settlement; no repeated completion call, manual git action or focused test rerun.",
+    "scope": "Committed optional collector configuration only; no final shipment claim."
+  },
+  "currentOriginalFixtureParent20261022": {
+    "workItemId": "WI-6554700010010682",
+    "status": "original-parent-exit0-current-collector-outcomes-and-worker-artifacts-verified-partial",
+    "cwd": "apps/slack-asana-bug-drill",
+    "command": ["npm", "run", "test"],
+    "originalScript": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run",
+    "pretest": "node scripts/build.mjs",
+    "admission": "Canonical scripts/pc-heavy.sh; unchanged original npm command. Existing nativeProcessTraceEnv and writeBudgetedTaskNativeExecutionReceipt preserve the actual parent streams and process observations.",
+    "diagnosticEnvironment": "WORKSPACE=@bug-drill/fixture, OUT=<receipt-prefix>.source.json, NO_PERSIST=1; original-config PRELOAD and ROOT unset. No engine-script capture or reusable-pass persistence requested.",
+    "startedAtMs": 1792659918952,
+    "finishedAtMs": 1792659985133,
+    "nativeExitCode": 0,
+    "signal": null,
+    "error": null,
+    "testResult": {
+      "filesPassed": 11,
+      "testsPassed": 72,
+      "testsSkipped": 12,
+      "testsFailed": 0,
+      "totalTests": 84,
+      "basis": "Actual nativeRun.files case statuses and execution counts agree with the original Vitest stdout summary. OUT.skipped is not used as a test count."
+    },
+    "nativeReporter": {
+      "terminalHook": "onTestRunEnd",
+      "reason": "passed",
+      "unhandledErrorCount": 0,
+      "modulePopulationMatched": true,
+      "pid": 2024667,
+      "parentPid": 2024658,
+      "startedAtMs": 1792659970609,
+      "finishedAtMs": 1792659984688,
+      "gaps": [],
+      "binding": "Unique observed Node entry for reporter pid2024667 has parent pid2024658, the original test lifecycle shell. Its entry and reporter interval are contained in that shell's matching spawn/close interval. This is a reporter diagnostic binding, not the ordered reader's per-step receipt contract."
+    },
+    "declaredInputs": {
+      "count": 75,
+      "beforeAfterIdentical": true,
+      "scope": "Tracked fixture files plus eight named package/lock/collector guards. Complete imported, installed and runtime population remains unmeasured.",
+      "fixtureHeadBeforeAndAfter": "6cab997da00401124116c4cd7c222a21f175fe5c",
+      "parentHeadBefore": "8dae09379e40359f9858d5ff28c77a81962b7db1",
+      "parentHeadAfter": "ee5f2138f21c9aeacf95f230e39326fd1453980f",
+      "reporterWorktreeDirty": false,
+      "provenance": "Current fixture reporter records the committed app revision and dirty=false. Parent HEAD moved during execution. Unchanged named pins do not establish complete committed import/runtime identity."
+    },
+    "receipt": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261022-v1.json",
+      "sha256": "c151fde42b2d11c26622973fb1d5521b3e3e4d623c49c689ce060a596c97d5de",
+      "byteLength": 14188
+    },
+    "sourceMapOut": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261022-v1.source.json",
+      "sha256": "170613269d286cc06606e4c8b2bc75c25c13ad2240e9e9e5fe8d504d218a32cf",
+      "byteLength": 156713
+    },
+    "captureLog": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261022-v1.capture.log",
+      "sha256": "ca550789a174c805f72cd6f82718bf66ac2bc47e7506e2f1ee4e8178d36a30e7",
+      "byteLength": 2475
+    },
+    "nativeProcessArchive": {
+      "root": "~/.papercusp/scratch/c0523-fixture-original-parent-20261022-v1-artifacts",
+      "receipt": "48415357cd8b946931b3ba412a7d73d01ab1cfea56139a5b401d1b8e1bbec7da.receipt.json",
+      "sha256": "48415357cd8b946931b3ba412a7d73d01ab1cfea56139a5b401d1b8e1bbec7da",
+      "byteLength": 2840766,
+      "eventCount": 4683,
+      "streamCount": 24,
+      "artifactReferencesVerified": 4710,
+      "distinctArtifactsVerified": 4698,
+      "verification": "Read the native receipt and every referenced log, process-event and stream artifact; verified regular non-symlink containment, SHA256 and byteLength.",
+      "parentProcessIdentity": "dd628f93-ffbb-43aa-8aa6-1079586f7bb6",
+      "parentPid": 1951188,
+      "directLifecycleBindings": [
+        {
+          "phase": "pretest",
+          "script": "node scripts/build.mjs",
+          "childIdentity": "935fe9e6-1fe5-4b2f-b8a4-5189f8f751ef",
+          "childPid": 1951997,
+          "startedAtMs": 1792659919917,
+          "closedAtMs": 1792659968252,
+          "exitCode": 0,
+          "signal": null
+        },
+        {
+          "phase": "test",
+          "script": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run",
+          "childIdentity": "91a13d4a-b327-4109-9045-1ba43fb2a428",
+          "childPid": 2024658,
+          "startedAtMs": 1792659968258,
+          "closedAtMs": 1792659985093,
+          "exitCode": 0,
+          "signal": null
+        }
+      ],
+      "bindingVerification": "Selected the unique original npm run test entry. Paired only its direct spawn/close events by observer pid/processIdentity and child pid/childIdentity; verified successful, nonoverlapping intervals inside the actual parent interval. Both lifecycle shells retain inaccessible stdout/stderr in their spawn observations.",
+      "terminalCoverage": "Sixteen observed Node entries lack terminal stream observations. Module-load observations are bounded. Shell builtins, non-Node entries, private/synchronous spawns and direct-fd/native/inherited stream writes remain outside the capture scope."
+    },
+    "workerCapture": {
+      "stablePreTransformDiagnostics": 11,
+      "distinctCurrentSourcePinsVerified": 23,
+      "evaluatorEntryReferencesVerified": 32,
+      "vmInputReferencesVerified": 32,
+      "distinctRetainedEvaluatorArtifactsVerified": 46,
+      "verification": "Read every retained evaluator entry and VM-input codeRef under the OUT modules directory; verified non-symlink containment, SHA256 and byteLength. Verified every non-null worker pre-transform source hash against its current fixture file.",
+      "unresolved": ["external-loader-bytes-unobserved", "pre-setup-evaluations-unobserved", "runtime-inputs-outside-evaluator"]
+    },
+    "limits": [
+      "Twelve original conditional skips remain: eleven composition target/agent-plane cases and the attach-mode boot case. No zero-skip or applicability exception is inferred.",
+      "The retained parent is still affected-task-native-execution with steps:[]; lifecycle and reporter observations do not synthesize original-native-command-execution per-step receipts or distinct step logs.",
+      "Config read/load and main-process source statuses in this actual test OUT remain unknown. The separate configuration-only probe cannot retroactively qualify this execution.",
+      "Loaded evaluator/VM bytes are retained, but bootstrap, external/native dependencies, final transforms, complete process/engine population and independent containment/termination agreement remain unmeasured.",
+      "This run verifies current original-command collector behavior. It is not an ABBA comparison, operational R12 pass, live gate verdict or shipment."
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "currentNativeReporterArchiveBinding20261022": {
+    "workItemId": "WI-6554700010020132",
+    "admission": "green-main-cycle-time-2026-10-08#D-087; exact claim succeeded with changeKinds logic before implementation.",
+    "status": "current-local-writer-and-saved-capture-replay-verified",
+    "implementation": "Existing processTrace.reporter retains bounded content-addressed OUT bytes only after schema, unique process/parent identity and interval checks. Nested reporters require one matching observed child spawn/close interval. Missing, malformed, redirected, oversized, stale, unrelated or ambiguous output remains an explicit gap while good process trace survives. Failed and incomplete reporter outcomes are retained without pass qualification.",
+    "verification": {
+      "testCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native affected-task parent receipt transport'",
+      "tests": {
+        "ref": "~/.papercusp/scratch/c0523-native-out-binding-tests-20261022.log",
+        "sha256": "9386d660bf70970dec76cd4a1e17ecd85a29fdbe571f0873e6c2b031736de8bb",
+        "byteLength": 104147
+      },
+      "selectedPassed": 23,
+      "explicitUnselected": 264,
+      "requestedFiles": 1,
+      "executedFiles": 1,
+      "childSubstituted": 0,
+      "nativeExitCode": 0,
+      "provenance": "Stamped HEAD9a10e4035a; named test path dirty. Exact three current-local source pins are recorded separately; no complete committed import/runtime provenance inferred.",
+      "typecheckCommand": "node scripts/lint-tsc.mjs --files=scripts/lib/budgeted-task-scheduler.d.mts,packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+      "typecheck": {
+        "ref": "~/.papercusp/scratch/c0523-native-out-binding-tsc-20261022.log",
+        "sha256": "92dc15327cd269097ff4f1c693093b8fc62fbd8e89857bdfa84866a3b9d62deb",
+        "byteLength": 13827
+      },
+      "typecheckExitCode": 0,
+      "typecheckScope": "Requested declaration and test file; routed scripts and operator-core verdicts clean against maintained baseline. Not a zero-error whole-repository assertion."
+    },
+    "replay": {
+      "kind": "saved-original-inputs-archive-replay",
+      "newNativeExecution": false,
+      "readback": {
+        "ref": "~/.papercusp/scratch/c0523-native-out-binding-replay-20261022-v1.json",
+        "sha256": "e27be077f0c0ed2cc21a65c4077ca25bd5578dedad434d2c55721e2e015aa718",
+        "byteLength": 5315
+      },
+      "root": "~/.papercusp/scratch/c0523-native-out-binding-replay-20261022-v1-artifacts",
+      "receipt": {
+        "ref": "a1ea8cf68205159e03a8efa4cf89504f46348fe225e9c877ae0916b1db771093.receipt.json",
+        "sha256": "a1ea8cf68205159e03a8efa4cf89504f46348fe225e9c877ae0916b1db771093",
+        "byteLength": 2842075
+      },
+      "sourceMap": {
+        "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261022-v1.source.json",
+        "sha256": "170613269d286cc06606e4c8b2bc75c25c13ad2240e9e9e5fe8d504d218a32cf",
+        "byteLength": 156713
+      },
+      "reporter": {
+        "status": "bound",
+        "artifact": {
+          "ref": "170613269d286cc06606e4c8b2bc75c25c13ad2240e9e9e5fe8d504d218a32cf.native-vitest-out.json",
+          "sha256": "170613269d286cc06606e4c8b2bc75c25c13ad2240e9e9e5fe8d504d218a32cf",
+          "byteLength": 156713
+        },
+        "process": {
+          "pid": 2024667,
+          "ppid": 2024658,
+          "processIdentity": "8cc45e79-3c9f-4609-a3d0-0f4de77cb070",
+          "entry": {
+            "ref": "1359b2e8b0ae088be9aa7c1491387815b0d30c3962760acca60745dad5201cc4.process-event.json",
+            "sha256": "1359b2e8b0ae088be9aa7c1491387815b0d30c3962760acca60745dad5201cc4",
+            "byteLength": 724
+          },
+          "exit": {
+            "ref": "3e6337f1459fec559f2fbe9cb82aaf57d50a3d6e4d5449ba6298788bf1485517.process-event.json",
+            "sha256": "3e6337f1459fec559f2fbe9cb82aaf57d50a3d6e4d5449ba6298788bf1485517",
+            "byteLength": 769
+          },
+          "lifecycle": {
+            "spawn": {
+              "ref": "61d07e5a95251fccf7bfb979b4624730dba8f91ae2344cf41a66a62216a6175e.process-event.json",
+              "sha256": "61d07e5a95251fccf7bfb979b4624730dba8f91ae2344cf41a66a62216a6175e",
+              "byteLength": 587
+            },
+            "close": {
+              "ref": "7c5887b9454c18cc84cd58cd6118e40ab7f9dbdc390e75abc42dd7185a4617d6.process-event.json",
+              "sha256": "7c5887b9454c18cc84cd58cd6118e40ab7f9dbdc390e75abc42dd7185a4617d6",
+              "byteLength": 280
+            },
+            "childPid": 2024658,
+            "childIdentity": "91a13d4a-b327-4109-9045-1ba43fb2a428"
+          },
+          "startedAtMs": 1792659970609,
+          "finishedAtMs": 1792659984688
+        },
+        "gaps": [
+          "reporter-evaluator-sidecars-not-retained"
+        ]
+      },
+      "processEvents": 4683,
+      "processStreams": 24,
+      "archiveReferencesVerified": 4715,
+      "distinctArtifactsVerified": 4699,
+      "verificationScope": "Explicit archive pins: receipt, parent logs, event/stream artifacts and reporter process/lifecycle bindings. Raw event source pins and OUT evaluator sidecars are outside this archive verification."
+    },
+    "sourcePins": [
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "sha256": "7241b04ea210bf75e8453d808abb9cad1a95cbd78d65f2f80aed690662c62d2f"
+      },
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+        "sha256": "84779079d04bae1247f47299bfa3640f844b5a91008afc7e84a2405f2793dc7a"
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "sha256": "ee03f1f1bf3d6e4080b6a70ababa2fc23a0ef7aecb97efae9a5aace8881d1e5d"
+      }
+    ],
+    "limits": [
+      "Saved-input re-archive verifies transport and identity binding; it is not a new native test execution.",
+      "The original fixture remains 72 passed/12 conditional skips. Per-step receipts, distinct step logs/reports, original config/main-process source proof and complete runtime closure remain unqualified.",
+      "Raw event source pins and evaluator sidecars are not made archive-local by retaining OUT; the reporter records evaluator-sidecars-not-retained explicitly.",
+      "No acceptance, engine archive, comparison, live gate or shipment qualification."
+    ],
+    "steps": [],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Archive-binding child0132 now locally retains/binds the existing native reporter OUT and its observed original process/lifecycle interval; 23 focused cases and scoped declaration/test TSC pass. Saved-input replay verified explicit archive pins in a new root, not a new native execution. Let automatic git settle these exact source pins, then reuse this proof and continue the original ordered reader producer gaps through the existing fleet. Original fixture remains72pass/12skip,steps[],config/main-process source unknown and fullruntime/source/dependency/finaltransform/population/containment unmeasured. Preserve mandatory engine archive review, D020/P006 hold, six forms, P018, P028, P031/D045 and final shipment obligations. Full plan remains unshipped."
 }

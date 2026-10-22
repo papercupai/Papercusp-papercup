@@ -13,6 +13,7 @@ describe('conformance test-ledger evidence population', () => {
   const input = {
     files: [file],
     workspaceId: 'conformance-workspace',
+    currentBuildSha: 'a'.repeat(40),
     now: () => new Date(Date.UTC(2026, 9, 15, 0, 10)),
   };
 
@@ -186,7 +187,7 @@ describe('conformance test-ledger evidence population', () => {
 
   it.each(['local', 'ci', 'admin-ui', null])('retains genuine failures from source %s, including legacy rows', async source => {
     await record(source, 'pass', 1);
-    await record(source, 'error', 2, input.workspaceId, { includeDetails: false });
+    await record(source, 'fail', 2, input.workspaceId, { includeDetails: false });
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'fail', value: 0 });
   });
 

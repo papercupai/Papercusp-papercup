@@ -984,6 +984,31 @@ async function liveRuntimeEnvironment(
   };
 }
 
+/**
+ * A working-tree bind must be reproducible by listSpecEvidence, which reads committed files
+ * whenever the measurement root has a HEAD. buildMeasurementPin records whether each
+ * fingerprinted file matches that HEAD; refuse instead of storing a dirty-tree digest that
+ * can become falsely current as soon as the dirty bytes are committed.
+ */
+function refuseUnreproducibleWorkingTreeMeasurement(
+  pin: MeasurementPin,
+  measurement: RepoFilesEvidenceMeasurement,
+  harnessSlug: string,
+): void {
+  const repoByKey = new Map(pin.repos.map((repo) => [`${repo.rootHarnessSlug ?? ''}\0${repo.repo}`, repo]));
+  const mismatched = pin.files.filter((file) => {
+    const repo = repoByKey.get(`${file.rootHarnessSlug ?? ''}\0${file.repo}`);
+    return repo?.head != null && file.clean !== true;
+  });
+  if (mismatched.length === 0) return;
+  const paths = mismatched.map((file) => {
+    const rootHarnessSlug = file.rootHarnessSlug ?? measurement.rootHarnessSlug ?? harnessSlug;
+    const state = file.clean === false ? 'dirty' : 'clean-state-unavailable';
+    return `${rootHarnessSlug}:${file.path}:${state}`;
+  }).sort();
+  throw new Error(`repo_measurement_not_clean_at_head:${paths.join(',')}`);
+}
+
 /** Resolve both registered roots when fixture calibration lives outside the tested checkout. */
 export async function measureAndPinRepoFilesEvidence(
   workspaceId: string,
@@ -1000,6 +1025,7 @@ export async function measureAndPinRepoFilesEvidence(
     ...options,
     ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
+  refuseUnreproducibleWorkingTreeMeasurement(measured.pin, measurement, harnessSlug);
   // Spread last: like the read path, named runtimes take precedence over an artifact receipt.
   return { ...measured, ...(await liveRuntimeEnvironment(workspaceId, harnessSlug, measurement)) };
 }
@@ -3573,6 +3599,8 @@ export async function measureCompletedTestRuntime(
   if (selector?.kind === 'isolated-integration') return measureCompletedIntegrationRuntime(row, recipe, currentFiles, scope, root);
   const directVerifier = selector?.kind === 'verification-harness'
     && selector.journeyHarness === 'verify-tauri-headless';
+  const operatorE2e = selector?.kind === 'verification-harness'
+    && selector.journeyHarness === 'operator-e2e-isolated';
   // The maintained verifier can execute a Vitest assertion directly. Its
   // original native witness and its own source/lifecycle receipts are the
   // journey; shared staging receipts cannot acquire that provenance later.
@@ -3595,9 +3623,9 @@ export async function measureCompletedTestRuntime(
       && row.test_run_present
       && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
   if (!selector || !recipe.runtimeUnits || !(certifiesCompletedTestRow(row.evidence_kind) || mutationCalibration)
-    // Direct native assertions can support tree clauses too. Their recorded
+    // Owned verifier executions can support tree clauses too. Their recorded
     // witness, immutable source and complete lifecycle must still certify them.
-    || (row.details.evidencePlane !== 'live' && !(directVerifier && row.details.evidencePlane === 'tree'))
+    || (row.details.evidencePlane !== 'live' && !((directVerifier || operatorE2e) && row.details.evidencePlane === 'tree'))
     || (row.test_run_status !== 'pass' && !mutationCalibration)
     || !(selector.kind === 'llm-in-process' ? row.test_run_framework === 'llm-test'
       : selector.kind === 'verification-harness' ? ['vitest', 'playwright'].includes(row.test_run_framework ?? '')
@@ -3655,7 +3683,6 @@ export async function measureCompletedTestRuntime(
     } catch { return null; }
   }
   try {
-    const operatorE2e = selector.journeyHarness === 'operator-e2e-isolated';
     const verifierSourceJourney = operatorE2e || directVerifier;
     const [verifier, receipt, journeyArtifact, manifest] = await Promise.all(
       completedRuntimeArtifactRefs(selector).map(async ([harness, runId, file]) =>

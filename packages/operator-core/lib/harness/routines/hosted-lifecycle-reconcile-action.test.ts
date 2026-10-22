@@ -24,6 +24,7 @@ import type { HostedLifecycleReconciliationResult } from '../../workspace-host/h
 import { makeHostedLifecycleReconcileAction as createAction, HOSTED_LIFECYCLE_RECONCILE } from './hosted-lifecycle-reconcile-action';
 import { BESPOKE_ACTIVE_SEEDS } from './bespoke-active-seeds-check';
 import { TARGET_ROLE_SPEND } from '../../automation/routine-classification';
+import { getSystemActionEntry } from './system-actions';
 
 const HERE = __dirname;
 const ACTION_FILE = join(HERE, 'hosted-lifecycle-reconcile-action.ts');
@@ -197,6 +198,10 @@ describe('the sweep is actually wired in, not merely written', () => {
     expect(existsSync(ACTION_FILE)).toBe(true);
     expect(read(ACTION_FILE)).toContain(`registerSystemAction(HOSTED_LIFECYCLE_RECONCILE`);
     expect(HOSTED_LIFECYCLE_RECONCILE).toBe(ACTION_NAME);
+  });
+
+  it('runs at the workflow layer so demand can enqueue durable child workflows legally', () => {
+    expect(getSystemActionEntry(ACTION_NAME)?.ownSteps).toBe(true);
   });
 
   it('register-system-actions imports it — without this the action never registers', () => {

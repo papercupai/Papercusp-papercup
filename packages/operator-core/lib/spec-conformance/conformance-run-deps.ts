@@ -19,7 +19,9 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { sameBuildSha } from '../attention/bug-reproduction';
 import { readPlanBySlug } from '../agent-tools/plans/source';
+import { getBuildInfo } from '../build-info';
 import { approvedDeviations } from './deviation';
 import {
   probeCheckResults,
@@ -85,6 +87,7 @@ type Sql = ReturnType<typeof getOrgPg>['sql'];
 /** Test-run rows older than one CI cadence are historical context, not current proof. */
 export const SPEC_CONFORMANCE_TEST_EVIDENCE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const SPEC_CONFORMANCE_TEST_EVIDENCE_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+const SPEC_CONFORMANCE_BUILD_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 function finishedAtMs(value: Date | string | null): number {
   if (value instanceof Date) return value.getTime();
@@ -117,6 +120,8 @@ export async function judgeTestsFromLedger(
   input: {
     files: readonly string[];
     workspaceId: string;
+    /** Running operator build identity; injectable for deterministic ledger tests. */
+    currentBuildSha?: string | null;
     /** Named cases narrow the verdict to exact recorded case outcomes within each file. */
     cases?: ReadonlyArray<{ file: string; testName: string }>;
     /** Injectable case reader for focused tests; production reads the per-case ledger. */
@@ -149,6 +154,24 @@ export async function judgeTestsFromLedger(
     worktree_dirty: boolean | null;
     execution_details: unknown;
   }>;
+  const currentBuildSha = input.currentBuildSha === undefined ? getBuildInfo().sha : input.currentBuildSha;
+  const normalizedCurrentBuildSha = currentBuildSha?.trim() || null;
+  const currentBuildProblems = rows.flatMap((row) => {
+    if (row.status === 'error') return [];
+    if (!normalizedCurrentBuildSha || !SPEC_CONFORMANCE_BUILD_SHA_RE.test(normalizedCurrentBuildSha)) {
+      return [`${row.file_path} (current running build SHA is unavailable, test_runs #${row.id})`];
+    }
+    const runSha = row.commit_sha?.trim() ?? '';
+    if (!runSha) {
+      return row.status === 'fail'
+        ? [`${row.file_path} (test run has no commit SHA to match the current build, test_runs #${row.id})`]
+        : [];
+    }
+    if (!SPEC_CONFORMANCE_BUILD_SHA_RE.test(runSha) || !sameBuildSha(runSha, normalizedCurrentBuildSha)) {
+      return [`${row.file_path} (test-run commit ${runSha} does not match current build ${normalizedCurrentBuildSha}, test_runs #${row.id})`];
+    }
+    return [];
+  });
   const byFile = new Map(rows.map((row) => [row.file_path, row] as const));
   const missing = input.files.filter((file) => !byFile.has(file));
   const now = input.now?.() ?? new Date();
@@ -191,12 +214,13 @@ export async function judgeTestsFromLedger(
         ? [row.file_path + ' (' + reasons.join(', ') + ', test_runs #' + String(row.id) + ')']
         : [];
     });
-    if (missing.length > 0 || stale.length > 0 || selectorProblems.length > 0 || invalidCaseRows.length > 0) {
+    if (missing.length > 0 || stale.length > 0 || selectorProblems.length > 0 || invalidCaseRows.length > 0 || currentBuildProblems.length > 0) {
       const unavailable = [
         ...missing.map((file) => file + ' (no test-run ledger row)'),
         ...stale.map((row) => row.file_path + ' (stale test-run evidence, test_runs #' + String(row.id) + ')'),
         ...selectorProblems,
         ...invalidCaseRows,
+        ...currentBuildProblems,
       ];
       return {
         kind: 'tests',
@@ -292,12 +316,13 @@ export async function judgeTestsFromLedger(
       : [];
   });
   const passing = rows.length - failing.length;
-  if (missing.length > 0 || stale.length > 0 || runErrors.length > 0 || unprovenPasses.length > 0) {
+  if (missing.length > 0 || stale.length > 0 || runErrors.length > 0 || unprovenPasses.length > 0 || currentBuildProblems.length > 0) {
     const unavailable = [
       ...missing.map((file) => `${file} (no test-run ledger row)`),
       ...stale.map((row) => `${row.file_path} (stale test-run evidence, test_runs #${row.id})`),
       ...runErrors.map((row) => `${row.file_path} (test run status is error, test_runs #${row.id})`),
       ...unprovenPasses,
+      ...currentBuildProblems,
     ];
     return {
       kind: 'tests',

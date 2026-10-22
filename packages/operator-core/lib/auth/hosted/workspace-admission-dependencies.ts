@@ -164,7 +164,14 @@ export function createDefaultHostedWorkspaceAdmissionDependencies(
 
   return {
     controlPlaneWorkspaceId: activeWorkspaceId,
-    ...(options.pooled ? { async admitAndStart(input: HostedWorkspaceProvisioningRequest) {
+    ...(options.pooled ? { async admitAndStart(original: HostedWorkspaceProvisioningRequest) {
+      // D-074: ordinary on-demand VMs until profile-bound reclaim recovery is
+      // qualified. Quote, immutable request and workflow must select the SAME
+      // market. BYOC provisioning does not pass through this pooled adapter.
+      const input = original.desiredSpec.provider?.provisioningModel === 'spot'
+        ? { ...original, desiredSpec: { ...original.desiredSpec,
+          provider: { ...original.desiredSpec.provider, provisioningModel: 'standard' } } }
+        : original;
       const request = { connectionId: input.connectionId, name: input.name, desired: input.desiredSpec };
       const replay = await readHostedLifecycleAdmission({ workspaceId: input.controlPlaneWorkspaceId,
         operationId: input.operationId, customerWorkspaceId: input.customerWorkspaceId, actorId: input.actorId, request });

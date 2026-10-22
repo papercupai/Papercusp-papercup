@@ -33,8 +33,9 @@
  * (call → connection dies → re-call), where the window cannot occur.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
 import type { ToolResult } from '@papercusp/tooldef';
+import type { McpReplayLookupPhaseEvent, McpReplayLookupPhaseName } from '../../../mcp-request-trace';
 
 /**
  * Stored/replayed result — the serialized MCP tools/call result shape.
@@ -90,6 +91,31 @@ const SWEEP_MIN_INTERVAL_MS = 60 * 1000;
 let lastSweepAt = 0;
 
 const KEY_MAX = 200;
+const REPLAY_LOOKUP_ACQUISITION_DEADLINE_MS = 10_000;
+const REPLAY_LOOKUP_STATEMENT_TIMEOUT_MS = 5_000;
+
+export interface LookupStoredMcpResultOptions {
+  /** Test seam for exercising the bounded phase without waiting for production budgets. */
+  acquisitionDeadlineMs?: number;
+  /** Test seam for exercising transaction-local cancellation. */
+  statementTimeoutMs?: number;
+  onPhase?: (event: McpReplayLookupPhaseEvent) => void;
+}
+
+function replayLookupError(error: unknown): { name: string; code?: string } {
+  const details = error && typeof error === 'object'
+    ? error as { name?: unknown; code?: unknown }
+    : null;
+  const name = typeof details?.name === 'string'
+    ? details.name
+    : error instanceof Error
+      ? error.name
+      : 'Error';
+  return {
+    name: name.slice(0, 80),
+    ...(typeof details?.code === 'string' ? { code: details.code.slice(0, 40) } : {}),
+  };
+}
 
 /**
  * Above this many bytes of serialized result we SKIP persisting the replay row
@@ -197,15 +223,74 @@ export function isPendingMcpResult(result: StoredMcpResult | null | undefined): 
 export async function lookupStoredMcpResult(
   ownerKey: string,
   idempotencyKey: string,
+  options: LookupStoredMcpResultOptions = {},
 ): Promise<StoredMcpResult | null> {
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ result: unknown; is_error: boolean }>>`
-    SELECT result, is_error
-      FROM harness_shared.mcp_tool_results
-     WHERE owner_key = ${ownerKey} AND idempotency_key = ${idempotencyKey}
-       AND (created_at > now() - make_interval(secs => ${REPLAY_TTL_MS / 1000})
-         OR tool_name = ${DURABLE_CREATION_TOOL})
-  `;
+  const statementTimeoutSetting = String(
+    options.statementTimeoutMs ?? REPLAY_LOOKUP_STATEMENT_TIMEOUT_MS,
+  ) + 'ms';
+  const emitPhase = (event: McpReplayLookupPhaseEvent): void => {
+    try {
+      options.onPhase?.(event);
+    } catch {
+      // Trace callbacks are diagnostic only and cannot change replay behavior.
+    }
+  };
+  const beginPhase = (phase: McpReplayLookupPhaseName): ((error?: unknown) => void) => {
+    const startedAt = performance.now();
+    emitPhase({ phase, state: 'started' });
+    let finished = false;
+    return (error?: unknown) => {
+      if (finished) return;
+      finished = true;
+      emitPhase({
+        phase,
+        state: 'finished',
+        elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        ...(error === undefined ? {} : { error: replayLookupError(error) }),
+      });
+    };
+  };
+  const finishAcquisition = beginPhase('pool_acquisition');
+  let rows: Array<{ result: unknown; is_error: boolean }>;
+  try {
+    rows = await withAcquisitionDeadline(
+      ({ disarm, expired }) => sql.begin(async (tx) => {
+        // A late connection must roll back without issuing even the setup query.
+        if (expired()) throw new Error('MCP replay acquisition expired before transaction setup');
+        await tx`SELECT set_config('statement_timeout', ${statementTimeoutSetting}, true)`;
+        // The deadline can fire while SET LOCAL is in flight. Disarm and start
+        // the lookup only after rechecking in the same synchronous turn.
+        if (expired()) throw new Error('MCP replay acquisition expired before statement');
+        disarm();
+        finishAcquisition();
+
+        const finishStatement = beginPhase('statement');
+        try {
+          const selected = await tx<Array<{ result: unknown; is_error: boolean }>>`
+            SELECT result, is_error
+              FROM harness_shared.mcp_tool_results
+             WHERE owner_key = ${ownerKey} AND idempotency_key = ${idempotencyKey}
+               AND (created_at > now() - make_interval(secs => ${REPLAY_TTL_MS / 1000})
+                 OR tool_name = ${DURABLE_CREATION_TOOL})
+          `;
+          finishStatement();
+          return selected;
+        } catch (error) {
+          finishStatement(error);
+          throw error;
+        }
+      }),
+      {
+        ms: options.acquisitionDeadlineMs ?? REPLAY_LOOKUP_ACQUISITION_DEADLINE_MS,
+        label: 'MCP idempotency replay lookup',
+        pool: 'org-admin',
+      },
+    );
+  } catch (error) {
+    finishAcquisition(error);
+    throw error;
+  }
   const row = rows[0];
   if (!row) return null;
   const stored = decodeStoredMcpResult(row.result, row.is_error);

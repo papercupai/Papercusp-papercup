@@ -429,7 +429,7 @@ export interface HostedPoolCapacityHost {
   hostId: string;
   generation: number;
   controllerFence: number;
-  state: 'ready' | 'pending' | 'draining' | 'unavailable';
+  state: 'ready' | 'pending' | 'retained' | 'draining' | 'unavailable';
   observedAtMs: number;
   customerWorkspaceId: string | null;
   reservationId: string | null;
@@ -499,7 +499,7 @@ export function evaluateHostedPoolCapacity(input: HostedPoolCapacityInput): Host
   const fresh = (at: number): boolean => finiteInteger(at) && at <= input.nowMs &&
     input.nowMs - at <= input.maxObservationAgeMs;
   if (![input.nowMs, input.cooldownMs, input.queuedHosts, input.minimumSpareHosts].every(finiteInteger) ||
-      !positive(input.maxObservationAgeMs) || !positive(input.generation) || !positive(input.controllerFence) ||
+      !positive(input.maxObservationAgeMs) || !positive(input.generation) || !finiteInteger(input.controllerFence) ||
       !Number.isSafeInteger(input.queuedHosts + input.minimumSpareHosts)) {
     return hold('invalid pool capacity controls');
   }
@@ -511,13 +511,18 @@ export function evaluateHostedPoolCapacity(input: HostedPoolCapacityInput): Host
   const ids = new Set<string>();
   for (const host of input.hosts) {
     if (!validRef(host.hostId) || ids.has(host.hostId) || !positive(host.generation) ||
-        !positive(host.controllerFence) || !fresh(host.observedAtMs) ||
+        !(host.state === 'pending' ? finiteInteger(host.controllerFence) : positive(host.controllerFence)) || !fresh(host.observedAtMs) ||
         ![host.customerWorkspaceId, host.reservationId].every(value => value === null || validRef(value))) {
       return hold('invalid, duplicate or stale pool host observation');
     }
     ids.add(host.hostId);
-    if (host.state !== 'ready' && host.state !== 'pending') return hold('pool host needs reconciliation');
-    if (host.state === 'ready' && (!host.activity || host.activity.state !== 'active' ||
+    if (host.state !== 'ready' && host.state !== 'pending' && host.state !== 'retained') return hold('pool host needs reconciliation');
+    // Retained stopped VMs consume their owner's allowance, never spare compute.
+    if (host.state === 'retained' && host.customerWorkspaceId === null) return hold('retained pool host owner missing');
+    // Work telemetry is required to offer or drain a spare. Assigned hosts are
+    // counted for quota only; missing telemetry cannot make them spare capacity.
+    if (host.state === 'ready' && host.customerWorkspaceId === null && host.reservationId === null &&
+        (!host.activity || host.activity.state !== 'active' ||
         host.activity.observedState !== 'running' || !finiteInteger(host.activity.activeLifecycleJobs) ||
         !host.activity.activeWork ||
         ![host.activity.activeWork.activeAgents, host.activity.activeWork.pendingAgentStarts,
@@ -547,7 +552,7 @@ export function evaluateHostedPoolCapacity(input: HostedPoolCapacityInput): Host
         admission.nowMs !== input.nowMs || admission.requested.hosts !== 1 ||
         admission.capacity.requestedWarmHosts !== 0 || admission.budget.requestedMinor !== estimate.cents ||
         admission.budget.currency !== estimate.currency ||
-        admission.allocated.hosts !== input.hosts.filter(host => host.state === 'ready').length ||
+        admission.allocated.hosts !== input.hosts.filter(host => host.state === 'ready' || host.state === 'retained').length ||
         admission.pending.hosts !== input.hosts.filter(host => host.state === 'pending').length ||
         !positive(admission.requested.cpuMillicores) || !positive(admission.requested.memoryMiB)) {
       return pause('invalid pool provision estimate or reservation snapshot');

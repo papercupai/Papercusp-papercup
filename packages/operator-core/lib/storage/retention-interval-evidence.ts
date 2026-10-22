@@ -227,7 +227,8 @@ const targetRecordsSchema = z.object({
     entries: z.array(z.object({ status: z.string() })), delegates: z.array(z.object({ ok: z.boolean() })),
   })).max(20_000),
   dispositions: z.object({ supersededPlan: z.string().min(1), successorPlan: z.literal('disk-durable-headroom-2026-10-15'),
-    planTerminal: z.boolean(), linkedSuccessor: z.boolean(), siblingId: z.literal('WI-10007751'), siblingTerminal: z.boolean() }),
+    // SQL NULL means linkage is unconfirmed; it must not hide native floor/run failures.
+    planTerminal: z.boolean(), linkedSuccessor: z.boolean().nullable(), siblingId: z.literal('WI-10007751'), siblingTerminal: z.boolean() }),
 });
 function soakCensusRows() {
   return z.array(z.object({ id: z.string().min(1), host: z.string().min(1), path: z.enum(['/', '/mnt/data']),

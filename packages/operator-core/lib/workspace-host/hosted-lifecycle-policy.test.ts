@@ -295,6 +295,28 @@ describe('hosted pool bounded capacity proposals (P-544 preparation)', () => {
     expect(evaluateHostedPoolCapacity(value)).toMatchObject({ kind: 'provision', market: 'spot' });
   });
 
+  it('counts assigned running, retained and pending hosts without offering them as spare compute', () => {
+    const owned = { ...host('owned'), customerWorkspaceId: 'customer-a', activity: null };
+    const retained: HostedPoolCapacityHost = { ...host('stopped', 'retained'), customerWorkspaceId: 'customer-b' };
+    const pending = { ...host('queued', 'pending'), customerWorkspaceId: 'customer-c', controllerFence: 0 };
+    const value = input([owned, retained, pending]);
+    value.provision.admission.allocated.hosts = 2;
+    expect(evaluateHostedPoolCapacity(value)).toMatchObject({ kind: 'provision', readyHosts: 0, pendingHosts: 0 });
+    retained.customerWorkspaceId = null;
+    expect(evaluateHostedPoolCapacity(value)).toMatchObject({ kind: 'hold', reasons: ['retained pool host owner missing'] });
+  });
+
+  it('fences initial demand at controller zero while rejecting negative fences and zero-fence ready hosts', () => {
+    const value = input();
+    value.controllerFence = 0;
+    expect(evaluateHostedPoolCapacity(value)).toMatchObject({ kind: 'provision', controllerFence: 0 });
+    value.controllerFence = -1;
+    expect(evaluateHostedPoolCapacity(value).kind).toBe('hold');
+    const ready = host('ready');
+    ready.controllerFence = 0;
+    expect(evaluateHostedPoolCapacity(input([ready], 2)).kind).toBe('hold');
+  });
+
   it('drains one deterministic idle unassigned host while preserving demand and the warm floor', () => {
     const value = input([host('b'), host('a'), host('c')], 1);
     value.minimumSpareHosts = 1;

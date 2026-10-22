@@ -43,6 +43,7 @@ import {
   appendTestRunReceipts,
   reporterWriteBudget,
   testRunReceiptBaseFor,
+  isDefinitePreSubmitFailure,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   mutationDescriptorForRow,
@@ -205,7 +206,7 @@ async function tryGetPg(): Promise<{
       'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
     const sql = pg(url, {
       max: 1,
-      connect_timeout: 1,
+      connect_timeout: reporterWriteBudget(process.env).connectTimeoutSec,
       idle_timeout: 1,
       max_lifetime: 5,
       onnotice: () => {},
@@ -245,15 +246,17 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
   const commit = worktreeAfter.commit;
   // One receipt identity for this row: a late `inserted` supersedes its `timeout` under it.
   // Playwright configs are committed specs, never a scratch config (the Vitest-only flag).
-  const receipt = testRunReceiptBaseFor({
+  let receipt = testRunReceiptBaseFor({
     filePath: row.filePath, status: row.status, durationMs: row.durationMs,
     startedAt: row.startedAt, finishedAt: row.finishedAt, outputTail: row.outputTail,
     isScratchConfig: false, worktreeDirty: row.worktreeDirty, commitSha: commit,
   });
+  // Late settlement must stay attached to this run's evidence sink.
+  const receiptEnv = { PAPERCUSP_TEST_RUN_RECEIPT_FILE: process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE };
 
   const pg = await tryGetPg();
   if (!pg) {
-    appendTestRunReceipts(process.env, [{ ...receipt, outcome: 'failed', reason: 'pg_unavailable', replayable: false }]);
+    appendTestRunReceipts(receiptEnv, [{ ...receipt, outcome: 'failed', reason: 'pg_unavailable', replayable: false }]);
     return;
   }
 
@@ -268,31 +271,46 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
   const workspaceId = resolveTestRunWorkspaceId();
   const budget = reporterWriteBudget(process.env);
   const startedAt = Date.now();
-  const query = Promise.resolve().then(() => pg.sql`
+  const deadline = startedAt + budget.totalInsertMs;
+  const executionDetails = playwrightExecutionDetails(row, {
+    root, runGroupId, workspaceId, harnessSlug, commitSha: commit, runStartedAt,
+  });
+  const query = (async () => {
+    for (;;) {
+      try {
+        const result = await pg.sql`
       INSERT INTO harness_shared.test_runs
         (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details)
       VALUES
         (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
          ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${row.worktreeDirty},
-         ${playwrightExecutionDetails(row, { root, runGroupId, workspaceId, harnessSlug, commitSha: commit, runStartedAt }) as never}::jsonb)
+         ${executionDetails as never}::jsonb)
       RETURNING id
-    `).then((result) => {
-    const first = Array.isArray(result) ? result[0] as { id?: unknown } | undefined : undefined;
-    appendTestRunReceipts(process.env, first?.id === undefined || first.id === null
-      ? [{ ...receipt, outcome: 'failed', reason: 'insert_returned_no_id', replayable: false }]
-      : [{ ...receipt, outcome: 'inserted', id: String(first.id) }]);
-  }, (error: unknown) => {
-    const reason = error instanceof Error ? error.message : String(error);
-    appendTestRunReceipts(process.env, [{
-      ...receipt,
-      outcome: 'failed',
-      reason: reason.slice(0, 200) || 'unknown',
-      replayable: false,
-    }]);
-  });
+        `;
+        const first = Array.isArray(result) ? result[0] as { id?: unknown } | undefined : undefined;
+        appendTestRunReceipts(receiptEnv, first?.id === undefined || first.id === null
+          ? [{ ...receipt, outcome: 'failed', reason: 'insert_returned_no_id', replayable: false }]
+          : [{ ...receipt, outcome: 'inserted', id: String(first.id) }]);
+        return;
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : String(error);
+        // Share Vitest's only safe replay condition: postgres-js proves this
+        // statement was never submitted. An uncertain INSERT is never replayed.
+        const preSubmit = isDefinitePreSubmitFailure(error);
+        const replayable = preSubmit && receipt.attempt === 0 && Date.now() < deadline;
+        appendTestRunReceipts(receiptEnv, [{
+          ...receipt, outcome: 'failed', reason: reason.slice(0, 200) || 'unknown', replayable,
+          ...(preSubmit ? { errorCode: 'CONNECT_TIMEOUT' } : {}),
+        }]);
+        if (!replayable) return;
+        const attempt = receipt.attempt + 1;
+        receipt = { ...receipt, attempt, row: { ...receipt.row, receiptAttempt: attempt } };
+      }
+    }
+  })();
 
   if (!(await settleWithin(query, budget.insertTimeoutMs))) {
-    appendTestRunReceipts(process.env, [{
+    appendTestRunReceipts(receiptEnv, [{
       ...receipt,
       outcome: 'timeout',
       reason: `pg_insert_timeout_${budget.insertTimeoutMs}ms`,

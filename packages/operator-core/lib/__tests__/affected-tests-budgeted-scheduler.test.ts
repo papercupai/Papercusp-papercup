@@ -165,6 +165,118 @@ describe('native affected-task parent receipt transport', () => {
       expect(bad.processTrace.gaps.join(' ')).toContain('hash mismatch');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  function nativeReporterObservation(root: string, reason: 'passed' | 'failed' | null = 'passed', nested = false) {
+    const out = join(root, 'native-out.json');
+    // Protocol fixture only: a real observed Node process writes its own identity
+    // and interval. The archive must not interpret this as a Vitest pass proof.
+    const script = `
+      const fs = require('node:fs');
+      const startedAtMs = Date.now();
+      fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify({ nativeRun: {
+        schemaVersion: 'native-vitest-run-v1', scope: 'vitest-reporter-callbacks',
+        pid: process.pid, ppid: process.ppid, startedAtMs, finishedAtMs: Date.now(),
+        reason: ${JSON.stringify(reason)}, terminalHook: ${JSON.stringify(reason === null ? 'onExit' : 'onTestRunEnd')},
+        unhandledErrorCount: ${reason === 'failed' ? 1 : 0}, files: []
+      }}));
+      process.stdout.write('observed protocol fixture');
+      process.exitCode = ${reason === 'failed' ? 3 : 0};
+    `;
+    const command = nested ? [process.execPath, '-e', `
+      require('node:child_process').spawn('/bin/sh', ['-c', '"$1" -e "$2"',
+        'native-reporter', process.execPath, ${JSON.stringify(script)}], { stdio: 'inherit' })
+        .once('close', code => { process.exitCode = code; });
+    `] : [process.execPath, '-e', script];
+    const startedAtMs = Date.now();
+    const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT, timeout: 15_000,
+      env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+        PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
+    if (child.error) throw child.error;
+    return { out, input: { task: 'native-reporter-fixture', attempt: 'initial', cwd: REPO_ROOT,
+      command, startedAtMs, finishedAtMs: Date.now(), exitCode: child.status,
+      signal: child.signal, error: null, captureComplete: true, stdout: child.stdout,
+      stderr: child.stderr, processTrace: { out, rootPid: child.pid } } };
+  }
+  it.each(['passed', 'failed', null] as const)('archives native reporter bytes and process binding without qualifying outcome %s', reason => {
+    const root = mkdtempSync(join(tmpdir(), 'native-reporter-bound-'));
+    try {
+      const { out, input } = nativeReporterObservation(root, reason);
+      const bytes = readFileSync(out);
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input);
+      const reporter = result.observation.processTrace.reporter;
+      expect(reporter.status).toBe('bound');
+      expect(reporter.artifact).toMatchObject({ sha256: createHash('sha256').update(bytes).digest('hex'),
+        byteLength: bytes.length });
+      expect(readFileSync(join(result.root, reporter.artifact!.ref))).toEqual(bytes);
+      expect(reporter.process).toMatchObject({ pid: input.processTrace.rootPid,
+        ppid: process.pid });
+      const entry = result.observation.processTrace.events.find(row => row.event === 'node-entry');
+      expect(reporter.process!.entry).toEqual(entry!.artifact);
+      expect(JSON.parse(readFileSync(join(result.root, reporter.artifact!.ref), 'utf8')).nativeRun.reason).toBe(reason);
+      expect(result.observation.execution.exitCode).toBe(reason === 'failed' ? 3 : 0);
+      expect(result.observation.steps).toEqual([]);
+      expect(result.observation.orderedChainQualified).toBe(false);
+      expect(result.observation.operationalAcceptance).toBe(false);
+      expect(reporter.gaps).toContain('reporter-evaluator-sidecars-not-retained');
+      expect(writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input).receipt).toEqual(result.receipt);
+      writeFileSync(out, '{}');
+      expect(readFileSync(join(result.root, reporter.artifact!.ref))).toEqual(bytes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('binds a nested reporter through its observed lifecycle shell and rejects an unclosed span', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-reporter-lifecycle-'));
+    try {
+      const { input } = nativeReporterObservation(root, 'failed', true);
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input);
+      const reporter = result.observation.processTrace.reporter;
+      expect(reporter.status).toBe('bound');
+      expect(reporter.process!.pid).not.toBe(input.processTrace.rootPid);
+      expect(reporter.process!.lifecycle!.childPid).toBe(reporter.process!.ppid);
+      expect(result.observation.execution.exitCode).toBe(3);
+      const source = `${input.processTrace.out}.native-processes`;
+      const close = result.observation.processTrace.events.find(row =>
+        row.artifact.sha256 === reporter.process!.lifecycle!.close.sha256)!;
+      rmSync(join(source, `${close.artifact.sha256}.json`));
+      const unclosed = writeBudgetedTaskNativeExecutionReceipt(join(root, 'unclosed'), input);
+      expect(unclosed.observation.processTrace.reporter.status).toBe('unknown');
+      expect(unclosed.observation.processTrace.events.length).toBeGreaterThan(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each(['missing', 'malformed', 'redirected', 'oversized', 'unrelated-pid', 'wrong-parent',
+    'stale', 'future', 'ambiguous', 'after-process-exit', 'wrong-schema'] as const)('leaves native reporter %s unbound without losing good process evidence', fault => {
+    const root = mkdtempSync(join(tmpdir(), 'native-reporter-unbound-'));
+    try {
+      const { out, input } = nativeReporterObservation(root);
+      const payload = JSON.parse(readFileSync(out, 'utf8'));
+      if (fault === 'missing') rmSync(out);
+      else if (fault === 'malformed') writeFileSync(out, '{');
+      else if (fault === 'redirected') {
+        const target = join(root, 'redirected.json');
+        writeFileSync(target, readFileSync(out)); rmSync(out); symlinkSync(target, out);
+      } else if (fault === 'oversized') writeFileSync(out, Buffer.alloc(16 * 1024 * 1024 + 1));
+      else if (fault === 'ambiguous') {
+        const events = join(`${out}.native-processes`);
+        const entry = readdirSync(events).filter(name => name.endsWith('.json'))
+          .map(name => JSON.parse(readFileSync(join(events, name), 'utf8')))
+          .find(row => row.event === 'node-entry');
+        const bytes = Buffer.from(JSON.stringify({ ...entry, processIdentity: 'another-observed-identity' }));
+        writeFileSync(join(events, `${createHash('sha256').update(bytes).digest('hex')}.json`), bytes);
+      } else {
+        if (fault === 'unrelated-pid') payload.nativeRun.pid += 1000000;
+        if (fault === 'wrong-parent') payload.nativeRun.ppid += 1000000;
+        if (fault === 'stale') payload.nativeRun.startedAtMs = input.startedAtMs - 1;
+        if (fault === 'future') payload.nativeRun.finishedAtMs = input.finishedAtMs + 1;
+        if (fault === 'after-process-exit') payload.nativeRun.finishedAtMs = (input.finishedAtMs += 100);
+        if (fault === 'wrong-schema') payload.nativeRun.schemaVersion = 'other-protocol';
+        writeFileSync(out, JSON.stringify(payload));
+      }
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input);
+      expect(result.observation.processTrace.events.length).toBeGreaterThan(0);
+      expect(result.observation.processTrace.streams).toHaveLength(2);
+      expect(result.observation.processTrace.reporter).toMatchObject({ status: 'unknown', artifact: null, process: null });
+      expect(result.observation.processTrace.reporter.gaps.some(gap => gap.startsWith('native-vitest-out-unbound:'))).toBe(true);
+      expect(result.observation.orderedChainQualified).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   function nativeObservation() {
     const command = [process.execPath, '-e',
       'process.stdout.write(Buffer.from([0,255,10])); process.stderr.write(Buffer.from([254,13,10]));'];

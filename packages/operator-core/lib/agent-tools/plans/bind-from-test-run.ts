@@ -24,6 +24,10 @@
  *                       the measurement is a FRESHNESS hash, and a transitive set both
  *                       overflows the 32-path cap and stales the proof on every unrelated edit
  *                       anywhere below the subject.
+ *  - fixturePaths      — caller-declared calibration inputs plus direct relative imports that
+ *                       resolve to first-party test infrastructure when fixtureCalibrated is
+ *                       true. A clean recorded commit also verifies those support paths;
+ *                       transitive and non-imported inputs remain caller-declared.
  *  - `details.testRun`— id, file, status, source, mutation phase, commit, dirty flag, finish
  *                       time, and how the harness attribution was obtained.
  *  - `details.adequacy.{collected,skipped,executed,outcome}` — observable facts of the run.
@@ -45,12 +49,13 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
+import ts from 'typescript';
 import { recordedTestLayer, isRecordedInstant, parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment,
   type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { parseMutationDescriptor, type MutationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
-import { resolveRelative, runtimeSpecifiers, stripComments } from '../../search/import-graph';
+import { resolveRelative, stripComments } from '../../search/import-graph';
 import {
   expandRepoFilesEvidenceSourcePathsAtRoot,
   mutationCaughtCaseClaimMessage,
@@ -139,6 +144,7 @@ export function withRepoIdentityMemo(
 
 /** Same bound as a hand-built `repo-files` measurement. */
 export const FROM_TEST_RUN_MAX_SOURCE_PATHS = 32;
+export const FROM_TEST_RUN_MAX_FIXTURE_PATHS = 32;
 
 /** Run sources that are harness-NULL BY DESIGN and must never be re-attributed. */
 const NEVER_ADOPTED_SOURCES: ReadonlySet<string> = new Set(['ci', 'admin-ui']);
@@ -169,7 +175,7 @@ export const testRunBindingSchema = z
       'For a whole-tree census test: the registered tree instrument the evaluator re-runs over the committed tree (e.g. provider-specific-census).',
     ),
     fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths.describe(
-      'Supply fixturePaths or fixtureGlobs on the first bind when fixture calibration is needed (including inline fixtures in the test file). The recipe is immutable; fixtures are not derived from source imports.',
+      'Supply fixturePaths or fixtureGlobs on the first bind when fixture calibration is needed (including inline fixtures in the test file). When calibrated, direct first-party test-infrastructure imports are also included in fixturePaths; other fixture sources must be declared.',
     ),
     fixtureGlobs: repoFilesEvidenceMeasurementSchema.shape.fixtureGlobs.describe(
       'Alternative to fixturePaths for first-bind fixture calibration; the matched files are hashed for fixture currentness.',
@@ -332,6 +338,9 @@ export interface DerivedTestRunBinding {
     sourceGlobs?: string[];
     treeInstrumentKey?: z.infer<typeof repoFilesEvidenceMeasurementSchema>['treeInstrumentKey'];
     testPaths: string[];
+    fixturePaths?: string[];
+    fixtureGlobs?: string[];
+    fixtureRootHarnessSlug?: string;
     runtimeUnits?: string[];
     completedRuntime?: z.infer<typeof repoFilesEvidenceMeasurementSchema>['completedRuntime'];
   };
@@ -353,6 +362,7 @@ export type TestRunBindingError =
   | 'test_run_canonical_path_source_unsupported'
   | 'test_run_canonical_path_mismatch'
   | 'source_paths_underivable'
+  | 'fixture_paths_underivable'
   | 'run_contradicts_declared_adequacy'
   | 'mutation_caught_case_claim_mismatch'
   | 'mutation_causal_controls_invalid'
@@ -403,25 +413,61 @@ function dynamicImportSpecifiers(file: string): string[] {
   return [...src.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
 }
 
-/**
- * The test file's first ring of relative runtime imports, repo-relative, minus test
- * infrastructure and anything outside `root`. Sorted and de-duplicated so the same run
- * always derives the same measurement recipe.
- */
-export function deriveSubjectSourcePaths(root: string, testPath: string): string[] {
+/** Static runtime declarations, including adjacent imports on the same line. */
+function staticRuntimeSpecifiers(file: string): string[] {
+  const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  const specifiers = new Set<string>();
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      if (!statement.importClause?.isTypeOnly) specifiers.add(statement.moduleSpecifier.text);
+    } else if (
+      ts.isExportDeclaration(statement)
+      && statement.moduleSpecifier
+      && ts.isStringLiteral(statement.moduleSpecifier)
+      && !statement.isTypeOnly
+    ) {
+      specifiers.add(statement.moduleSpecifier.text);
+    }
+  }
+  return [...specifiers];
+}
+
+function firstRingRelativeRuntimeImportPaths(root: string, testPath: string): string[] {
   const abs = resolve(root, testPath);
   const out = new Set<string>();
-  for (const specifier of [...runtimeSpecifiers(abs), ...dynamicImportSpecifiers(abs)]) {
+  for (const specifier of [...staticRuntimeSpecifiers(abs), ...dynamicImportSpecifiers(abs)]) {
     if (!specifier.startsWith('.')) continue;
     const target = resolveRelative(abs, specifier);
     if (!target) continue;
     const rel = relative(root, target);
     if (rel.startsWith('..') || isAbsolute(rel)) continue;
     const posix = rel.split(sep).join('/');
-    if (posix === testPath || isTestInfrastructurePath(posix)) continue;
+    if (posix === testPath) continue;
     out.add(posix);
   }
   return [...out].sort();
+}
+
+/**
+ * The test file's first ring of relative runtime imports, repo-relative, minus test
+ * infrastructure and anything outside `root`. Sorted and de-duplicated so the same run
+ * always derives the same measurement recipe.
+ */
+export function deriveSubjectSourcePaths(root: string, testPath: string): string[] {
+  return firstRingRelativeRuntimeImportPaths(root, testPath)
+    .filter((importPath) => !isTestInfrastructurePath(importPath));
+}
+
+/** Direct first-party helpers, fixtures and mocks that participate in calibrated test evidence. */
+export function deriveFixtureSupportPaths(root: string, testPath: string): string[] {
+  return firstRingRelativeRuntimeImportPaths(root, testPath)
+    .filter(isTestInfrastructurePath);
+}
+
+function declaresFixtureCalibration(details: Record<string, unknown> | undefined): boolean {
+  const adequacy = details?.adequacy;
+  return Boolean(adequacy && typeof adequacy === 'object' && !Array.isArray(adequacy)
+    && (adequacy as Record<string, unknown>).fixtureCalibrated === true);
 }
 
 /** Repo-relative POSIX path of the run's file, or null when it lies outside the checkout. */
@@ -959,6 +1005,33 @@ export function deriveBindingFromTestRun(
     }
   }
 
+  let fixturePaths = input.fixturePaths ? [...new Set(input.fixturePaths)].sort() : undefined;
+  if (declaresFixtureCalibration(input.details)) {
+    let supportPaths: string[];
+    try {
+      supportPaths = deriveFixtureSupportPaths(root, testPath);
+    } catch (error) {
+      return {
+        ok: false,
+        error: 'fixture_paths_underivable',
+        testRunId,
+        message: 'could not read first-party test-support imports from ' + testPath
+          + ' (' + String(error) + '); no calibrated binding was created.',
+      };
+    }
+    const combined = [...new Set([...(fixturePaths ?? []), ...supportPaths])].sort();
+    if (combined.length > FROM_TEST_RUN_MAX_FIXTURE_PATHS) {
+      return {
+        ok: false,
+        error: 'fixture_paths_underivable',
+        testRunId,
+        message: testPath + ' imports ' + combined.length + ' declared or first-party test-support fixture paths, over the '
+          + FROM_TEST_RUN_MAX_FIXTURE_PATHS + '-path limit; split the test or reduce its calibrated fixture set.',
+      };
+    }
+    if (combined.length > 0) fixturePaths = combined;
+  }
+
   const facts = runFacts(row, evidenceKind);
   const declaredAdequacy =
     input.details?.adequacy && typeof input.details.adequacy === 'object'
@@ -1043,7 +1116,7 @@ export function deriveBindingFromTestRun(
       ...(input.sourceGlobs ? { sourceGlobs: input.sourceGlobs } : {}),
       ...(input.treeInstrumentKey ? { treeInstrumentKey: input.treeInstrumentKey } : {}),
       testPaths: [testPath],
-      ...(input.fixturePaths ? { fixturePaths: input.fixturePaths } : {}),
+      ...(fixturePaths ? { fixturePaths } : {}),
       ...(input.fixtureGlobs ? { fixtureGlobs: input.fixtureGlobs } : {}),
       ...(input.fixtureRootHarnessSlug ? { fixtureRootHarnessSlug: input.fixtureRootHarnessSlug } : {}),
       ...(runtimeUnits ? { runtimeUnits: [...runtimeUnits] } : {}),
@@ -1705,11 +1778,25 @@ export async function expandTestRunBinding(
   if (result.ok && sibling) {
     result.binding.measurement = { ...result.binding.measurement, rootHarnessSlug: sibling.harnessSlug };
   }
+  let fixtureSupportPaths: string[] = [];
+  if (result.ok && declaresFixtureCalibration(input.details)) {
+    try {
+      fixtureSupportPaths = deriveFixtureSupportPaths(root, testPath);
+    } catch (error) {
+      return {
+        ok: false,
+        error: 'fixture_paths_underivable',
+        testRunId,
+        message: 'could not recheck first-party test-support imports from ' + testPath
+          + ' (' + String(error) + '); no calibrated binding was created.',
+      };
+    }
+  }
   if (result.ok && asCommitted) {
     // Declared paths only: source globs are expanded against the commit itself when the
     // binding is measured there, so a glob match that exists only in this checkout is moot.
     const { testPaths, sourcePaths } = result.binding.measurement;
-    const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
+    const measured = [...new Set([...testPaths, ...sourcePaths, ...fixtureSupportPaths])].sort();
     const content = await verifyAsCommittedContent(root, asCommitted, measured, deps.git ?? defaultGitRunner);
     if (!content.ok) {
       if (content.probeFailed) {
@@ -1743,7 +1830,7 @@ export async function expandTestRunBinding(
     }
     if (output) (result.binding.details.testRun as Record<string, unknown>).operationalArtifact = output;
     const guardedTestPaths = output ? testPaths.filter(path => path !== testPath) : testPaths;
-    const measured = [...new Set([...guardedTestPaths, ...sourcePaths])].sort();
+    const measured = [...new Set([...guardedTestPaths, ...sourcePaths, ...fixtureSupportPaths])].sort();
     if (measured.length > 0 && !isRecordedInstant(executionDetails(row.execution_details).runStartedAt)) {
       return {
         ok: false,

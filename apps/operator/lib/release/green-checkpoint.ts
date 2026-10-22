@@ -10732,8 +10732,14 @@ export function buildGreenCheckpointEnv(
   // to the OPERATOR database the governor reads. Without this the admission client fell
   // through to the discovery file (the installed Papercusp Server's cluster) and every
   // affected-test task failed 28P01 before running. Only the admission client reads this key.
-  const governedAdmissionUrl = gateOperatorPgEnv(source).HARNESS_ADMIN_DATABASE_URL;
-  if (governedAdmissionUrl) env[GOVERNED_ADMISSION_DATABASE_URL_ENV] = governedAdmissionUrl;
+  const operatorDatabaseUrl = gateOperatorPgEnv(source).HARNESS_ADMIN_DATABASE_URL;
+  if (operatorDatabaseUrl) env[GOVERNED_ADMISSION_DATABASE_URL_ENV] = operatorDatabaseUrl;
+  // EI-266688: isolated fixtures that register durable receipts (including the current-build
+  // liveness alarm suite) correctly fail preflight without a reporter sink. Keep raw host DSNs
+  // out of the allowlisted child environment; inject only the explicit reporter URL, falling
+  // back to the operator DSN selected by gateOperatorPgEnv.
+  const testRunsDatabaseUrl = source.PAPERCUSP_TEST_RUNS_DB_URL?.trim() || operatorDatabaseUrl;
+  if (testRunsDatabaseUrl) env.PAPERCUSP_TEST_RUNS_DB_URL = testRunsDatabaseUrl;
   // WI-10005212: deleted first so a host-leaked value can never back-date a non-frozen run.
   delete env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS;
   if (frozenCandidateOpenedAtMs !== undefined) {

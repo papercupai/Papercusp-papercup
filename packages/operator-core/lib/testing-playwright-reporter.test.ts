@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -7,10 +7,13 @@ import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 
-const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
+const { sql, pg } = vi.hoisted(() => {
+  const sql = vi.fn();
+  return { sql, pg: vi.fn(() => sql) };
+});
 const source = vi.hoisted(() => ({ root: '/portal', after: vi.fn() }));
 const sourceDirt = vi.hoisted(() => vi.fn(() => false));
-vi.mock('postgres', () => ({ default: () => sql }));
+vi.mock('postgres', () => ({ default: pg }));
 vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   resolveReporterSourceRoot: () => source.root,
   captureTestSourceSnapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }),
@@ -22,6 +25,7 @@ vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
 }));
 import Reporter, { prepareNativeRuntimeReader } from '@papercusp/operator-core/lib/testing-playwright-reporter';
 import OperatorReporter from '../../../apps/operator/test/reporters/admin-test-runs-reporter-playwright';
+import { reporterWriteBudget } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   MAX_RECORDED_PASSED_CASES,
   parseTestRunExecutionDetails,
@@ -38,6 +42,104 @@ const violatesSyncReaderContract = (impl: () => Promise<unknown>) => impl as unk
 afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; source.after.mockReset(); sourceDirt.mockReset().mockReturnValue(false); });
 
 describe('portable Playwright ledger reporter', () => {
+  describe('bounded ledger write recovery', () => {
+    async function recordPassingRun(receipts: string) {
+      vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
+      vi.stubEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE', receipts);
+      const reporter = new Reporter();
+      reporter.onBegin();
+      reporter.onTestEnd({ title: 'layout fits', titlePath: () => ['layout fits'],
+        location: { file: '/portal/e2e/layout.spec.ts' } } as never,
+      { status: 'passed', startTime: new Date(), duration: 10 } as never);
+      await reporter.onEnd();
+      await reporter.onExit();
+      return readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    }
+
+    it('uses the shared evidence-run connection budget', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'playwright-write-budget-'));
+      try {
+        pg.mockClear();
+        sql.mockReset().mockResolvedValue([{ id: '701' }]);
+        await recordPassingRun(join(dir, 'receipts.jsonl'));
+        expect(pg).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+          connect_timeout: reporterWriteBudget(process.env).connectTimeoutSec,
+        }));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('recovers a definite pre-submit timeout with the same receipt and execution details', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'playwright-write-recover-'));
+      try {
+        sql.mockReset()
+          .mockRejectedValueOnce(Object.assign(new Error('connect timeout'), { code: 'CONNECT_TIMEOUT' }))
+          .mockResolvedValueOnce([{ id: '702' }]);
+        const receipts = await recordPassingRun(join(dir, 'receipts.jsonl'));
+        expect(sql).toHaveBeenCalledTimes(2);
+        expect(receipts).toMatchObject([
+          { attempt: 0, outcome: 'failed', replayable: true, errorCode: 'CONNECT_TIMEOUT' },
+          { attempt: 1, outcome: 'inserted', id: '702' },
+        ]);
+        expect(receipts[1].receiptId).toBe(receipts[0].receiptId);
+        expect(receipts[1].row).toEqual({ ...receipts[0].row, receiptAttempt: 1 });
+        expect(sql.mock.calls[1]!.slice(1)).toEqual(sql.mock.calls[0]!.slice(1));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('stops after one replay of a definite pre-submit failure', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'playwright-write-refused-'));
+      try {
+        sql.mockReset().mockRejectedValue(Object.assign(new Error('connect timeout'), { code: 'CONNECT_TIMEOUT' }));
+        const receipts = await recordPassingRun(join(dir, 'receipts.jsonl'));
+        expect(sql).toHaveBeenCalledTimes(2);
+        expect(receipts).toMatchObject([
+          { attempt: 0, outcome: 'failed', replayable: true },
+          { attempt: 1, outcome: 'failed', replayable: false },
+        ]);
+        expect(receipts[1].receiptId).toBe(receipts[0].receiptId);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('never replays a rejection with an uncertain submission outcome', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'playwright-write-ambiguous-'));
+      try {
+        sql.mockReset().mockRejectedValue(Object.assign(new Error('socket disconnected'), { code: 'ETIMEDOUT' }));
+        const receipts = await recordPassingRun(join(dir, 'receipts.jsonl'));
+        expect(sql).toHaveBeenCalledOnce();
+        expect(receipts).toMatchObject([{ attempt: 0, outcome: 'failed', replayable: false }]);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('keeps a late acknowledgement on the original receipt sink without replaying', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'playwright-write-late-'));
+      vi.useFakeTimers();
+      try {
+        let acknowledge!: (rows: { id: string }[]) => void;
+        sql.mockReset().mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
+        const path = join(dir, 'receipts.jsonl');
+        const recording = recordPassingRun(path);
+        await vi.advanceTimersByTimeAsync(15_001);
+        expect(sql).toHaveBeenCalledOnce();
+        expect(JSON.parse(readFileSync(path, 'utf8').trim())).toMatchObject({
+          attempt: 0, outcome: 'timeout', replayable: false,
+        });
+        const otherSink = join(dir, 'another-run.jsonl');
+        vi.stubEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE', otherSink);
+        acknowledge([{ id: '703' }]);
+        const receipts = await recording;
+        expect(sql).toHaveBeenCalledOnce();
+        expect(receipts).toMatchObject([
+          { attempt: 0, outcome: 'timeout' }, { attempt: 0, outcome: 'inserted', id: '703' },
+        ]);
+        expect(receipts[1].receiptId).toBe(receipts[0].receiptId);
+        expect(existsSync(otherSink)).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('retains provenance failure diagnostics in validated metadata even when assertions pass', async () => {
     vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
     sql.mockReset().mockResolvedValue([{ id: '12347' }]);

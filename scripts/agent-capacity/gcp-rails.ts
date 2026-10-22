@@ -1,14 +1,16 @@
 /**
  * Safety rails for the agent-capacity GCP test runs.
  *
- * Plan agent-capacity-and-cost-gcp-2026-09-30, P-001 (WI-10004370). D-002 caps the whole
- * test programme at $200 of GCP spend; this module is how every VM the capacity tests start
- * stays inside that cap, and how every run proves it left nothing behind.
+ * Plan agent-capacity-and-cost-gcp-2026-09-30, P-001 (WI-10004370). D-082 (2026-10-21)
+ * removes D-002's historical $200 programme ceiling. Finite per-run reservations,
+ * concurrent worst-case admission, actual-cost accounting and verified cleanup remain.
+ * The product's strict under-$20/month acceptance requirement is a separate outcome.
  *
  * The rails, in the order they fire:
  *
  * 1. PROJECT — every VM lives in the dedicated test project `pc-agent-capacity-0930`, whose
- *    $200 budget alert (`agent-capacity-gcp-test-cap-200`) is scoped to that project only.
+ *    historical $200 budget alert (`agent-capacity-gcp-test-cap-200`) is scoped to that project only
+ *    and is informational under D-082, not the programme's current spending authority.
  *    The default gcloud project is shared with unrelated long-lived VMs, so a budget or a
  *    sweep there would count or touch someone else's machines. A create against any other
  *    project is refused.

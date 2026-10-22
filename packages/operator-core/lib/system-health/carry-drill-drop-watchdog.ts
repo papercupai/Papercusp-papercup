@@ -107,15 +107,15 @@ const WATCHDOG_IDENTITY: AgentIdentity = {
 interface CarryConditionDeps {
   host: () => string;
   rail?: AlarmAttentionDeps;
-  readOpenConditionKeys: () => Promise<string[]>;
+  readOpenConditionKeys: (prefix: string) => Promise<string[]>;
 }
 
 const CARRY_CONDITION_PREFIX = 'alarm:carry-delivery:';
 
-async function readOpenCarryConditions(): Promise<string[]> {
-  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
-  return computeConditionStates(await readConditionEnvelopes())
-    .filter((condition) => condition.open && condition.condition_key.startsWith(CARRY_CONDITION_PREFIX))
+async function readOpenCarryConditions(prefix: string): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopesForPrefix } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopesForPrefix(prefix))
+    .filter((condition) => condition.open && condition.condition_key.startsWith(prefix))
     .map((condition) => condition.condition_key);
 }
 
@@ -146,8 +146,8 @@ async function openCarryCondition(key: string, summary: string, deps: CarryCondi
   } catch { return false; /* the legacy escalation remains independent of condition delivery */ }
 }
 
-async function openCarryKeys(deps: CarryConditionDeps): Promise<string[]> {
-  try { return await deps.readOpenConditionKeys(); } catch { return []; }
+async function openCarryKeys(deps: CarryConditionDeps, prefix: string): Promise<string[]> {
+  try { return (await deps.readOpenConditionKeys(prefix)).filter((key) => key.startsWith(prefix)); } catch { return []; }
 }
 
 export interface CarryDrillDropSweepDeps extends CarryConditionDeps {
@@ -579,7 +579,7 @@ export async function runCarryDrillDropSweepOnce(
   if (!(await deps.flagEnabled())) return { watermarkMs: sinceMs, escalated: 0, skipped: true };
   const events = await deps.readLedger();
   const prefix = carryPrefix(deps, 'drill');
-  const openKeys = new Set(await openCarryKeys(deps));
+  const openKeys = new Set(await openCarryKeys(deps, prefix));
   const { alerts, watermarkMs } = scanCarryDrillDrops(events, sinceMs);
   let escalated = 0;
   let escalationFailed = false;
@@ -665,7 +665,7 @@ export async function runOrphanedRespawnSweepOnce(
   const now = deps.now();
   const owners = await deps.listCandidates(now);
   const prefix = carryPrefix(deps, 'orphan');
-  const openKeys = await openCarryKeys(deps);
+  const openKeys = await openCarryKeys(deps, prefix);
   const recovering = openKeys.map((key) => ({ key, attempt: carryAttempt(key, prefix) }))
     .filter((entry): entry is { key: string; attempt: [string, string] } => entry.attempt != null);
   const recoveryOwners = recovering.map((entry) => entry.attempt[0]);

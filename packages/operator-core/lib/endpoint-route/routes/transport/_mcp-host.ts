@@ -99,6 +99,8 @@ import {
   mcpRequestTraceOperationTimings,
   type McpPreDispatchPhaseName,
   type McpPreDispatchPhaseTimingsMs,
+  type McpReplayLookupPhaseEvent,
+  type McpReplayLookupPhaseTimingsMs,
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
   runWithMcpRequestTraceExecution,
@@ -4116,6 +4118,28 @@ export function registerMcpHost(server: McpServer): void {
       // through request, dispatch and deadline evidence without logging args.
       const traceId = resolveMcpRequestTraceId(extra);
       const traceExecution = createMcpRequestTraceExecutionContext();
+      const idempotencyReplayPhaseTimings: McpReplayLookupPhaseTimingsMs = {
+        poolAcquisitionMs: null,
+        statementMs: null,
+        activePhase: null,
+      };
+      let idempotencyReplayPhaseTraceEnabled = false;
+      const recordIdempotencyReplayPhase = (event: McpReplayLookupPhaseEvent): void => {
+        if (event.state === 'started') {
+          idempotencyReplayPhaseTimings.activePhase = event.phase;
+          return;
+        }
+        idempotencyReplayPhaseTimings.activePhase = null;
+        if (event.phase === 'pool_acquisition') {
+          idempotencyReplayPhaseTimings.poolAcquisitionMs = event.elapsedMs ?? null;
+        } else {
+          idempotencyReplayPhaseTimings.statementMs = event.elapsedMs ?? null;
+        }
+        if (event.error) {
+          idempotencyReplayPhaseTimings.errors ??= {};
+          idempotencyReplayPhaseTimings.errors[event.phase] = event.error;
+        }
+      };
       const trace = (
         stage: Parameters<typeof logMcpRequestTrace>[0]['stage'],
         details: Omit<Parameters<typeof logMcpRequestTrace>[0], 'traceId' | 'toolName' | 'stage' | 'elapsedMs'> = {},
@@ -4126,6 +4150,16 @@ export function registerMcpHost(server: McpServer): void {
           stage,
           elapsedMs: Math.max(0, Date.now() - callStartedAt),
           ...details,
+          ...(idempotencyReplayPhaseTraceEnabled
+            ? {
+                idempotencyReplayPhaseTimingsMs: {
+                  ...idempotencyReplayPhaseTimings,
+                  ...(idempotencyReplayPhaseTimings.errors
+                    ? { errors: { ...idempotencyReplayPhaseTimings.errors } }
+                    : {}),
+                },
+              }
+            : {}),
         });
       };
       const preDispatchPhaseTimings: Record<McpPreDispatchPhaseName, number | null> = {
@@ -4908,9 +4942,12 @@ export function registerMcpHost(server: McpServer): void {
         // buildMcpToolContext is construction plus one registry-backed path read.
         if (idempotencyKey && !skipReplayForReadOnly) {
           try {
+            idempotencyReplayPhaseTraceEnabled = true;
             const stored = await measurePreDispatchPhase(
               'idempotencyReplayLookup',
-              () => lookupStoredMcpResult(replayOwnerKey, idempotencyKey),
+              () => lookupStoredMcpResult(replayOwnerKey, idempotencyKey, {
+                onPhase: recordIdempotencyReplayPhase,
+              }),
             );
             if (stored) {
               // Telemetry gets its OWN try/catch, deliberately not the outer one:

@@ -11278,6 +11278,22 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
   const partialEnv = (e: Record<string, string>): NodeJS.ProcessEnv =>
     e as NodeJS.ProcessEnv;
 
+  it("routes durable isolated-test receipts to an explicit ledger or the gate operator database", () => {
+    const operatorUrl = "postgresql://operator.example/papercusp";
+    const explicitLedgerUrl = "postgresql://ledger.example/test-runs";
+    const explicit = buildGreenCheckpointEnv("b", partialEnv({
+      PAPERCUSP_TEST_RUNS_DB_URL: explicitLedgerUrl,
+      HARNESS_ADMIN_DATABASE_URL: operatorUrl,
+    }));
+    expect(explicit.PAPERCUSP_TEST_RUNS_DB_URL).toBe(explicitLedgerUrl);
+    expect(explicit.PAPERCUSP_GOVERNED_ADMISSION_DATABASE_URL).toBe(operatorUrl);
+    expect(explicit.HARNESS_ADMIN_DATABASE_URL).toBeUndefined();
+
+    const fallback = buildGreenCheckpointEnv("b", partialEnv({ HARNESS_ADMIN_DATABASE_URL: operatorUrl }));
+    expect(fallback.PAPERCUSP_TEST_RUNS_DB_URL).toBe(operatorUrl);
+    expect(fallback.HARNESS_ADMIN_DATABASE_URL).toBeUndefined();
+  });
+
   it("stamps PAPERCUSP_TEST_RUN_SOURCE=ci AFTER the strip, overriding any host value", () => {
     const env = buildGreenCheckpointEnv(
       "b",

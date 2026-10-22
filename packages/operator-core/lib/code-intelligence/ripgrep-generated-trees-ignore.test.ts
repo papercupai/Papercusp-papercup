@@ -1,5 +1,5 @@
 /**
- * EI-25828526343827983 — generated documentation trees stay out of ripgrep/fd walks
+ * EI-25828526343827983 and EI-21268880111402550 — generated trees stay out of ripgrep/fd walks
  * from every search root an agent commonly uses.
  *
  * ripgrep (measured 14.1.0 and 14.1.1) applies an anchored ignore pattern from a file
@@ -29,6 +29,7 @@ const IGNORE_FILES = ['.ignore', 'apps/operator/.ignore', 'apps/operator-docs/.i
 const GENERATED = [
   'apps/operator-docs/dist/agent-insights/index.html',
   'apps/operator/public/internal/docs/system/repo-conventions/index.html',
+  'libs/generic/papergrid/grid-core/storybook-static/index.json',
 ];
 
 /** Source files beside them that must still be found (positive control). */
@@ -36,13 +37,22 @@ const SOURCE = [
   'apps/operator-docs/src/content/docs/index.mdx',
   'apps/operator/public/favicon.svg',
   'apps/operator/lib/example.ts',
+  'libs/generic/papergrid/grid-core/src/index.ts',
 ];
 
-const ROOTS = ['.', 'apps', 'apps/operator', 'apps/operator-docs'];
+const ROOTS = [
+  '.',
+  'apps',
+  'apps/operator',
+  'apps/operator-docs',
+  'libs',
+  'libs/generic/papergrid',
+  'libs/generic/papergrid/grid-core',
+];
 
 const rgAvailable = spawnSync('rg', ['--version'], { encoding: 'utf8' }).status === 0;
 
-describe.skipIf(!rgAvailable)('ripgrep skips generated doc trees from every search root (EI-25828526343827983)', () => {
+describe.skipIf(!rgAvailable)('ripgrep skips generated trees from every search root (EI-25828526343827983)', () => {
   let fixture = '';
 
   beforeAll(() => {
@@ -72,7 +82,7 @@ describe.skipIf(!rgAvailable)('ripgrep skips generated doc trees from every sear
       .map((path) => path.replace(/^\.\//, ''));
   }
 
-  it.each(ROOTS)('root %s lists no generated doc file', (root) => {
+  it.each(ROOTS)('root %s lists no generated output file', (root) => {
     expect(rgFiles(root).filter((path) => GENERATED.includes(path))).toEqual([]);
   });
 

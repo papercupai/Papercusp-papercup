@@ -244,6 +244,13 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    errorCodes: ['volatile_reference_requires_byte_window'],
+    statuses: ['volatile_reference_requires_byte_window'],
+    messagePattern: 'volatile_reference_requires_byte_window',
+    why: 'capability:read deliberately refuses volatile scratch references without an exact byte window; tools:invoke preserves this caller-side paging precondition inside handler_error',
+  },
+  {
+    class: 'caller',
     errorCodes: [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
       'compile_error',

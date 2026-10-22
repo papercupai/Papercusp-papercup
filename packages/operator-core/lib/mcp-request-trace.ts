@@ -34,6 +34,27 @@ export type McpPreDispatchPhaseName =
   | 'idempotencyReplayLookup'
   | 'dispatchPreflight';
 
+export type McpReplayLookupPhaseName = 'pool_acquisition' | 'statement';
+
+export interface McpReplayLookupPhaseError {
+  name: string;
+  code?: string;
+}
+
+export interface McpReplayLookupPhaseEvent {
+  phase: McpReplayLookupPhaseName;
+  state: 'started' | 'finished';
+  elapsedMs?: number;
+  error?: McpReplayLookupPhaseError;
+}
+
+export interface McpReplayLookupPhaseTimingsMs {
+  poolAcquisitionMs: number | null;
+  statementMs: number | null;
+  activePhase: McpReplayLookupPhaseName | null;
+  errors?: Partial<Record<McpReplayLookupPhaseName, McpReplayLookupPhaseError>>;
+}
+
 export interface McpPreDispatchPhaseTimingsMs extends Record<McpPreDispatchPhaseName, number | null> {
   /** Wall time before inner dispatch that these measured phases did not explain. */
   unattributedMs: number;
@@ -65,6 +86,8 @@ export interface McpRequestTraceEvent {
   preDispatchPhaseTimingsMs?: McpPreDispatchPhaseTimingsMs;
   /** The phase still awaiting when a pre-dispatch deadline fired. */
   preDispatchActivePhase?: McpPreDispatchPhaseName;
+  /** Per-request subphases inside the idempotency replay lookup. */
+  idempotencyReplayPhaseTimingsMs?: McpReplayLookupPhaseTimingsMs;
   /** One-shot phase snapshot when a result-door scratch spill exceeds five seconds. */
   scratchWriteProgress?: ScratchWriteProgress;
   /** Final per-write timing emitted if a spill settles after its dispatch trace. */

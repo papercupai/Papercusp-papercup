@@ -27,6 +27,7 @@
  * here, and the routines engine's own `last_error`/`last_error_at` bookkeeping (routines-workflow.ts)
  * is the intended reporting surface for a failing tick.
  */
+import { DBOS } from '@dbos-inc/dbos-sdk';
 import {
   reconcileHostedLifecycleJobs,
   reconcileHostedPoolDemand,
@@ -45,8 +46,11 @@ export interface HostedLifecycleReconcileActionDeps {
 
 export function makeHostedLifecycleReconcileAction(overrides: Partial<HostedLifecycleReconcileActionDeps> = {}) {
   const deps: HostedLifecycleReconcileActionDeps = {
-    reconcile: (workspaceId) => reconcileHostedLifecycleJobs(workspaceId),
-    reconcileDemand: (workspaceId) => reconcileHostedPoolDemand(workspaceId),
+    reconcile: (workspaceId) => DBOS.runStep(() => reconcileHostedLifecycleJobs(workspaceId),
+      { name: 'hosted-lifecycle-recovery' }),
+    reconcileDemand: (workspaceId) => reconcileHostedPoolDemand(workspaceId, {
+      sampleDemand: read => DBOS.runStep(read, { name: 'hosted-pool-demand-snapshot' }),
+    }),
     log: (message) => console.log(`[${HOSTED_LIFECYCLE_RECONCILE}] ${message}`),
     ...overrides,
   };
@@ -75,4 +79,7 @@ export function makeHostedLifecycleReconcileAction(overrides: Partial<HostedLife
   };
 }
 
-registerSystemAction(HOSTED_LIFECYCLE_RECONCILE, makeHostedLifecycleReconcileAction());
+// Child DBOS workflows must start from workflow context, outside a DBOS step.
+// Recovery and the selected demand are checkpointed separately; admission and
+// enqueue retain the same immutable operation id when the fire is replayed.
+registerSystemAction(HOSTED_LIFECYCLE_RECONCILE, makeHostedLifecycleReconcileAction(), { ownSteps: true });

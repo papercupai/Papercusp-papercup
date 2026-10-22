@@ -382,6 +382,87 @@ export async function readConditionEnvelopesForKey(
 }
 
 /**
+ * Read every retained lifecycle envelope whose condition identity starts with
+ * `conditionKeyPrefix`. The general conditions fold is intentionally capped
+ * across all families; this scoped reader pages the matching family so an old,
+ * quiet key cannot disappear behind unrelated condition traffic.
+ */
+export async function readConditionEnvelopesForPrefix(
+  conditionKeyPrefix: string,
+): Promise<Record<string, unknown>[]> {
+  const prefix = conditionKeyPrefix.trim();
+  if (!prefix) return [];
+  const likePrefix = `${prefix.replace(/[!%_]/g, (character) => `!${character}`)}%`;
+  const startsWithPrefix = (value: unknown): value is string =>
+    typeof value === "string" && value.startsWith(prefix);
+
+  if (!coordHasPgFastPath()) {
+    const envelopes = await readConditionEnvelopes();
+    return envelopes.filter((envelope) =>
+      startsWithPrefix(envelope["condition_key"]) ||
+      startsWithPrefix(envelope["resolves_condition"]) ||
+      (Array.isArray(envelope["resolves_conditions"]) && envelope["resolves_conditions"].some(startsWithPrefix)),
+    );
+  }
+
+  const sql = coordSql();
+  const workspaceId = coordWorkspaceId();
+  let shared = conditionReads.get(sql);
+  if (!shared) {
+    shared = createCache({ maxL1Entries: 1, defaultHardTtlMs: 0 });
+    conditionReads.set(sql, shared);
+  }
+  const cacheKey = `conditions:prefix:${prefix}`;
+  try {
+    const envelopes = await shared.getOrSet(workspaceId, cacheKey, async () => {
+      const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+      const all: Record<string, unknown>[] = [];
+      let afterId = "0";
+      for (;;) {
+        const rows = await sql<{ id: string; body: unknown }[]>`
+          SELECT id::text AS id, body
+            FROM harness_shared.coord_event_log
+           WHERE workspace_id = ${workspaceId}
+             AND surface = 'messages'
+             AND ts >= ${sinceBound}
+             AND id > ${afterId}::bigint
+             AND (body ? 'condition_key' OR body ? 'resolves_condition' OR body ? 'resolves_conditions')
+             AND (
+               body->>'condition_key' LIKE ${likePrefix} ESCAPE '!'
+               OR body->>'resolves_condition' LIKE ${likePrefix} ESCAPE '!'
+               OR EXISTS (
+                 SELECT 1
+                   FROM jsonb_array_elements_text(
+                     CASE WHEN jsonb_typeof(body->'resolves_conditions') = 'array'
+                       THEN body->'resolves_conditions' ELSE '[]'::jsonb END
+                   ) AS resolved(key)
+                  WHERE resolved.key LIKE ${likePrefix} ESCAPE '!'
+               )
+             )
+           ORDER BY id ASC
+           LIMIT ${CONDITIONS_FAST_PATH_ROW_CAP}
+        `;
+        if (rows.length === 0) break;
+        all.push(...rows.map((row) =>
+          (typeof row.body === "string" ? JSON.parse(row.body) : row.body) as Record<string, unknown>,
+        ));
+        if (rows.length < CONDITIONS_FAST_PATH_ROW_CAP) break;
+        afterId = rows[rows.length - 1]!.id;
+      }
+      return all;
+    });
+    return envelopes.map((envelope) => ({
+      ...envelope,
+      ...(Array.isArray(envelope.resolves_conditions)
+        ? { resolves_conditions: [...envelope.resolves_conditions] }
+        : {}),
+    }));
+  } finally {
+    shared.forget(workspaceId, cacheKey);
+  }
+}
+
+/**
  * WI-6554700010011878: the NEWEST condition-keyed envelope (alarm OR resolution) that names
  * `conditionKey`, or null when none survives in the retention window or there is no PG fast
  * path. This is the per-emit read `broadcastSevereEvent` uses to enforce the one-shot

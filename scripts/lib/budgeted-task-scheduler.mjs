@@ -1,7 +1,7 @@
-import { lstatSync, mkdirSync, opendirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
-import { basename, dirname, join, relative, isAbsolute } from "node:path";
+import { basename, dirname, join, relative, resolve, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withFsMutex } from "./fs-mutex.mjs";
 // EI-21442389733525112: `task-exit-class.mjs` is dependency-free by design, so importing it
@@ -199,6 +199,74 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       processTrace.gaps.push(`native-process-trace-unreadable:${String(error?.message ?? error)}`);
     }
   } else processTrace.gaps.push("native-process-trace-unobserved");
+  // OUT is an existing reporter diagnostic, not a step receipt or pass token.
+  // Keep its failures independent from otherwise useful process observations.
+  const reporter = processTrace.reporter = { status: "unknown", artifact: null, process: null,
+    gaps: ["reporter-evaluator-sidecars-not-retained"] };
+  try {
+    if (!input.processTrace || typeof input.processTrace.out !== "string")
+      throw new Error("output path unobserved");
+    const path = input.processTrace.out;
+    if (realpathSync(dirname(path)) !== resolve(dirname(path)))
+      throw new Error("redirected output directory");
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let bytes;
+    try {
+      const stat = fstatSync(fd), limit = 16 * 1024 * 1024;
+      if (!stat.isFile() || stat.size > limit) throw new Error("non-file or oversized output");
+      const buffer = Buffer.alloc(stat.size + 1);
+      let length = 0, count;
+      while (length < buffer.length && (count = readSync(fd, buffer, length, buffer.length - length, null)) > 0)
+        length += count;
+      const after = fstatSync(fd), current = lstatSync(path);
+      if (length !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
+          after.ctimeMs !== stat.ctimeMs || current.isSymbolicLink() ||
+          current.dev !== stat.dev || current.ino !== stat.ino)
+        throw new Error("output changed or redirected during capture");
+      bytes = buffer.subarray(0, length);
+    } finally { closeSync(fd); }
+    const run = JSON.parse(bytes.toString("utf8"))?.nativeRun;
+    if (!run || run.schemaVersion !== "native-vitest-run-v1" || run.scope !== "vitest-reporter-callbacks" ||
+        !Number.isSafeInteger(run.pid) || run.pid <= 0 || !Number.isSafeInteger(run.ppid) || run.ppid <= 0 ||
+        !Number.isSafeInteger(run.startedAtMs) || !Number.isSafeInteger(run.finishedAtMs) ||
+        run.startedAtMs < input.startedAtMs || run.finishedAtMs < run.startedAtMs ||
+        run.finishedAtMs > input.finishedAtMs || !Array.isArray(run.files) ||
+        !["onTestRunEnd", "onExit"].includes(run.terminalHook) ||
+        ![null, "passed", "failed", "interrupted"].includes(run.reason))
+      throw new Error("malformed or out-of-interval reporter observation");
+    const events = processTrace.events;
+    const entries = events.filter(row => row.event === "node-entry" && row.pid === run.pid);
+    if (entries.length !== 1 || entries[0].ppid !== run.ppid || entries[0].atMs > run.startedAtMs)
+      throw new Error("reporter process entry absent, unrelated or ambiguous");
+    const entry = entries[0];
+    const exits = events.filter(row => row.event === "node-exit" && row.pid === run.pid &&
+      row.processIdentity === entry.processIdentity);
+    if (exits.length > 1 || exits.some(row => row.atMs < run.finishedAtMs))
+      throw new Error("reporter interval outside observed process lifetime");
+    let lifecycle = null;
+    if (run.pid !== input.processTrace.rootPid) {
+      const spans = [];
+      for (const spawn of events.filter(row => row.event === "child-spawn" &&
+        (row.childPid === run.pid && row.pid === run.ppid || row.childPid === run.ppid))) {
+        const closes = events.filter(row => row.event === "child-close" &&
+          row.pid === spawn.pid && row.processIdentity === spawn.processIdentity &&
+          row.childPid === spawn.childPid && row.childIdentity === spawn.childIdentity);
+        if (closes.length === 1 && spawn.atMs <= entry.atMs && closes[0].atMs >= run.finishedAtMs)
+          spans.push({ spawn: spawn.artifact, close: closes[0].artifact,
+            childPid: spawn.childPid, childIdentity: spawn.childIdentity });
+      }
+      if (spans.length !== 1) throw new Error("reporter lifecycle span absent or ambiguous");
+      lifecycle = spans[0];
+    }
+    reporter.artifact = persist(bytes, "native-vitest-out.json");
+    reporter.process = { pid: run.pid, ppid: run.ppid, processIdentity: entry.processIdentity,
+      entry: entry.artifact, exit: exits[0]?.artifact ?? null, lifecycle,
+      startedAtMs: run.startedAtMs, finishedAtMs: run.finishedAtMs };
+    reporter.status = "bound";
+    if (!exits.length) reporter.gaps.push("reporter-process-terminal-unobserved");
+  } catch (error) {
+    reporter.gaps.push(`native-vitest-out-unbound:${String(error?.message ?? error)}`);
+  }
   const receipt = { schemaVersion: 1, kind: "affected-task-native-execution", task: input.task,
     attempt: input.attempt, originalCommand: input.originalCommand ?? null,
     execution: { command: input.command.slice(), cwd: input.cwd,

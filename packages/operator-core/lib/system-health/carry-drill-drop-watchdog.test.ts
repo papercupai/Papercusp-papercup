@@ -28,6 +28,7 @@ vi.mock('../severe-event-broadcast', () => ({
 }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({
   computeConditionStates: () => [], readConditionEnvelopes: async () => [],
+  readConditionEnvelopesForPrefix: async () => [],
   readLatestConditionEnvelope: async () => null,
 }));
 
@@ -591,6 +592,30 @@ describe('carry-delivery condition rail', () => {
     expect(open.size).toBe(1);
     await runOrphanedRespawnSweepOnce(orphanDeps);
     expect(open.size).toBe(0);
+  });
+
+  it('resolves an old orphan from the host-scoped prefix when aggregate paging would omit it', async () => {
+    const { deps, open, resolve } = fixture();
+    const attempt = pending();
+    const prefix = 'alarm:carry-delivery:fixture-host:orphan:';
+    const key = prefix + encodeURIComponent(JSON.stringify(['fixture-owner', attempt.ts]));
+    open.add(key);
+    const readOpenConditionKeys = vi.fn(async (requestedPrefix: string) =>
+      requestedPrefix === prefix ? [key] : [],
+    );
+    const delivered = pending({ outcome: 'delivered', ts: new Date(ORPHAN_NOW - 1).toISOString() });
+
+    await runOrphanedRespawnSweepOnce({
+      ...deps,
+      host: () => 'fixture-host',
+      listCandidates: async () => [],
+      readPrior: async () => delivered,
+      readOpenConditionKeys,
+    });
+
+    expect(readOpenConditionKeys).toHaveBeenCalledWith(prefix);
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: key }));
+    expect(open.has(key)).toBe(false);
   });
 
   it('resolves an aged-out orphan from matching live-host recovery, preserving failed and unrelated probes', async () => {

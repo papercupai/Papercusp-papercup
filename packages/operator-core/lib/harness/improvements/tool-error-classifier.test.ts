@@ -358,6 +358,13 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
         actual: 'The line-window call returned scratch_line_window_too_large; the documented byte-page route returned the bytes.',
       },
     }).class).toBe('caller');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'tools:invoke',
+      errorCode: 'handler_error',
+      status: 'error',
+      message: '{"ok":false,"reason":"volatile_reference_requires_byte_window","message":"In-memory scratch fallbacks support exact byte pages only; supply byte_offset and byte_limit from the cursor."}',
+    }).class).toBe('caller');
   });
 
   it('classifies mutually exclusive capability:read window modes as caller input', () => {

@@ -1,5 +1,5 @@
 /**
- * Independent bug-triage 0.2.1 acceptance (WI-6554700010013825).
+ * Independent current-package bug-triage acceptance (WI-6554700010013825).
  * Actual model + installed template + real materialization/PG/recorder; only ticket HTTP is fake.
  * Opt in with PAPERCUSP_TEST_BUG_TRIAGE_MODEL=1 and name the installed plan.md with
  * PAPERCUSP_BUG_TRIAGE_MODEL_TEMPLATE. Expected verdicts never reach the model.
@@ -133,8 +133,9 @@ beforeAll(async () => {
   template = readFileSync(templatePath, 'utf8');
   expect(template).toBe(readFileSync(join(sourceDir, 'plan.md'), 'utf8'));
   const manifest = JSON.parse(readFileSync(join(dirname(templatePath), 'papercusp.json'), 'utf8')) as TriggerPackManifest;
+  const maintainedManifest = JSON.parse(readFileSync(join(sourceDir, 'papercusp.json'), 'utf8')) as TriggerPackManifest;
   expect(manifest.name).toBe('@papercupai/bug-triage');
-  expect(manifest.version).toBe('0.2.1');
+  expect(manifest.version).toBe(maintainedManifest.version);
   org = await createOrgTestDb({ adminPoolMax: 3 }); sql = org.adminSql; h.sql = sql;
   await seedPackWorkspace(sql, WS, HARNESS, ['chat-message']);
   const [user] = await sql<Array<{ id: string }>>`INSERT INTO harness_shared.users (username, display_name)

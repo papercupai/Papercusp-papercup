@@ -25,7 +25,10 @@ import {
   classifyHostedLifecycleJob,
   evaluateHostedIdleStop,
   evaluateHostedLifecycleAdmission,
+  evaluateHostedPoolCapacity,
   evaluateHostedPoolResourceAdmission,
+  type HostedPoolCapacityDecision,
+  type HostedPoolCapacityHost,
   type HostedBillingOwner,
   type HostedCostEstimate,
   type HostedLifecycleAction,
@@ -206,6 +209,8 @@ interface HostedPoolHostResourceAdmission {
   requested: { hosts: number; cpuMillicores: number; memoryMiB: number };
   /** Full selected capacity, including a zero-increment running reuse. Older receipts omit it. */
   capacity?: { hosts: number; cpuMillicores: number; memoryMiB: number };
+  /** The bounded policy verdict used by automated admission, saved with the reservation. */
+  capacityDecision?: HostedPoolCapacityDecision;
   budget: { currency: string; committedMinor: number; requestedMinor: number };
   /** Disjoint retained disks and pending allocations, never two full-volume charges. */
   storage?: HostedPoolStorageAdmission;
@@ -594,7 +599,7 @@ interface PoolHostRow {
   health_status: string | null;
   health_attested_at: Date | string | null;
   runtime_release: { bundleSha256?: string } | null;
-  desired_spec: { scope?: WorkspaceHostPoolRequest['scope']; zone?: string } | null;
+  desired_spec: { scope?: WorkspaceHostPoolRequest['scope']; zone?: string; provider?: { provisioningModel?: string } } | null;
   pool_observation: HostedPoolObservation | null;
   customer_workspace_id: string | null;
   previously_tenant_used: boolean;
@@ -660,7 +665,10 @@ async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput):
       architecture: o?.architecture ?? '', runtimeBundleSha256: current ? o!.runtimeBundleSha256 : '',
       size: o?.size ?? { cpuCount: 0, memoryMiB: 0 },
       state: host.observed_state === 'running' || host.observed_state === 'stopped' ? host.observed_state : 'failed',
-      health: stoppedVerified ? 'stopped-verified' : host.health_status === 'healthy' ? 'healthy' : 'unknown',
+      // A clean/healthy spot VM is still unqualified capacity. Do not wake one
+      // or assign it in place of the on-demand profile selected by the adapter.
+      health: host.desired_spec?.provider?.provisioningModel === 'spot' ? 'unknown' :
+        stoppedVerified ? 'stopped-verified' : host.health_status === 'healthy' ? 'healthy' : 'unknown',
       observedAtMs: stoppedVerified ? o!.observedAtMs : Math.min(o?.observedAtMs ?? NaN, host.health_attested_at ? new Date(host.health_attested_at).getTime() : NaN),
       customerWorkspaceId: host.customer_workspace_id,
       dataVolumeId: disks.length > 1 ? 'ambiguous-multiple-data-volumes' : disks[0]?.provider_id ?? reservedVolume ?? null,
@@ -810,9 +818,9 @@ async function admitHostedPoolHostResources(
   }
   const hosts = await tx<Array<{ id: string; observed_state: string; host_generation: number;
     controller_fence: number; desired_revision: number; pool_observation: HostedPoolObservation | null;
-    has_vm: boolean }>>`
+    has_vm: boolean; customer_workspace_id: string; desired_spec: unknown }>>`
     SELECT host.id, host.observed_state, host.host_generation, host.controller_fence,
-           host.desired_revision, host.pool_observation,
+           host.desired_revision, host.pool_observation, host.desired_spec, customer.id AS customer_workspace_id,
            EXISTS (SELECT 1 FROM harness_shared.workspace_host_resources resource
              WHERE resource.workspace_id = host.workspace_id AND resource.host_id = host.id
                AND resource.kind = 'vm' AND resource.provider_id IS NOT NULL
@@ -822,9 +830,9 @@ async function admitHostedPoolHostResources(
         ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
      WHERE customer.workspace_id = ${input.workspaceId} AND customer.organization_id = ${organizationId}
      ORDER BY host.id`;
-  const operations = await tx<Array<{ host_id: string; action: string; status: string; estimated_cost_cents: string | number | null;
+  const operations = await tx<Array<{ id: string; host_id: string; action: string; status: string; estimated_cost_cents: string | number | null;
     cost_currency: string | null; admission_receipt: { result?: HostedLifecycleAdmissionReceipt } | null }>>`
-    SELECT operation.host_id, operation.action, operation.status, operation.estimated_cost_cents,
+    SELECT operation.id, operation.host_id, operation.action, operation.status, operation.estimated_cost_cents,
            operation.cost_currency, operation.admission_receipt
       FROM harness_shared.workspace_host_operations operation
      WHERE operation.workspace_id = ${input.workspaceId} AND operation.organization_id = ${organizationId}
@@ -910,15 +918,53 @@ async function admitHostedPoolHostResources(
     if (!check.allowed) throw new Error(`hosted_pool_budget_exceeded:${check.reason}`);
   }
   const storage = await admitHostedPoolStorage(tx, input, organizationId, authority.resolution);
-  const priority = evaluateHostedPoolResourceAdmission({ organizationId, entitlements: authority.resolution,
+  const admission = { organizationId, entitlements: authority.resolution,
     nowMs: Date.now(), allocated: { agents: 0, ...allocated, ...storage.allocated },
     pending: { agents: 0, ...pending, ...storage.pending }, requested: { agents: 0, ...requested, ...storage.requested },
-    budget: { currency: input.estimate.currency, usedMinor: committedMinor, pendingMinor: 0, requestedMinor }, capacity });
+    budget: { currency: input.estimate.currency, usedMinor: committedMinor, pendingMinor: 0, requestedMinor }, capacity };
+  const priority = evaluateHostedPoolResourceAdmission(admission);
   if (!priority.allowed) throw new Error(`hosted_pool_priority_rejected:${priority.reasons.join('; ')}`);
+  const desired = isObject(input.request) && isObject(input.request.desired) ? input.request.desired :
+    hosts.find(host => host.id === input.hostId)?.desired_spec;
+  const market = isObject(desired) && isObject(desired.provider) && desired.provider.provisioningModel === 'spot' ? 'spot' : 'on-demand';
+  // Neither a direct caller nor a reconstructed request may bypass qualification.
+  // The pooled adapter falls back BEFORE obtaining its quote and writing a receipt.
+  if (placement.kind === 'provision' && market === 'spot') {
+    throw new Error('hosted_pool_spot_reclaim_recovery_unverified');
+  }
+  let capacityDecision: HostedPoolCapacityDecision | undefined;
+  if (input.capacityReconcile && placement.kind === 'provision') {
+    const inventory: HostedPoolCapacityHost[] = [];
+    for (const host of hosts) {
+      const live = liveHosts.has(host.id);
+      if (!live && !pendingHosts.has(host.id)) continue;
+      const operation = operations.find(value => value.host_id === host.id && ['queued', 'running'].includes(value.status));
+      inventory.push({ hostId: host.id, generation: host.host_generation, controllerFence: host.controller_fence,
+        state: !live ? 'pending' : host.observed_state === 'running' ? 'ready' :
+          host.observed_state === 'stopped' ? 'retained' : 'unavailable',
+        observedAtMs: live ? host.pool_observation!.observedAtMs :
+          Date.parse(operation?.admission_receipt?.result?.resourceAdmission?.measuredAt ?? ''),
+        customerWorkspaceId: host.customer_workspace_id, reservationId: operation?.id ?? null, activity: null });
+    }
+    capacityDecision = evaluateHostedPoolCapacity({ nowMs: admission.nowMs,
+      observedAtMs: input.capacityReconcile.observedAtMs, maxObservationAgeMs: input.pool!.maxObservationAgeMs,
+      generation: input.capacityReconcile.hostGeneration, controllerFence: input.capacityReconcile.controllerFence ?? 0,
+      // fenceHostedPoolCapacityChange already checked the shared operation clock
+      // under the provider lock in this same transaction. No second pool clock.
+      lastChangeAtMs: null, cooldownMs: HOSTED_POOL_CAPACITY_COOLDOWN_MS,
+      queuedHosts: 1, minimumSpareHosts: 0, hosts: inventory,
+      provision: { profileRef: createHash('sha256').update(JSON.stringify([
+        input.providerTarget, input.pool, desired,
+      ])).digest('hex'), market, estimate: input.estimate, admission, reclaimRecovery: null } });
+    if (capacityDecision.kind !== 'provision') {
+      throw new Error(`hosted_pool_capacity_policy_rejected:${capacityDecision.reasons.join('; ')}`);
+    }
+  }
   return { schemaVersion: 1, authorityRevision: authority.authorityRevision,
     bundleId: authority.resolution.bundleId, bundleVersion: authority.resolution.bundleVersion,
     auditReceiptIds: authority.resolution.auditReceiptIds, measuredAt: now.toISOString(), allocated, pending, requested,
     capacity: { hosts: 1, cpuMillicores: size.cpuCount * 1000, memoryMiB: size.memoryMiB },
+    ...(capacityDecision ? { capacityDecision } : {}),
     budget: { currency: input.estimate.currency, committedMinor, requestedMinor }, storage,
     priority: { ...capacity, guaranteed: priority.guaranteed } };
 }
@@ -1341,17 +1387,22 @@ export async function reconcileHostedPoolDemand(workspaceId: string, deps: {
   admitAndStart?: (input: import('../auth/hosted/workspace-admission').HostedWorkspaceProvisioningRequest) => Promise<void>;
   readTarget?: typeof readWorkspaceHostDestroyTarget;
   startLifecycle?: typeof import('../dbos/workspace-host-provision-workflow').startWorkspaceHostLifecycleWorkflow;
+  /** The routine checkpoints its sampled demand before starting child workflows. */
+  sampleDemand?: <T>(read: () => Promise<T>) => Promise<T>;
 } = {}): Promise<HostedPoolDemandReconciliationResult> {
   const out: HostedPoolDemandReconciliationResult = { considered: 0, enqueued: [], held: [] };
-  const rows = await transaction(workspaceId, tx => tx<Array<{
+  const sampleDemand = deps.sampleDemand ?? (<T>(read: () => Promise<T>) => read());
+  const rows = await sampleDemand(() => transaction(workspaceId, async tx => {
+    const candidates = await tx<Array<{
     id: string; host_id: string; actor_id: string; operation_id: string | null;
     host_generation: number; controller_fence: number | null; state: string; last_activity_at: Date | string | null;
-    display_name: string; admission_input: unknown;
+    display_name: string; admission_input: unknown; sampled_at_ms: string;
   }>>`
     SELECT customer.id, host.id AS host_id, customer.created_by_principal_id AS actor_id,
            pending.id AS operation_id, host.host_generation, host.controller_fence,
            customer.state, customer.last_activity_at, customer.display_name,
-           pending.admission_receipt->'input' AS admission_input
+           pending.admission_receipt->'input' AS admission_input,
+           floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint::text AS sampled_at_ms
     FROM harness_shared.customer_workspaces customer
     JOIN harness_shared.workspace_hosts host
       ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
@@ -1370,7 +1421,16 @@ export async function reconcileHostedPoolDemand(workspaceId: string, deps: {
           AND host.pool_observation->'workload' IS NOT NULL))
       AND NOT EXISTS (SELECT 1 FROM harness_shared.workspace_host_operations running
         WHERE running.workspace_id = host.workspace_id AND running.host_id = host.id AND running.status = 'running')
-    ORDER BY (customer.state = 'provisioning') DESC, customer.created_at, customer.id, pending.id LIMIT 1`);
+    ORDER BY host.updated_at, customer.created_at, customer.id, pending.id
+    LIMIT 1 FOR UPDATE OF host SKIP LOCKED`;
+    // Reuse the host's control-state clock to rotate attempts, including refusals.
+    // This is NOT activity or an operation heartbeat. A quota-held customer must
+    // not monopolize every tick while other tenants can make progress.
+    if (candidates[0]) await tx`
+      UPDATE harness_shared.workspace_hosts SET updated_at = clock_timestamp()
+      WHERE workspace_id = ${workspaceId} AND id = ${candidates[0].host_id}`;
+    return candidates;
+  }));
   const row = rows[0];
   if (!row) return out;
   out.considered = 1;
@@ -1382,7 +1442,7 @@ export async function reconcileHostedPoolDemand(workspaceId: string, deps: {
     out.held.push({ hostId: row.host_id, reason: 'noncanonical-demand-identity' });
     return out;
   }
-  const observedAtMs = Date.now();
+  const observedAtMs = Number(row.sampled_at_ms);
   const target = await (deps.readTarget ?? readWorkspaceHostDestroyTarget)(workspaceId, row.host_id);
   if (!target || target.hostGeneration !== row.host_generation ||
       (target.controllerAuthority?.fence ?? 0) !== row.controller_fence || target.hostedCustomerWorkspaceId !== row.id) {
@@ -1414,7 +1474,7 @@ export async function reconcileHostedPoolDemand(workspaceId: string, deps: {
     const admitAndStart = deps.admitAndStart ?? (await import('../auth/hosted/workspace-admission-dependencies'))
       .createDefaultHostedWorkspaceAdmissionDependencies({ pooled: true,
         resolveDesiredSpec: async () => { throw new Error('reconciler must use persisted desired spec'); },
-        bringUp: { requestedAgents: [] },
+        bringUp: { requestedAgents: (await import('./hosted-bring-up')).PAPERCUSP_HOSTED_BRING_UP_AGENTS },
       }).admitAndStart!;
     const saved = isObject(row.admission_input) && isObject(row.admission_input.request)
       ? row.admission_input.request : null;

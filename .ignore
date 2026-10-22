@@ -1,4 +1,4 @@
-# ripgrep / fd ignore — GENERATED BUNDLES ONLY (EI-19448801536482587)
+# ripgrep / fd ignore — GENERATED OUTPUT ONLY (EI-19448801536482587)
 #
 # This file is read by ripgrep and fd, NOT by git. It exists solely to keep
 # multi-megabyte GENERATED build artifacts out of interactive search results.
@@ -71,3 +71,10 @@ papercusp-desktop/src-tauri/env-sidecars/
 # libs/test-config/src/vitest-config.ts and parsed by explicit path in
 # libs/testing-shell/src/junit.ts; nothing locates them via rg/fd.
 junit.xml
+
+# Exported Storybook static builds contain large minified bundles and generated
+# catalogs that are not useful in source discovery. This unanchored directory
+# rule applies from repository roots and nested package roots, including the
+# papergrid submodule. Named paths remain searchable when requested explicitly.
+# EI-21268880111402550.
+storybook-static/

@@ -92,9 +92,13 @@ Each step's output feeds the next one. All commands run from the repo root.
 ## Spending money safely
 
 Every VM goes through `gcp-rails.ts`. It runs in the dedicated project `pc-agent-capacity-0930`,
-under the $200 programme cap (D-002), with plan/run/cost labels, a GCP-enforced self-delete
-deadline, a worst-case-cost admission check, and a teardown that only counts as done once a
-re-read of the project shows no instance and no orphaned disk. Its header explains each rail. Check
+with plan/run/cost labels, a GCP-enforced self-delete deadline, finite run reservations, a
+concurrent worst-case-cost admission check, and a teardown that only counts as done once a
+re-read of the project shows no instance and no orphaned disk. D-082 (2026-10-21) removes the
+earlier D-002 $200 programme spending ceiling. It preserves these run-level rails, complete
+actual-cost accounting, and the strict under-$20/month product acceptance requirement.
+The historical $200 budget alert is informational, not current spending authority.
+The module header explains each rail. Check
 `gcloud compute instances list --project=pc-agent-capacity-0930` after every run.
 
 ## Join target: member, not home
