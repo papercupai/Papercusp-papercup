@@ -121,7 +121,7 @@ describe('autoloop:status', () => {
       { harnessSlug: 'other-harness' },
       MAKE_CTX({ role: 'judge', harnessSlug: 'sheets' }),
     );
-    expect(parsePayload(result as never)).toMatchObject({ error: 'judge_harness_scope_mismatch' });
+    expect(parseEnvelope(result as never)).toMatchObject({ error: 'judge_harness_scope_mismatch' });
     expect(getAutoLoopState).not.toHaveBeenCalled();
   });
 
