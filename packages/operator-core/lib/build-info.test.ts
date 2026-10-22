@@ -250,7 +250,7 @@ describe('bundled /api/health build identity', () => {
  * silently downgraded the evidence while every test stayed green — and the
  * failure direction is the bad one (a confident false "it is live").
  */
-describe('WI-6554700010018173: the one-time git fallback survives a slow host', () => {
+describe('WI-6554700010018173: the one-time git fallback retries a transient timeout', () => {
   const timeoutError = () => Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
 
   it('retries a timed-out rev-parse once instead of caching null for the process lifetime', async () => {

@@ -25,8 +25,9 @@ vi.mock('../../consult/plan-start-consult', () => ({
   planStartConsult: M.planStartConsult,
   fetchTurnExcerpts: M.fetchTurnExcerpts,
 }));
-// getBuildInfo falls back to `git rev-parse` with a 2s timeout; under host load
-// it returns (and caches) null, which flaked the buildSha assertion below.
+// Runtime build identity is best-effort and may be null when no baked/env SHA
+// is available and Git resolution fails. Keep this unit test independent of the
+// runner's Git state by injecting a stable value.
 vi.mock('../../build-info', () => ({ getBuildInfo: () => ({ sha: 'abc1234', version: '0.0.0' }) }));
 
 import { activationDeclarationReadiness, previewPlanStartConsult } from './get-activation-readiness';

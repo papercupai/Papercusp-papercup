@@ -95,6 +95,9 @@ export const TEST_LANE_ENV = 'PC_TEST_LANE';
  */
 export const TEST_FILTER_LIST_ENV = 'PC_TEST_FILTER_LIST';
 
+/** Partial-resume skip-list channel; never let it narrow the nested census run. */
+export const TEST_PARTIAL_SKIP_LIST_ENV = 'PC_TEST_PARTIAL_SKIP_LIST';
+
 /**
  * Every channel through which a parent runner narrows which files a vitest invocation
  * selects. The nested census run targets exactly one file and must always run it, so the
@@ -106,6 +109,7 @@ export const TEST_SELECTION_ENVS = Object.freeze([
   TEST_REUSE_SKIP_LIST_ENV,
   TEST_LANE_ENV,
   TEST_FILTER_LIST_ENV,
+  TEST_PARTIAL_SKIP_LIST_ENV,
 ]);
 
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');

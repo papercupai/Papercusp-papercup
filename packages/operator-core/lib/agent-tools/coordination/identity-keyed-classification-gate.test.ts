@@ -34,10 +34,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 // @ts-expect-error — plain-JS repo guard, intentionally not typed
-import { checkIdentityKeyedClassification, buildCensusChildEnv, CENSUS_TEST_REL, OPERATOR_CORE_REL, TEST_REUSE_SKIP_LIST_ENV, TEST_LANE_ENV, TEST_FILTER_LIST_ENV, TEST_SELECTION_ENVS } from '../../../../../scripts/check-identity-keyed-classification.mjs';
+import { checkIdentityKeyedClassification, buildCensusChildEnv, CENSUS_TEST_REL, OPERATOR_CORE_REL, TEST_REUSE_SKIP_LIST_ENV, TEST_LANE_ENV, TEST_FILTER_LIST_ENV, TEST_PARTIAL_SKIP_LIST_ENV, TEST_SELECTION_ENVS } from '../../../../../scripts/check-identity-keyed-classification.mjs';
 import { resolveTestRunSource } from '../../testing-run-source';
 import {
   PC_TEST_REUSE_SKIP_LIST_ENV,
+  PC_TEST_PARTIAL_SKIP_LIST_ENV,
   REUSE_SKIP_LIST_SCHEMA,
   executedSourceRunContext,
   executedSourceRunnerIdentity,
@@ -130,10 +131,12 @@ describe('identity-keyed classification pre-promotion gate (EI-20012634773877104
     // Verify 4988081a (repairHead d740fc38): and through the related-files filter list,
     // whose 2,853 listed files did not include the census file.
     expect(TEST_FILTER_LIST_ENV).toBe('PC_TEST_FILTER_LIST');
+    expect(TEST_PARTIAL_SKIP_LIST_ENV).toBe(PC_TEST_PARTIAL_SKIP_LIST_ENV);
     const gateEnv: Record<string, string> = {
       [PC_TEST_REUSE_SKIP_LIST_ENV]: '/tmp/pcv/reuse-skip-x.json',
       [TEST_LANE_ENV]: 'stateful',
       [TEST_FILTER_LIST_ENV]: '/tmp/pcv/related-filter-x.json',
+      [TEST_PARTIAL_SKIP_LIST_ENV]: '/tmp/pcv/partial-skip-x.json',
       KEEP: 'y',
     };
     for (const schemaAbs of [null, '/tmp/candidate-generated.ts']) {
@@ -143,6 +146,7 @@ describe('identity-keyed classification pre-promotion gate (EI-20012634773877104
     }
     // The caller's env is copied, never mutated.
     expect(gateEnv[PC_TEST_REUSE_SKIP_LIST_ENV]).toBe('/tmp/pcv/reuse-skip-x.json');
+    expect(gateEnv[TEST_PARTIAL_SKIP_LIST_ENV]).toBe('/tmp/pcv/partial-skip-x.json');
   });
 
   // The leak above arrived one channel per gate red, three times. This pins the scrub

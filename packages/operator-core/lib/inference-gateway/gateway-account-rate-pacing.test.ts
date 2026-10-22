@@ -4,7 +4,7 @@ import { executeGatewayRequestKernel } from './request-kernel';
 import { makeGatewayLaneRegistry } from './provider-adapters';
 import { GatewayRequestTelemetry } from './request-stage-telemetry';
 import type { AccountPool } from './provider-contracts';
-import { createInferenceGateway, ACCOUNT_HEADER } from './gateway';
+import { createInferenceGateway, ACCOUNT_HEADER, ACCOUNT_PIN_HEADER } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { parseCodexRateReset } from './codex-oauth-proxy';
 import { promises as fs } from 'node:fs';
@@ -117,15 +117,15 @@ describe('production gateway account-governor wiring', () => {
     return Response.json({ id: 'resp_pacing', object: 'response', status: 'completed', output: [] });
   }
 
-  async function send(path = '/v1/responses', bodyModel = model) {
+  async function send(path = '/v1/responses', bodyModel = model, headers: Record<string, string> = {}) {
     const port = await gateway!.listen(0);
     const result = await fetch(`http://127.0.0.1:${port}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'account-a' },
-      body: JSON.stringify({ model: bodyModel, input: [], messages: [], max_tokens: 8, stream: false }),
+      headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'account-a', ...headers },
+      body: JSON.stringify({ model: bodyModel, input: 'Reply briefly.', max_tokens: 8, stream: false }),
     });
-    await result.text();
-    return result;
+    const responseBody = await result.text();
+    return { status: result.status, body: responseBody };
   }
 
   it('admits the real Codex bearer attempt through the shared governor before upstream fetch', async () => {
@@ -204,9 +204,68 @@ describe('production gateway account-governor wiring', () => {
         } }) + '\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
       }) as typeof fetch,
     });
-    expect((await send()).status).toBe(200);
+    const result = await send();
+    expect(result.status, result.body).toBe(200);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(acquire).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a hard-pinned transient 429 on its original account', async () => {
+    const affected = governorForBackend('codex', model, undefined, 'account-a');
+    const sibling = governorForBackend('codex', model, undefined, 'account-b');
+    const acquireB = vi.spyOn(sibling, 'acquire');
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      routed.push(new Headers(init?.headers).get('authorization') ?? '');
+      return routed.length === 1
+        ? Response.json({ error: { message: 'burst throttle' } }, { status: 429, headers: { 'retry-after': '0.01' } })
+        : response();
+    }) as typeof fetch;
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      codexPool: accounts(), fetchImpl, selfHeal: { enabled: false } });
+    const result = await send('/v1/responses', model, { [ACCOUNT_PIN_HEADER]: 'hard' });
+    expect([200, 429]).toContain(result.status);
+    expect(routed.length).toBeGreaterThan(0);
+    expect(routed.every(auth => auth.includes('token-account-a'))).toBe(true);
+    expect(acquireB).not.toHaveBeenCalled();
+    expect(affected.state.rpmFactor).toBeLessThan(1);
+  });
+
+  it('releases an acquired permit exactly once on client cancellation without lowering learned RPM', async () => {
+    const affected = governorForBackend('codex', model, undefined, 'account-a');
+    const originalAcquire = affected.acquire.bind(affected);
+    const released = vi.fn();
+    const acquire = vi.spyOn(affected, 'acquire').mockImplementation(async (...args) => {
+      const permit = await originalAcquire(...args);
+      return permit ? () => { released(); permit(); } : null;
+    });
+    let markStarted!: () => void;
+    let markAborted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const aborted = new Promise<void>(resolve => { markAborted = resolve; });
+    const fetchImpl = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        markAborted();
+        reject(new DOMException('cancelled upstream', 'AbortError'));
+      }, { once: true });
+      markStarted();
+    })) as typeof fetch;
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      codexPool: accounts(), fetchImpl, selfHeal: { enabled: false } });
+    const port = await gateway.listen(0);
+    const controller = new AbortController();
+    const result = fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST', signal: controller.signal,
+      headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'account-a' },
+      body: JSON.stringify({ model, input: 'Reply briefly.', stream: false }),
+    }).then(() => 'completed', (error: Error) => error.name);
+    await started;
+    expect(acquire).toHaveBeenCalledTimes(1);
+    controller.abort();
+    expect(await result).toBe('AbortError');
+    await aborted;
+    await vi.waitFor(() => expect(released).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    expect(affected.state.rpmFactor ?? 1).toBe(1);
   });
 
   const nonRateCases: Array<{ name: string; status: number; headers: Record<string, string> }> = [

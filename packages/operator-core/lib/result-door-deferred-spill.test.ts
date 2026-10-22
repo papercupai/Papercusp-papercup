@@ -16,6 +16,19 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return { ...actual, mkdirSync: vi.fn(actual.mkdirSync), writeFileSync: vi.fn(actual.writeFileSync) };
 });
+vi.mock('./scratch-reference', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./scratch-reference')>();
+  return {
+    ...actual,
+    persistVolatileScratchReference: vi.fn(async (
+      uri: string,
+      caller: Parameters<typeof actual.persistVolatileScratchReference>[1],
+    ) => ({
+      uri: `${actual.DURABLE_SCRATCH_REFERENCE_SCHEME}/${'a'.repeat(64)}`,
+      manifest: actual.readVolatileScratchReference(uri, caller).manifest,
+    })),
+  };
+});
 import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import {
   applyResultDoor,
@@ -128,6 +141,12 @@ afterEach(() => {
 });
 
 describe('result-door deferred spill (WI-10004533)', () => {
+  it('runs without unit-layer PG refreshes or the durable database spool', () => {
+    expect(process.env.PAPERCUSP_FORBID_REAL_PG).toBe('1');
+    expect(process.env.PAPERCUSP_DOORS_CONFIG_OFF).toBe('1');
+    expect(vi.isMockFunction(scratchReference.persistVolatileScratchReference)).toBe(true);
+  });
+
   it.each(['text', 'media'])('reports a persisted %s spill phase without allowing observer failure to lose the original payload', async (kind) => {
     const observed = vi.fn((_timings: ScratchWriteTimings) => { throw new Error('diagnostic observer failed'); });
     const original = kind === 'text' ? oversized().content[0].text : 'A'.repeat(BUDGET_CHARS * 3);

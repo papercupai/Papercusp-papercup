@@ -242,13 +242,16 @@ describe('cross-client native recovery handshake', () => {
 });
 
 describe('failed native turn → durable routine retry → native wake', () => {
-  it.each(['codex', 'claude', 'omp'])('recovers one %s turn through the real claim and wake paths', async agent => {
-    const f = await fixture(agent, true, true);
+  it.each([
+    ['codex', true], ['claude', true], ['omp', true], ['codex', 'capacity'],
+  ] as const)('recovers one %s turn (%s) through the real claim and AUTO wake paths', async (agent, failureKind) => {
+    const f = await fixture(agent, true, failureKind);
     const sql = org.adminSql;
     const owner = f.message.ownerId;
     const routineId = `routine-${owner}`;
     const workspaceId = 'ws-composed-native-recovery';
     try {
+      const original = f.readHost();
       const fireAt = Date.now();
       await sql`INSERT INTO harness_shared.routines
         (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id,
@@ -267,6 +270,10 @@ describe('failed native turn → durable routine retry → native wake', () => {
       const failure = f.readHost().execution!;
       expect(failure.receivedAtMs, 'failure observation must belong to this actual fire').toBeGreaterThanOrEqual(fireAt);
       const failedAt = failure.lastProgressAt!;
+      if (failureKind === 'capacity') {
+        expect(failure.failure).toMatchObject({ code: 'server_overloaded',
+          retryable: true, retryAfterMs: 60_000 });
+      }
       // Exercise the real failed-turn grace and retry deadline, with no clock override.
       await until(() => Date.now() - failedAt >= 30_000, 35_000);
       const arm = vi.fn(async () => ({ awaitId: 1, eventKey: 'fixture-inbox', handleNote: 'fixture', minSleepSec: 60 }));
@@ -283,6 +290,8 @@ describe('failed native turn → durable routine retry → native wake', () => {
         FROM harness_shared.routines WHERE id = ${routineId}`)[0]!;
       expect(Number(stored.next_ms)).toBe(recovery.state!.nextProbeAt);
       expect(stored.metadata.executionRecovery).toMatchObject({ status: 'recovering', attempts: 1 });
+      if (failureKind === 'capacity') expect(Number(stored.next_ms)).toBeGreaterThanOrEqual(failedAt + 60_000);
+      expect((await listDueCronRoutines(sql)).some(row => row.id === routineId)).toBe(false);
       await until(() => Date.now() >= recovery.state!.nextProbeAt, 35_000);
       const due = (await listDueCronRoutines(sql)).find(row => row.id === routineId)!;
       expect(due).toBeDefined();
@@ -311,6 +320,9 @@ describe('failed native turn → durable routine retry → native wake', () => {
       }
       expect(delivered).toBe(true);
       expect(f.output().match(/SUBMIT:/g)).toHaveLength(2);
+      expect(f.readHost()).toMatchObject({ pid: original.pid, ptyPid: original.ptyPid,
+        nativeSessionId: original.nativeSessionId,
+        execution: { childGeneration: original.execution!.childGeneration } });
     } finally { await f.close(); }
   }, 85_000);
 });

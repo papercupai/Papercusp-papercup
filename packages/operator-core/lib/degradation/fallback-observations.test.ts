@@ -8,11 +8,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => {
-    throw new Error('getOrgPg must not be reached when an explicit sql handle is passed');
-  },
+const { getOrgPgMock } = vi.hoisted(() => ({
+  getOrgPgMock: vi.fn(() => { throw new Error('unit fixture has no default Postgres handle'); }),
 }));
+
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: getOrgPgMock }));
 
 const mod = await import('./fallback-observations');
 const {
@@ -55,6 +55,7 @@ function fakeSql(): FakeSql {
 
 beforeEach(() => {
   _resetFallbackObservationsForTests();
+  getOrgPgMock.mockClear();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => {
@@ -279,6 +280,47 @@ describe('fallbackDecisionProblem', () => {
 });
 
 describe('observeFallback + flushFallbackObservations', () => {
+  it('does not resolve a default Postgres handle under the unit rail and keeps observations buffered', async () => {
+    expect(process.env.PAPERCUSP_FORBID_REAL_PG).toBe('1');
+    observeFallback('unit-fallback', { eligible: 1, applied: 0, reason: 'test' });
+
+    const result = await flushFallbackObservations();
+    expect(result).toMatchObject({ written: 0, failed: 0 });
+    expect(getOrgPgMock).not.toHaveBeenCalled();
+    expect(_pendingFallbackObservationCount()).toBe(1);
+    expect(fallbackObservationCounters().failed).toBe(0);
+
+    const f = fakeSql();
+    await expect(flushFallbackObservations({ sql: f.sql })).resolves.toMatchObject({ written: 1, failed: 0 });
+    expect(f.inserts.flat()).toMatchObject([
+      expect.objectContaining({ mechanism: 'unit-fallback', reason: 'test', eligible: 1, applied: 0 }),
+    ]);
+    expect(_pendingFallbackObservationCount()).toBe(0);
+  });
+
+  it('requeues observations when default handle acquisition fails before an INSERT', async () => {
+    const previousForbidden = process.env.PAPERCUSP_FORBID_REAL_PG;
+    delete process.env.PAPERCUSP_FORBID_REAL_PG;
+    const f = fakeSql();
+    try {
+      observeFallback('retryable-fallback', { eligible: 2, applied: 1, reason: 'no-handle' });
+
+      await expect(flushFallbackObservations()).resolves.toMatchObject({ written: 0, failed: 1 });
+      expect(getOrgPgMock).toHaveBeenCalledTimes(1);
+      expect(_pendingFallbackObservationCount()).toBe(1);
+      expect(fallbackObservationCounters().failed).toBe(0);
+
+      await expect(flushFallbackObservations({ sql: f.sql })).resolves.toMatchObject({ written: 1, failed: 0 });
+      expect(f.inserts.flat()).toMatchObject([
+        expect.objectContaining({ mechanism: 'retryable-fallback', reason: 'no-handle', eligible: 2, applied: 1 }),
+      ]);
+      expect(_pendingFallbackObservationCount()).toBe(0);
+    } finally {
+      if (previousForbidden === undefined) delete process.env.PAPERCUSP_FORBID_REAL_PG;
+      else process.env.PAPERCUSP_FORBID_REAL_PG = previousForbidden;
+    }
+  });
+
   it('buffers without writing, then flushes every row with its fields intact', async () => {
     const f = fakeSql();
     const correlationId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';

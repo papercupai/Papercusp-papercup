@@ -111,10 +111,10 @@ export function resolveBuildInfo(opts: {
  * WI-6554700010018173: this read happens ONCE per process (the boot-warm
  * invariant below, WI-2141731) and its result is cached for the process
  * lifetime, so a timeout is not a slow request — it is a permanent `sha: null`.
- * The old 2s budget timed out under ordinary fleet load on this host. A late
- * retry is not an acceptable repair: by then the checkout may have advanced past
- * the code this process loaded, so the retry would report the wrong identity.
- * The budget is spent at boot instead, and a timed-out attempt is retried once.
+ * The failing test receipt did not capture why git returned no SHA, so a
+ * host-load timeout is unverified. A retry after this resolution point could
+ * read a later checkout and mislabel the loaded code; retry one transient
+ * timeout now, then keep the process identity snapshot stable.
  */
 export const GIT_SHA_ATTEMPT_TIMEOUT_MS = 10_000;
 const GIT_SHA_ATTEMPTS = 2;

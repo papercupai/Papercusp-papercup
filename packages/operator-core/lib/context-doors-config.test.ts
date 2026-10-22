@@ -35,10 +35,12 @@ import {
   type ContextDoorsConfigRow,
 } from './context-doors-config';
 import { getOverrideConcern } from './config-overrides/registry';
+import { readOperatorState } from './operator-state-pg';
 
 const TABLE = 'operator_context_doors_config';
 
 beforeEach(() => {
+  vi.clearAllMocks();
   store.clear();
   invalidateDoorConstantsSnapshot();
   delete process.env.PAPERCUSP_DOORS_CONFIG_OFF;
@@ -183,6 +185,7 @@ describe('getDoorConstantsSync (sync consume + background refresh)', () => {
     store.set(TABLE, { defaults: { maxTurnFloorTokens: 10_000 } } satisfies ContextDoorsConfigRow);
     process.env.PAPERCUSP_DOORS_CONFIG_OFF = '1';
     expect(getDoorConstantsSync()).toEqual(BAKED_DOOR_CONSTANTS);
+    expect(readOperatorState).not.toHaveBeenCalled();
   });
 });
 

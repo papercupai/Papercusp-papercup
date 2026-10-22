@@ -232,6 +232,11 @@ function installExitHook(): void {
 }
 
 function scheduleFlush(): void {
+  if (
+    process.env.PAPERCUSP_FORBID_REAL_PG === '1' &&
+    state.pending.length > 0 &&
+    state.pending.every((row) => row.sql === undefined)
+  ) return;
   if (state.pending.length >= FALLBACK_FLUSH_BATCH) {
     if (state.timer) {
       clearTimeout(state.timer);
@@ -347,10 +352,20 @@ async function writeBatch(sql: Sql, rows: PendingRow[]): Promise<void> {
 }
 
 async function flushOnce(defaultSql: Sql | undefined): Promise<FlushResult> {
+  const result: FlushResult = { written: 0, failed: 0, dropped: state.dropped, rejected: state.rejected };
+  if (
+    process.env.PAPERCUSP_FORBID_REAL_PG === '1' &&
+    defaultSql === undefined &&
+    state.pending.length > 0 &&
+    state.pending.every((row) => row.sql === undefined)
+  ) {
+    state.dropped = 0;
+    state.rejected = 0;
+    return result;
+  }
   const batch = state.pending.splice(0, state.pending.length);
   // These rows now belong to this write: later observations must start new rows.
   state.open.clear();
-  const result: FlushResult = { written: 0, failed: 0, dropped: state.dropped, rejected: state.rejected };
   state.dropped = 0;
   state.rejected = 0;
   if (batch.length === 0) return result;
@@ -363,13 +378,17 @@ async function flushOnce(defaultSql: Sql | undefined): Promise<FlushResult> {
     else groups.set(key, [row]);
   }
   for (const [handle, rows] of groups) {
+    if (handle === undefined && process.env.PAPERCUSP_FORBID_REAL_PG === '1') {
+      state.pending.unshift(...rows);
+      continue;
+    }
     let sql: Sql;
     try {
       sql = handle ?? getOrgPg().sql;
     } catch (err) {
       result.failed += rows.length;
-      state.totalFailed += rows.length;
-      warnThrottled(`no Postgres handle; ${rows.length} observation(s) lost`, err);
+      state.pending.unshift(...rows);
+      warnThrottled(`no Postgres handle; ${rows.length} observation(s) deferred`, err);
       continue;
     }
     for (let i = 0; i < rows.length; i += FALLBACK_FLUSH_BATCH) {
