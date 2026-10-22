@@ -142,6 +142,9 @@ export interface HarnessFeatureRow {
   admission?: string | null;
   admitted_at?: string | null;
   admitted_by?: string | null;
+  /** Migration 1555: absent on legacy ops; explicit null clears the verdict. */
+  duplicate_of?: string | null;
+  duplicate_source?: string | null;
 }
 
 function isString(v: unknown): v is string { return typeof v === 'string'; }
@@ -211,6 +214,9 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
   if (r.admission !== undefined && !isStringOrNull(r.admission)) return false;
   if (r.admitted_at !== undefined && !isStringOrNull(r.admitted_at)) return false;
   if (r.admitted_by !== undefined && !isStringOrNull(r.admitted_by)) return false;
+  if (r.duplicate_of !== undefined && !isStringOrNull(r.duplicate_of)) return false;
+  if (r.duplicate_source !== undefined && r.duplicate_source !== null &&
+      !['create-match', 'admission-promoter', 'fold', 'agent'].includes(String(r.duplicate_source))) return false;
   // metadata + tags + payload are JSONB blobs; accept anything (incl. null/missing).
   return true;
 }
@@ -412,7 +418,7 @@ async function writeToPg(
        design_spec_id, design_status, needs_design, discarded_design_work,
        source_plan_slug, source_plan_item_ids, see_also, wave, deprecation_reason, completion_ref,
        terminal_owner, terminal_completion_ref, terminal_reason, authority, closed_ts,
-       admission, admitted_at, admitted_by,
+       admission, admitted_at, admitted_by, duplicate_of, duplicate_source,
        author_pubkey, origin, fed_ts, fed_hlc, verified_author_github_user_id)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
@@ -441,6 +447,7 @@ async function writeToPg(
        ${row.authority ?? null}, ${row.closed_ts ?? null},
        -- WI-41745: the born-pending admission trio (mig 944, exposed here by mig 966).
        ${row.admission ?? null}, ${row.admitted_at ?? null}, ${row.admitted_by ?? null},
+       ${row.duplicate_of ?? null}, ${row.duplicate_source ?? null},
        ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${verifiedAuthorGithubUserId})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
@@ -527,6 +534,18 @@ async function writeToPg(
              AND work_items.admission IS DISTINCT FROM 'pending' THEN work_items.admitted_by
         ELSE EXCLUDED.admitted_by
       END,
+      -- Legacy peers cannot erase a known verdict. A new explicit null can;
+      -- clear local match evidence when its verdict changes, preserving 1534's constraint.
+      duplicate_of = CASE WHEN ${row.duplicate_of !== undefined}
+        THEN EXCLUDED.duplicate_of ELSE work_items.duplicate_of END,
+      duplicate_source = CASE WHEN ${row.duplicate_of !== undefined}
+        THEN EXCLUDED.duplicate_source ELSE work_items.duplicate_source END,
+      duplicate_confidence = CASE WHEN ${row.duplicate_of !== undefined}
+        AND EXCLUDED.duplicate_of IS DISTINCT FROM work_items.duplicate_of
+        THEN NULL ELSE work_items.duplicate_confidence END,
+      duplicate_evidence = CASE WHEN ${row.duplicate_of !== undefined}
+        AND EXCLUDED.duplicate_of IS DISTINCT FROM work_items.duplicate_of
+        THEN NULL ELSE work_items.duplicate_evidence END,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = ${updateOrigin},
       fed_ts = EXCLUDED.fed_ts,
@@ -567,12 +586,19 @@ async function writeToPg(
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,
                           EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text,
                           EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref,
-                          EXCLUDED.terminal_reason, EXCLUDED.authority)),
+                          EXCLUDED.terminal_reason, EXCLUDED.authority,
+                          CASE WHEN ${row.duplicate_of !== undefined} AND EXCLUDED.duplicate_of IS NULL AND EXCLUDED.duplicate_source IS NULL THEN NULL
+                            WHEN NOT ${row.duplicate_of !== undefined} AND work_items.duplicate_of IS NULL AND work_items.duplicate_source IS NULL THEN NULL
+                            WHEN ${row.duplicate_of !== undefined}
+                            THEN jsonb_build_array(EXCLUDED.duplicate_of, EXCLUDED.duplicate_source)::text
+                            ELSE jsonb_build_array(work_items.duplicate_of, work_items.duplicate_source)::text END)),
             work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey,
             md5(concat_ws('|', work_items.item_kind, work_items.title, work_items.summary,
                           work_items.status, work_items.taken_by, work_items.payload::text,
                           work_items.terminal_owner, work_items.terminal_completion_ref,
-                          work_items.terminal_reason, work_items.authority)))
+                          work_items.terminal_reason, work_items.authority,
+                          CASE WHEN work_items.duplicate_of IS NOT NULL OR work_items.duplicate_source IS NOT NULL
+                            THEN jsonb_build_array(work_items.duplicate_of, work_items.duplicate_source)::text END)))
   `;
 }
 

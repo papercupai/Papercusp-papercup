@@ -347,6 +347,12 @@ function strOrNull(v: unknown): string | null {
  *  converted to epoch ms). */
 function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
   return {
+    // A pre-1555 wire row omits the verdict. Preserve that distinction from an
+    // explicit null, which clears a duplicate verdict after a reviewed update.
+    ...(row.duplicate_of === undefined ? {} : {
+      duplicate_of: strOrNull(row.duplicate_of),
+      duplicate_source: strOrNull(row.duplicate_source),
+    }),
     harness_slug: String(row.harness_slug ?? ''),
     feature_id: String(row.feature_id ?? ''),
     title: strOrNull(row.title),
@@ -840,6 +846,10 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
   // cannot judge" and fail OPEN on the latter instead of dropping it.
   const createdTs = numOrNull(row.created_ts);
   return {
+    ...(row.duplicate_of === undefined ? {} : {
+      duplicate_of: strOrNull(row.duplicate_of),
+      duplicate_source: strOrNull(row.duplicate_source),
+    }),
     created_ts: createdTs,
     harness_slug: String(row.harness_slug ?? ''),
     storage_harness_slug:

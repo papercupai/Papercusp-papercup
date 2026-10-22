@@ -168,6 +168,8 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // Append-only ledger; every content column federates. (Empty.)
   },
   harness_plans: {
+    verification_profile: 'machine-local execution/verification policy; explicitly excluded from federation clocks by migration 1537',
+    verification_profile_source: 'provenance of the local verification profile; migration 1537 masks profile-only writes',
     // harness_plans federates the canonical markdown `content` + content_hash +
     // scalars; the structured columns are re-derived locally from `content` (the
     // plan parser / the flag-gated recompose owns them), and the orchestrator /
@@ -431,6 +433,8 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp (federated time is receipt_ts, carried by the mapper)',
   },
   memory_canonical: {
+    used_count: 'local memory_session_surfaced outcome aggregate (memory/surfaced-outcomes.ts); not a replicated counter',
+    contradicted_count: 'local session outcome aggregate; remote LWW replacement would lose independently counted feedback',
     // mem0-cross-machine-federation-2026-07-10 (EI-9430 fix): the federated subset
     // is id/payload/created_at/updated_at/harness_slug (toMemoryValue). Mirrors the
     // agent_facts pattern below for source_hive; the memory-quality/decay fields are

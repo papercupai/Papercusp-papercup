@@ -133,6 +133,9 @@ export interface EngineerIssueRow {
   admission?: string | null;
   admitted_at?: string | null;
   admitted_by?: string | null;
+  /** Migration 1555: absent on legacy ops; explicit null clears the verdict. */
+  duplicate_of?: string | null;
+  duplicate_source?: string | null;
   state_changed_at?: string | null;
   tags?: unknown; // jsonb — opaque, like `payload`
   parent_id?: string | null;
@@ -188,6 +191,9 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (r.admission !== undefined && !isStringOrNull(r.admission)) return false;
   if (r.admitted_at !== undefined && !isStringOrNull(r.admitted_at)) return false;
   if (r.admitted_by !== undefined && !isStringOrNull(r.admitted_by)) return false;
+  if (r.duplicate_of !== undefined && !isStringOrNull(r.duplicate_of)) return false;
+  if (r.duplicate_source !== undefined && r.duplicate_source !== null &&
+      !['create-match', 'admission-promoter', 'fold', 'agent'].includes(String(r.duplicate_source))) return false;
   if (r.state_changed_at !== undefined && !isStringOrNull(r.state_changed_at)) return false;
   if (r.parent_id !== undefined && !isStringOrNull(r.parent_id)) return false;
   if (r.source_plan_slug !== undefined && !isStringOrNull(r.source_plan_slug)) return false;
@@ -621,6 +627,8 @@ interface IssueUpsertInput {
   admission: string | null;
   admitted_at: string | null;
   admitted_by: string | null;
+  duplicate_of: string | null;
+  duplicate_source: string | null;
   state_changed_at: string | null;
   tags: unknown;
   parent_id: string | null;
@@ -635,6 +643,8 @@ interface IssueUpsertInput {
  */
 interface IssueWrite {
   input: IssueUpsertInput;
+  /** Distinguishes an explicit clear from a legacy op without these fields. */
+  carriesDuplicateVerdict: boolean;
   /** Authenticated receiver attribution, never supplied by the wire document. */
   receiverAdmitted: boolean;
   /** Keep receiver attribution through snapshot grouping and resident-row landing. */
@@ -663,6 +673,7 @@ function issueWrite(
 ): IssueWrite {
   const basePayload = row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
   return {
+    carriesDuplicateVerdict: row.duplicate_of !== undefined,
     input: {
       workspace_id: opts.workspaceId,
       harness_slug: vSlug,
@@ -698,6 +709,8 @@ function issueWrite(
       admission: row.admission ?? null,
       admitted_at: asTimestamptzParam(row.admitted_at),
       admitted_by: row.admitted_by ?? null,
+      duplicate_of: row.duplicate_of ?? null,
+      duplicate_source: row.duplicate_source ?? null,
       state_changed_at: asTimestamptzParam(row.state_changed_at),
       // EI-21467654382027859 (mig 965): an absent tags value must land SQL NULL, not the
       // jsonb 'null' literal that reads as present. jsonb_to_recordset maps a JSON null
@@ -992,13 +1005,19 @@ function issueGroupWriter(opts: EngineerIssuesProjectionOpts): ProjectionGroupWr
 async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<void> {
   const rowsJson = JSON.stringify(writes.map((w) => w.input));
   const receivers = writes.filter((w) => w.receiverAdmitted);
+  const verdicts = writes.filter((w) => w.carriesDuplicateVerdict);
+  const carriesDuplicateVerdict = sql`EXISTS (
+    SELECT 1 FROM unnest(${verdicts.map((w) => w.input.harness_slug)}::text[],
+                         ${verdicts.map((w) => w.input.feature_id)}::text[]) AS verdict(harness_slug, feature_id)
+     WHERE verdict.harness_slug = EXCLUDED.harness_slug AND verdict.feature_id = EXCLUDED.feature_id
+  )`;
   await sql`
       INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
        taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
        created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref, terminal_reason,
        authority, closed_ts,
-       admission, admitted_at, admitted_by, state_changed_at, tags, parent_id,
+       admission, admitted_at, admitted_by, duplicate_of, duplicate_source, state_changed_at, tags, parent_id,
        source_plan_slug, source_plan_item_ids, expected_cost_cents)
     SELECT
        r.workspace_id, r.harness_slug, r.feature_id, r.item_kind, r.title,
@@ -1010,7 +1029,7 @@ async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): P
        (extract(epoch FROM now()) * 1000)::bigint,
        r.terminal_owner, r.terminal_completion_ref, r.terminal_reason,
        r.authority, r.closed_ts,
-       r.admission, r.admitted_at, r.admitted_by, r.state_changed_at, r.tags,
+       r.admission, r.admitted_at, r.admitted_by, r.duplicate_of, r.duplicate_source, r.state_changed_at, r.tags,
        r.parent_id, r.source_plan_slug, r.source_plan_item_ids, r.expected_cost_cents
       -- The rows bind as ONE text parameter cast to jsonb (the postgres-js jsonb binding
       -- gotcha). jsonb_to_recordset turns a JSON null into SQL NULL for every column.
@@ -1021,7 +1040,8 @@ async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): P
        created_at timestamptz,
        terminal_owner text, terminal_completion_ref text, terminal_reason text,
        authority text, closed_ts bigint,
-       admission text, admitted_at timestamptz, admitted_by text, state_changed_at timestamptz, tags jsonb,
+       admission text, admitted_at timestamptz, admitted_by text, duplicate_of text, duplicate_source text,
+       state_changed_at timestamptz, tags jsonb,
        parent_id text, source_plan_slug text, source_plan_item_ids text[], expected_cost_cents bigint)
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       item_kind     = EXCLUDED.item_kind,
@@ -1117,7 +1137,17 @@ async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): P
              AND work_items.admission IS NOT NULL
              AND work_items.admission IS DISTINCT FROM 'pending' THEN work_items.admitted_by
         ELSE EXCLUDED.admitted_by
-      END
+      END,
+      duplicate_of = CASE WHEN ${carriesDuplicateVerdict}
+        THEN EXCLUDED.duplicate_of ELSE work_items.duplicate_of END,
+      duplicate_source = CASE WHEN ${carriesDuplicateVerdict}
+        THEN EXCLUDED.duplicate_source ELSE work_items.duplicate_source END,
+      duplicate_confidence = CASE WHEN ${carriesDuplicateVerdict}
+        AND EXCLUDED.duplicate_of IS DISTINCT FROM work_items.duplicate_of
+        THEN NULL ELSE work_items.duplicate_confidence END,
+      duplicate_evidence = CASE WHEN ${carriesDuplicateVerdict}
+        AND EXCLUDED.duplicate_of IS DISTINCT FROM work_items.duplicate_of
+        THEN NULL ELSE work_items.duplicate_evidence END
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
@@ -1165,12 +1195,19 @@ async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): P
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,
                           EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text,
                           EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref,
-                          EXCLUDED.terminal_reason, EXCLUDED.authority)),
+                          EXCLUDED.terminal_reason, EXCLUDED.authority,
+                          CASE WHEN ${carriesDuplicateVerdict} AND EXCLUDED.duplicate_of IS NULL AND EXCLUDED.duplicate_source IS NULL THEN NULL
+                            WHEN NOT ${carriesDuplicateVerdict} AND work_items.duplicate_of IS NULL AND work_items.duplicate_source IS NULL THEN NULL
+                            WHEN ${carriesDuplicateVerdict}
+                            THEN jsonb_build_array(EXCLUDED.duplicate_of, EXCLUDED.duplicate_source)::text
+                            ELSE jsonb_build_array(work_items.duplicate_of, work_items.duplicate_source)::text END)),
             work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey,
             md5(concat_ws('|', work_items.item_kind, work_items.title, work_items.summary,
                           work_items.status, work_items.taken_by, work_items.payload::text,
                           work_items.terminal_owner, work_items.terminal_completion_ref,
-                          work_items.terminal_reason, work_items.authority)))
+                          work_items.terminal_reason, work_items.authority,
+                          CASE WHEN work_items.duplicate_of IS NOT NULL OR work_items.duplicate_source IS NOT NULL
+                            THEN jsonb_build_array(work_items.duplicate_of, work_items.duplicate_source)::text END)))
       -- EI-22581437944679741: a later remote OPEN snapshot is not proof that a
       -- terminal row was deliberately reopened. The local lifecycle writer records
       -- an explicit reopen by appending the exact displaced completion to the newest
