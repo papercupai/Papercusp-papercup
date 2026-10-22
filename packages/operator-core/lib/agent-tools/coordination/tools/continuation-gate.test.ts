@@ -152,6 +152,21 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toContain('no registered await');
   });
 
+  it('reports an active unbounded wake watch without treating it as a guaranteed re-wake', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 80,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeUnboundedWakeWatch: true,
+    });
+    expect(v.rewakeGuaranteed).toBe(false);
+    expect(v.activeUnboundedWakeWatch).toBe(true);
+    expect(v.guidance).toContain('active unbounded wake:true watch present');
+    expect(v.guidance).toContain('can wake on a matching event');
+    expect(v.guidance).toContain('does not guarantee another turn if no event fires');
+    expect(v.guidance).toContain('no qualifying deliberate await');
+  });
+
   it('diagnoses an armed-but-fire-starved loop instead of claiming no loop exists', () => {
     const v = evaluateContinuationGate({
       contextPct: 80,

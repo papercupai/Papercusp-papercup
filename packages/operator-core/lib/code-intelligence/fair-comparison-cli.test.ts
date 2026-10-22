@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { buildArm, createFairWorkerChannel, fairProcessCensus, FAIR_ARM_IDS, frozenGraphRequest, indexFileCensus, loadFairInputs, materializeFrozenControls,
-  materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
+  FAIR_WORKER_RUNTIME_MAX_SEC, materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
   verifyFairWorkerSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
 // Transitive users can mock only their own subprocess seam. Importing the CLI's
@@ -74,6 +74,10 @@ describe('workspaceDirs', () => {
 describe('FAIR_ARM_IDS', () => {
   it('names the eight arms the preregistration froze', () => {
     expect([...FAIR_ARM_IDS].sort()).toEqual(['codebase-memory', 'codegraph', 'codegraphcontext', 'gitnexus', 'lsp-query', 'no-third-party', 'rg', 'trace-mcp']);
+  });
+
+  it('allows slow frozen-corpus graph indexes to outlive the former four-hour cap', () => {
+    expect(FAIR_WORKER_RUNTIME_MAX_SEC).toBe(8 * 3600);
   });
 });
 

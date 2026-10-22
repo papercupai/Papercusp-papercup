@@ -287,6 +287,36 @@ describe('completed isolated runtime certification', () => {
     await setupIsolated();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
+  it.each(['complete-ledger', 'missing-ledger', 'missing-case', 'failed-case'])(
+    'certifies a shared original lifetime only with a complete passing case ledger: %s', async condition => {
+      const state = await setupIsolated();
+      state.execution.passed = 2;
+      const cases = ['activation', 'preservation'].map(name => ({
+        case_key: 'suite > ' + name, occurrence: 0, status: 'pass', duration_ms: 1,
+        file_path: state.execution.filePath,
+      }));
+      h.caseRows = cases;
+      if (condition === 'missing-ledger') h.caseRows = null;
+      if (condition === 'missing-case') cases.pop();
+      if (condition === 'failed-case') cases[1].status = 'fail';
+      expect((await read()).currentness.dimensions.environment)
+        .toBe(condition === 'complete-ledger' ? 'current' : 'unknown');
+    });
+  it('certifies a shared original lifetime with ledger-proven filtered siblings', async () => {
+    const state = await setupIsolated();
+    state.execution.passed = 2;
+    state.execution.skipped = 1;
+    state.execution.testNamePattern = 'selected alarm';
+    h.caseRows = [
+      { case_key: 'suite > selected alarm activation', status: 'pass', occurrence: 0, duration_ms: 1,
+        file_path: state.execution.filePath },
+      { case_key: 'suite > selected alarm preservation', status: 'pass', occurrence: 0, duration_ms: 1,
+        file_path: state.execution.filePath },
+      { case_key: 'suite > unrelated alarm', status: 'skip', occurrence: 0, duration_ms: 0,
+        file_path: state.execution.filePath },
+    ];
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+  });
   it('certifies original isolated receipts when the first binding omitted the completion selector without changing its recipe', async () => {
     const state = await setupIsolated();
     delete state.basis.completedRuntime;

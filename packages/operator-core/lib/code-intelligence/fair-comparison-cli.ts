@@ -369,6 +369,8 @@ export async function verifyFairWorkerSource(readSource?:
 export const FAIR_WORKER_REQUEST_DEADLINE_MS = 120_000;
 /** How long a worker may stay busy on an overrun request before the repetition fails loudly. */
 export const FAIR_WORKER_DRAIN_CAP_MS = 15 * 60_000;
+/** Slow graph backends may legitimately need more than four hours to build a frozen corpus. */
+export const FAIR_WORKER_RUNTIME_MAX_SEC = 8 * 3600;
 
 interface FairWorkerChannelIo {
   send(line: string, sent: (error?: Error | null) => void): void;
@@ -479,7 +481,15 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         try {
           const drained = await Promise.race([exited.then(() => true),
             new Promise<boolean>(done => { timer = setTimeout(() => done(false), 10_000); })]);
-          if (!drained) throw new Error('fresh worker task failed to drain; isolated files retained');
+          if (!drained) {
+            // managedSpawn's child is the transient systemd-run client. Under load it
+            // can miss/withhold its `close` event even after killTask has reaped the
+            // confined payload. Prove the authoritative scope is gone before deleting
+            // the worker's private files instead of discarding an otherwise complete run.
+            const scope = scopeUnit ? await killScopeUnit(scopeUnit, { escalateAfterMs: 500 }) : null;
+            if (!scope || (!scope.ok && scope.error !== 'already_gone'))
+              throw new Error('fresh worker task failed to drain; isolated files retained');
+          }
         } finally { clearTimeout(timer); }
       }
       await rm(owned, { recursive: true, force: true });
@@ -500,7 +510,7 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         { class: 'test-run', title: `fair comparison ${id} repetition ${rep}`,
           argv: [process.execPath, ...workerArgv],
           launchedBy: process.env.PAPERCUSP_SID ?? 'human', workItemId: 'WI-10007889',
-          runtimeMaxSec: 4 * 3600 },
+          runtimeMaxSec: FAIR_WORKER_RUNTIME_MAX_SEC },
         { requireRegistration: true, spawnOptions: { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'inherit'],
           env: { ...process.env, P017_BENCH: BENCH, P017_TREE: treeRoot, P017_HOME: home,
             P017_VENDOR_HOME: VENDOR_HOME, P017_FROZEN: resolve(frozenPath) } } });

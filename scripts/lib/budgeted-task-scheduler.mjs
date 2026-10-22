@@ -199,6 +199,86 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       processTrace.gaps.push(`native-process-trace-unreadable:${String(error?.message ?? error)}`);
     }
   } else processTrace.gaps.push("native-process-trace-unobserved");
+  // Derive only the root npm process's direct exported spawn/close spans. A
+  // descendant inherits npm's lifecycle labels too; those labels alone cannot
+  // identify a lifecycle shell or turn its inherited output into step logs.
+  const npmLifecycle = processTrace.npmLifecycle = { scope: "direct-root-npm-spawn-close",
+    status: "unknown", root: null, spans: [], gaps: ["lifecycle-population-unqualified",
+      "lifecycle-shell-streams-unobserved", "lifecycle-step-reports-unobserved"] };
+  try {
+    const npmName = word => typeof word === "string" && ["npm", "npm-cli.js"].includes(basename(word));
+    if (input.command.length !== 3 || !npmName(input.command[0]) ||
+        !["run", "run-script"].includes(input.command[1]) || !input.command[2])
+      throw new Error("unsupported original npm invocation");
+    const events = processTrace.events;
+    const entries = events.filter(row => row.event === "node-entry" && row.pid === input.processTrace?.rootPid);
+    if (entries.length !== 1) throw new Error("root npm entry absent or ambiguous");
+    const entry = entries[0], script = input.command[2];
+    if (!entry.processIdentity || entry.cwd !== input.cwd || !Array.isArray(entry.argv) ||
+        entry.argv.length !== 4 || !npmName(entry.argv[1]) ||
+        entry.argv[2] !== input.command[1] || entry.argv[3] !== script ||
+        !Number.isSafeInteger(entry.atMs)) throw new Error("root npm invocation differs");
+    npmLifecycle.root = { pid: entry.pid, processIdentity: entry.processIdentity, entry: entry.artifact };
+    if (processTrace.population?.complete !== true) npmLifecycle.gaps.push("root-observation-population-incomplete");
+    const direct = events.filter(row => row.event === "child-spawn" && row.pid === entry.pid);
+    const key = row => JSON.stringify([row.processIdentity, row.pid, row.childIdentity, row.childPid]);
+    const spawns = new Map(), closes = new Map(), phases = new Map();
+    for (const row of direct) {
+      spawns.set(key(row), (spawns.get(key(row)) ?? 0) + 1);
+      const phase = row.lifecycle?.event;
+      phases.set(phase, (phases.get(phase) ?? 0) + 1);
+    }
+    for (const row of events.filter(row => row.event === "child-close" && row.pid === entry.pid)) {
+      const matches = closes.get(key(row)) ?? [];
+      matches.push(row); closes.set(key(row), matches);
+    }
+    const candidates = [];
+    for (const spawn of direct) {
+      const close = closes.get(key(spawn)) ?? [];
+      if (spawn.processIdentity !== entry.processIdentity || typeof spawn.childIdentity !== "string" ||
+          !spawn.childIdentity || !Number.isSafeInteger(spawn.childPid) || spawn.childPid <= 0 ||
+          typeof spawn.command !== "string" || !spawn.command || !Array.isArray(spawn.argv) ||
+          !spawn.argv.every(word => typeof word === "string") ||
+          typeof spawn.cwd !== "string" || !isAbsolute(spawn.cwd) ||
+          !["boolean", "string"].includes(typeof spawn.shell) ||
+          typeof spawn.stdioAccessible?.stdout !== "boolean" ||
+          typeof spawn.stdioAccessible?.stderr !== "boolean" ||
+          ![`pre${script}`, script, `post${script}`].includes(spawn.lifecycle?.event) ||
+          typeof spawn.lifecycle?.script !== "string" || !spawn.lifecycle.script ||
+          spawn.argv.length !== 2 || spawn.argv[0] !== "-c" || spawn.argv[1] !== spawn.lifecycle.script ||
+          !Number.isSafeInteger(spawn.atMs) || spawn.atMs < entry.atMs) {
+        npmLifecycle.gaps.push("malformed-or-unbound-direct-lifecycle-spawn"); continue;
+      }
+      if (spawns.get(key(spawn)) !== 1 || phases.get(spawn.lifecycle.event) !== 1 || close.length !== 1) {
+        npmLifecycle.gaps.push("absent-or-ambiguous-direct-lifecycle-pair"); continue;
+      }
+      const end = close[0];
+      if (!Number.isSafeInteger(end.atMs) || end.atMs < spawn.atMs ||
+          !(end.code === null || Number.isSafeInteger(end.code) && end.code >= 0) ||
+          !(end.signal === null || typeof end.signal === "string" && end.signal.length > 0) ||
+          end.code === null && end.signal === null) {
+        npmLifecycle.gaps.push("malformed-direct-lifecycle-close"); continue;
+      }
+      candidates.push({ event: spawn.lifecycle.event, script: spawn.lifecycle.script,
+        observerPid: entry.pid, observerProcessIdentity: entry.processIdentity,
+        childPid: spawn.childPid, childIdentity: spawn.childIdentity,
+        command: spawn.command, argv: spawn.argv.slice(), cwd: spawn.cwd, shell: spawn.shell,
+        stdioAccessible: { ...spawn.stdioAccessible }, startedAtMs: spawn.atMs, closedAtMs: end.atMs,
+        exitCode: end.code, signal: end.signal, spawn: spawn.artifact, close: end.artifact });
+    }
+    for (const [identity] of closes) if (!spawns.has(identity)) npmLifecycle.gaps.push("unpaired-direct-lifecycle-close");
+    npmLifecycle.spans = candidates.filter((row, index) => {
+      const overlap = candidates.some((other, otherIndex) => otherIndex !== index &&
+        row.startedAtMs < other.closedAtMs && other.startedAtMs < row.closedAtMs);
+      if (overlap) npmLifecycle.gaps.push("overlapping-direct-lifecycle-spans");
+      return !overlap;
+    });
+    if (npmLifecycle.spans.length) npmLifecycle.status = "observed";
+    else npmLifecycle.gaps.push("direct-lifecycle-spans-unobserved");
+  } catch (error) {
+    npmLifecycle.gaps.push(`native-npm-lifecycle-unbound:${String(error?.message ?? error)}`);
+  }
+  npmLifecycle.gaps = [...new Set(npmLifecycle.gaps)];
   // OUT is an existing reporter diagnostic, not a step receipt or pass token.
   // Keep its failures independent from otherwise useful process observations.
   const reporter = processTrace.reporter = { status: "unknown", artifact: null, process: null,

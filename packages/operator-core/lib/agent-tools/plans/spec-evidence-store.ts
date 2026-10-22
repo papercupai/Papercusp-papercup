@@ -3786,7 +3786,7 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
     || !certifiesCompletedTestRow(row.evidence_kind) || !completedTestPlane || row.test_run_status !== 'pass'
     || row.test_run_framework !== 'vitest' || (execution.testLayer !== 'integration' && execution.testLayer !== 'e2e')
     || row.test_run_worktree_dirty !== false || execution.worktreeDirty || execution.collectionFailed
-    || execution.failed !== 0 || execution.passed !== selector.runIds.length
+    || execution.failed !== 0 || execution.passed < selector.runIds.length
     || execution.workspaceId !== scope.workspaceId || !isolatedHarnessMatches
     || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
     || execution.commitSha !== row.test_run_commit_sha || !recipe.testPaths?.includes(execution.filePath)
@@ -3797,18 +3797,20 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
   const start = at(row.test_run_started_at), end = at(row.test_run_finished_at);
   if (![start, end].every(Number.isFinite) || start > end) return null;
   try {
-    if (execution.skipped !== 0) {
+    if (execution.skipped !== 0 || execution.passed !== selector.runIds.length) {
       // A focused Vitest run records excluded cases as skips. Certify only
       // when the case ledger proves every skip was outside the actual filter;
-      // a selected skip or missing case ledger remains unverified.
-      if (!execution.testNamePattern || !row.test_run_id) return null;
-      const pattern = new RegExp(execution.testNamePattern);
+      // a selected skip or missing case ledger remains unverified. Several
+      // passing cases may share one original lifetime, but their complete
+      // passing case ledger must still corroborate the execution counts.
+      if (!row.test_run_id || (execution.skipped !== 0 && !execution.testNamePattern)) return null;
+      const pattern = execution.skipped !== 0 ? new RegExp(execution.testNamePattern!) : null;
       const recordedCases = await withWorkspace(scope.workspaceId,
         tx => readRecordedTestCases(tx, row.test_run_id!));
       if (!recordedCases || recordedCases.cases.length !== execution.passed + execution.skipped
         || recordedCases.cases.filter(c => c.status === 'pass').length !== execution.passed
         || recordedCases.cases.filter(c => c.status === 'skip').length !== execution.skipped
-        || recordedCases.cases.some(c => pattern.test(c.caseKey.replaceAll(' > ', ' ')) !== (c.status === 'pass')))
+        || (pattern && recordedCases.cases.some(c => pattern.test(c.caseKey.replaceAll(' > ', ' ')) !== (c.status === 'pass'))))
         return null;
     }
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);

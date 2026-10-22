@@ -428,6 +428,9 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
     expect(t?.kind).toBe('unguarded-halt');
     expect(t?.note).toBe(UNGUARDED_HALT_NOTE);
     expect(t?.note).toContain('session:request-compaction');
+    expect(t?.note).toContain('no qualifying bounded event-await');
+    expect(t?.note).toContain('unbounded standing watch:create');
+    expect(t?.note).not.toContain('no registered event-await');
   });
 });
 

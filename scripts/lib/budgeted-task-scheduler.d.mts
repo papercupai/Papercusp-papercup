@@ -9,6 +9,18 @@ export interface TaskBudgetInput {
   pidsReserve?: number | string;
 }
 
+export interface NativeNpmLifecycleDiagnostics {
+  scope: 'direct-root-npm-spawn-close'; status: 'observed' | 'unknown'; gaps: string[];
+  root: { pid: number; processIdentity: string;
+    entry: { ref: string; sha256: string; byteLength: number } } | null;
+  spans: Array<{ event: string; script: string; observerPid: number; observerProcessIdentity: string;
+    childPid: number; childIdentity: string; command: string; argv: string[]; cwd: string;
+    shell: boolean | string; stdioAccessible: { stdout: boolean; stderr: boolean };
+    startedAtMs: number; closedAtMs: number; exitCode: number | null; signal: string | null;
+    spawn: { ref: string; sha256: string; byteLength: number };
+    close: { ref: string; sha256: string; byteLength: number } }>;
+}
+
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, input: {
   task: string; attempt: string; cwd: string; command: string[]; originalCommand?: string | null;
   startedAtMs: number; finishedAtMs: number; exitCode: number | null; signal: string | null;
@@ -22,6 +34,8 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, in
     orderedChainQualified: false; runtimeClosure: 'unmeasured'; operationalAcceptance: false;
     steps: never[]; gaps: string[];
     processTrace: { scope: string; gaps: string[];
+      /** Observed direct root npm spans only; inherited shell streams remain unknown. */
+      npmLifecycle: NativeNpmLifecycleDiagnostics;
       /** Diagnostic bytes and observed process/time binding; never a pass qualification. */
       reporter: { status: 'bound' | 'unknown'; gaps: string[];
         artifact: { ref: string; sha256: string; byteLength: number } | null;

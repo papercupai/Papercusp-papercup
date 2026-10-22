@@ -176,6 +176,13 @@ function createManifestResolutionFixture({
     "  } catch (error) {",
     "    if (!String(error?.message || error).startsWith(\"Timed out after \")) throw error;",
     "  }",
+    "  const foreignWorkspace = process.env.NPM_INSTALL_SAFE_TEST_FOREIGN_WORKSPACE;",
+    "  if (foreignWorkspace && phase === \"resolve\" && !fs.existsSync(path.join(process.cwd(), foreignWorkspace, \"package.json\"))) throw new Error(\"npm workspace omitted from resolver scratch tree\");",
+    "  if (process.env.NPM_INSTALL_SAFE_TEST_FOREIGN_FALLBACK === \"1\") {",
+    "    if (phase === \"resolve\" || writerAcquired || process.cwd() !== repoRoot) throw new Error(\"unsupported foreign workspace must use the original tree under its writer\");",
+    "    record(\"fallback\");",
+    "    return;",
+    "  }",
     "  if (process.env.NPM_INSTALL_SAFE_TEST_EXPECT_FALLBACK === \"1\") {",
     "    if (phase === \"resolve\") throw new Error(\"local package target was incorrectly resolved from scratch\");",
     "    if (phase !== \"reify\" || writerAcquired) throw new Error(\"fallback install did not hold the repo writer\");",
@@ -282,6 +289,65 @@ test("manifest resolution fixtures ignore inherited npm routing config", {
     restoreEnv();
     rmSync(fixture.tempRoot, { recursive: true, force: true });
   }
+});
+
+function addForeignWorkspace(fixture, dependencies = {}) {
+  // A verification exclusion must not remove an npm workspace from resolution.
+  const dir = "apps/slack-asana-bug-drill";
+  const rootManifestPath = join(fixture.repoRoot, "package.json");
+  const rootManifest = JSON.parse(readFileSync(rootManifestPath, "utf8"));
+  rootManifest.workspaces.push("apps/*");
+  writeFileSync(rootManifestPath, JSON.stringify(rootManifest));
+  mkdirSync(join(fixture.repoRoot, dir), { recursive: true });
+  const manifest = { name: "@foreign/fixture", version: "1.0.0", dependencies };
+  writeFileSync(join(fixture.repoRoot, dir, "package.json"), JSON.stringify(manifest));
+  const lockPath = join(fixture.repoRoot, "package-lock.json");
+  const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+  lock.packages[""].workspaces = rootManifest.workspaces;
+  lock.packages[dir] = manifest;
+  lock.packages["node_modules/@foreign/fixture"] = { resolved: dir, link: true };
+  writeFileSync(lockPath, JSON.stringify(lock));
+  fixture.env.NPM_INSTALL_SAFE_TEST_FOREIGN_WORKSPACE = dir;
+  return dir;
+}
+
+test("manifest-only resolution includes foreign npm workspaces in its snapshot", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture();
+  try {
+    const dir = addForeignWorkspace(fixture);
+    fixture.args.push("--package-lock-only");
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8", timeout: 15_000, env: fixture.env,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
+      ["cache-verify", "resolve"]);
+    const lock = JSON.parse(readFileSync(join(fixture.repoRoot, "package-lock.json"), "utf8"));
+    assert.equal(lock.packages[dir].name, "@foreign/fixture");
+    assert.deepEqual(lock.packages["node_modules/@foreign/fixture"], { resolved: dir, link: true });
+  } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
+
+test("unsupported foreign workspace dependencies fall back before incomplete resolution", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture();
+  try {
+    addForeignWorkspace(fixture, { "vendored-pkg": "file:vendor/package.tgz" });
+    fixture.env.NPM_INSTALL_SAFE_TEST_FOREIGN_FALLBACK = "1";
+    fixture.env.PAPERCUSP_SKIP_DEP_VERIFY = "1";
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8", timeout: 15_000, env: fixture.env,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stderr, /file dependency has no package manifest/);
+    assert.deepEqual(readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
+      ["cache-verify", "fallback"]);
+  } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
 for (const lockOnly of [false, true]) {

@@ -131,10 +131,13 @@ function recoveryClient() {
 async function executionFence(client: SpawnerIpcClient) {
   const capabilities = await client.call<{
     processExecFence: { serverGeneration: string; connectionId: string };
+    eventLoopDelayP99Ms: number;
   }>('spawn:cancel', {});
   expect(capabilities.processExecFence).toMatchObject({
     serverGeneration: expect.any(String), connectionId: expect.any(String),
   });
+  expect(Number.isFinite(capabilities.eventLoopDelayP99Ms)).toBe(true);
+  expect(capabilities.eventLoopDelayP99Ms).toBeGreaterThanOrEqual(0);
   return capabilities.processExecFence;
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createSpawnerSidecarLoopDelay } from './spawner-sidecar-loop-delay';
 
-describe('spawner sidecar loop delay health', () => {
+describe('spawner sidecar health', () => {
   it('reports a loop stall and resets the measurement window', async () => {
     const health = createSpawnerSidecarLoopDelay(1);
     try {

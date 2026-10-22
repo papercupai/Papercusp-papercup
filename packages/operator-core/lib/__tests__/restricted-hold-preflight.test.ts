@@ -24,6 +24,7 @@ import {
   formatVitestRestrictedHoldRefusal,
   interpretRestrictedHoldPreflight,
   restrictedHoldPreflightSkipReason,
+  runBundleRestrictedHoldPreflight,
   runRestrictedHoldPreflight,
   runVitestRootPreflight,
   vitestRootPreflightSkipReason,
@@ -195,6 +196,31 @@ describe('runVitestRootPreflight', () => {
   it('the convention module test-config loads exists and exports hostPreflight', async () => {
     const mod = await import('../../../../scripts/lib/vitest-host-preflight.mjs');
     expect(typeof mod.hostPreflight).toBe('function');
+  });
+});
+
+describe('runBundleRestrictedHoldPreflight — isolated release gate', () => {
+  const unavailableCensus = () => ({ status: 3, stdout: line({
+    verdict: 'refuse', error: 'restricted_hold_state_unknown', hint: 'disclosure ledger unavailable',
+  }) });
+
+  it('does not query the live disclosure ledger for an isolated checkpoint bundle', () => {
+    const spawn = vi.fn(unavailableCensus);
+    expect(runBundleRestrictedHoldPreflight({ repoRoot: '/repo', inputsFile: '/repo/inputs.json',
+      env: { GREEN_CHECKPOINT: '1', PC_HEAVY_RELEASE_GATE: '1' }, spawn: spawn as never,
+    })).toEqual({ verdict: 'skipped', reason: 'release-gate' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {}, { GREEN_CHECKPOINT: '1' }, { PC_HEAVY_RELEASE_GATE: '1' },
+    { GREEN_CHECKPOINT: 'true', PC_HEAVY_RELEASE_GATE: 'true' },
+  ])('still fails closed without the exact paired gate identity: %j', env => {
+    const spawn = vi.fn(unavailableCensus);
+    expect(runBundleRestrictedHoldPreflight({ repoRoot: '/repo', inputsFile: '/repo/inputs.json',
+      env, spawn: spawn as never,
+    })).toEqual({ verdict: 'refuse', error: 'restricted_hold_state_unknown', hint: 'disclosure ledger unavailable' });
+    expect(spawn).toHaveBeenCalledOnce();
   });
 });
 

@@ -97,6 +97,7 @@ import {
   resolveWorkspaceDirs,
 } from "./check-declared-deps-extracted.mjs";
 import { findBrokenBinLinks } from "./check-partial-install.mjs";
+import { expandWorkspaces } from "./assert-workspace-links.mjs";
 import { auditLockfile } from "../apps/operator/bin/release/dependency-lock-tree-audit.mjs";
 import { EMBEDDED_EXTENSIONS, installEmbeddedExtensions, missingWarning } from "./install-embedded-pgvector.mjs";
 
@@ -1494,7 +1495,24 @@ function toRepoRelativePath(repoRoot, absolutePath) {
 }
 
 function manifestOnlyResolutionLayout(repoRoot) {
-  const workspaceDirs = resolveWorkspaceDirs(repoRoot);
+  // Verification deliberately excludes foreign hives, but npm still expands
+  // their root workspace globs. Omitting those manifests from the scratch tree
+  // deletes their lock entries and can detach links when npm reroots actual
+  // nodes during a scoped reify. Resolve the full npm population; unsupported
+  // dependencies in any workspace must take the existing locked fallback.
+  let rootManifest = {};
+  try {
+    rootManifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  } catch (error) {
+    // npm also supports installs in an empty directory. An unreadable existing
+    // manifest belongs to npm's normal diagnostic path, not scratch resolution.
+    if (error?.code !== "ENOENT")
+      return { supported: false, reason: "cannot parse package.json" };
+  }
+  const workspaceGlobs = Array.isArray(rootManifest.workspaces)
+    ? rootManifest.workspaces
+    : rootManifest.workspaces?.packages ?? [];
+  const workspaceDirs = expandWorkspaces(workspaceGlobs, repoRoot).sort();
   const workspaceManifestPaths = workspaceDirs.map((dir) => dir + "/package.json");
   const outputPaths = [
     "package.json",

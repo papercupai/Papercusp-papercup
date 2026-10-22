@@ -871,14 +871,24 @@ export const capabilityReadDefinition = {
       if (fileStat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if ((e as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
-        // A missing result-door spill is usually a cursor retyped by hand; point
-        // the caller at the one real spill instead of a bare ENOENT (R-8, D-008).
-        const recovered = await trackScratchAsync('mistyped-path-recovery', async () =>
-          (await findMistypedScratchSpill(filePath)) ?? (abs !== filePath ? await findMistypedScratchSpill(abs) : null));
-        if (recovered) return mistypedScratchPathErr(args, filePath, recovered);
+      if ((e as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT') return err('read_failed', msg);
+      // A missing result-door spill is usually a cursor retyped by hand; point
+      // the caller at the one real spill instead of a bare ENOENT (R-8, D-008).
+      const recovered = await trackScratchAsync('mistyped-path-recovery', async () =>
+        (await findMistypedScratchSpill(filePath)) ?? (abs !== filePath ? await findMistypedScratchSpill(abs) : null));
+      if (!recovered) return err('read_failed', msg);
+      if (resolve(recovered.path) !== resolve(abs)) {
+        return mistypedScratchPathErr(args, filePath, recovered);
       }
-      return err('read_failed', msg);
+      // Recovery can see the same path after the initial stat missed it.
+      // That is not a useful correction; retry the exact path once instead.
+      try {
+        fileStat = await trackScratchAsync('stat', () => stat(abs));
+      } catch (retryError: unknown) {
+        const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
+        return err('read_failed', retryMsg);
+      }
+      if (fileStat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
     }
 
     const credentialBearingConfig = isCredentialBearingConfigPath(abs);

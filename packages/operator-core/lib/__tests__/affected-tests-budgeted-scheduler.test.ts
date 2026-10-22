@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +58,119 @@ const SCHEDULER_SRC = readFileSync(
   resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'),
   'utf8',
 );
+
+describe('native npm lifecycle diagnostics', () => {
+  function observe(root: string, fail: string | null = null, shell = '/bin/sh') {
+    const scripts = Object.fromEntries(['pretest', 'test', 'posttest'].map(phase =>
+      [phase, `printf 'shell-${phase}\\n'; node fixture.mjs ${phase}`]));
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'native-npm-protocol-fixture', private: true, scripts }));
+    writeFileSync(join(root, 'fixture.mjs'), `
+      import { spawn } from 'node:child_process';
+      process.stdout.write('node-' + process.argv[2] + '\\n');
+      process.stderr.write('stderr-' + process.argv[2] + '\\n');
+      if (process.argv[2] === 'test') spawn(process.execPath, ['-e', 'process.stdout.write("descendant")'], {stdio:'inherit'});
+      process.exitCode = process.argv[2] === ${JSON.stringify(fail)} ? 7 : 0;
+    `);
+    const out = join(root, 'out.json'), command = ['npm', 'run', 'test'];
+    const pins = ['package.json', 'fixture.mjs'].map(path => ({ path,
+      sha256: createHash('sha256').update(readFileSync(join(root, path))).digest('hex') }));
+    const startedAtMs = Date.now();
+    const child = spawnSync(command[0]!, command.slice(1), { cwd: root, timeout: 20_000,
+      env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+        npm_config_script_shell: shell, PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
+    if (child.error) throw child.error;
+    return { task: 'native-npm-protocol-fixture', attempt: 'initial', cwd: root, command,
+      originalCommand: scripts.test, startedAtMs, finishedAtMs: Date.now(), exitCode: child.status,
+      signal: child.signal, error: null, captureComplete: true, stdout: child.stdout, stderr: child.stderr,
+      before: pins, after: pins, processTrace: { out, rootPid: child.pid } };
+  }
+  let root: string, baseline: ReturnType<typeof observe>;
+  beforeAll(() => { root = mkdtempSync(join(tmpdir(), 'native-npm-lifecycle-')); baseline = observe(root); }, 30_000);
+  afterAll(() => { rmSync(root, { recursive: true, force: true }); });
+  it.each([null, 'pretest', 'test', 'posttest'])('retains actual npm shells, inherited stdio and lifecycle failure %s', fail => {
+    const runRoot = fail === null ? root : mkdtempSync(join(tmpdir(), 'native-npm-failure-'));
+    try {
+      const input = fail === null ? baseline : observe(runRoot, fail);
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(runRoot, 'retained'), input);
+      const trace = result.observation.processTrace, lifecycle = trace.npmLifecycle;
+      const expected = ['pretest', 'test', 'posttest'].slice(0, fail === 'pretest' ? 1 : fail === 'test' ? 2 : 3);
+      expect(lifecycle.status).toBe('observed');
+      expect(lifecycle.spans.map(row => row.event)).toEqual(expected);
+      expect(lifecycle.root!.pid).toBe(input.processTrace.rootPid);
+      for (const [index, span] of lifecycle.spans.entries()) {
+        expect(span.command).toBe('/bin/sh');
+        expect(span.argv).toEqual(['-c', span.script]);
+        expect(span.stdioAccessible).toEqual({ stdout: false, stderr: false });
+        expect(span.observerPid).toBe(input.processTrace.rootPid);
+        expect(span.closedAtMs).toBeGreaterThanOrEqual(span.startedAtMs);
+        expect(span.startedAtMs).toBeGreaterThanOrEqual(index ? lifecycle.spans[index - 1]!.closedAtMs : input.startedAtMs);
+        expect(span.exitCode).toBe(span.event === fail ? 7 : 0);
+        for (const pin of [span.spawn, span.close]) expect(createHash('sha256')
+          .update(readFileSync(join(result.root, pin.ref))).digest('hex')).toBe(pin.sha256);
+      }
+      if (expected.includes('test')) expect(trace.events.some(row => row.event === 'child-spawn' &&
+        row.pid !== input.processTrace.rootPid && (row.lifecycle as { event: string })?.event === 'test')).toBe(true);
+      expect(result.observation.execution.exitCode).toBe(fail === null ? 0 : 7);
+      expect(lifecycle.gaps).toEqual(expect.arrayContaining(['lifecycle-shell-streams-unobserved', 'lifecycle-step-reports-unobserved']));
+      expect(result.observation.steps).toEqual([]);
+      expect(result.observation.orderedChainQualified).toBe(false);
+      expect(result.observation.runtimeClosure).toBe('unmeasured');
+      expect(result.observation.operationalAcceptance).toBe(false);
+    } finally { if (runRoot !== root) rmSync(runRoot, { recursive: true, force: true }); }
+  }, 30_000);
+  it('preserves an actually configured bash shell without relabelling the original sh capture', () => {
+    const runRoot = mkdtempSync(join(tmpdir(), 'native-npm-bash-'));
+    try {
+      const input = observe(runRoot, null, '/bin/bash');
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(runRoot, 'retained'), input);
+      expect(result.observation.processTrace.npmLifecycle.spans).toHaveLength(3);
+      expect(result.observation.processTrace.npmLifecycle.spans.every(span => span.command === '/bin/bash')).toBe(true);
+      const original = writeBudgetedTaskNativeExecutionReceipt(join(root, 'original-retained'), baseline);
+      expect(original.observation.processTrace.npmLifecycle.spans.every(span => span.command === '/bin/sh')).toBe(true);
+      expect(result.observation.orderedChainQualified).toBe(false);
+    } finally { rmSync(runRoot, { recursive: true, force: true }); }
+  }, 30_000);
+  it.each(['missing-close', 'duplicate-close', 'duplicate-spawn', 'observer', 'child', 'argv',
+    'stdio', 'close-status', 'overlap', 'root', 'root-script'] as const)('does not promote %s observations into lifecycle spans', fault => {
+    const replay = mkdtempSync(join(tmpdir(), 'native-npm-protocol-replay-'));
+    try {
+      const out = join(replay, 'out.json'), source = `${out}.native-processes`;
+      cpSync(`${baseline.processTrace.out}.native-processes`, source, { recursive: true });
+      const rows = readdirSync(source).filter(name => name.endsWith('.json')).map(name =>
+        ({ name, row: JSON.parse(readFileSync(join(source, name), 'utf8')) }));
+      const spawn = rows.find(({ row }) => row.event === 'child-spawn' && row.pid === baseline.processTrace.rootPid &&
+        row.lifecycle?.event === 'pretest')!;
+      const close = rows.find(({ row }) => row.event === 'child-close' && row.childIdentity === spawn.row.childIdentity)!;
+      const entry = rows.find(({ row }) => row.event === 'node-entry' && row.pid === baseline.processTrace.rootPid)!;
+      const replace = (target: typeof spawn, row: typeof spawn.row, keep = false) => {
+        if (!keep) rmSync(join(source, target.name));
+        const bytes = Buffer.from(JSON.stringify(row));
+        writeFileSync(join(source, `${createHash('sha256').update(bytes).digest('hex')}.json`), bytes);
+      };
+      if (fault === 'missing-close') rmSync(join(source, close.name));
+      if (fault === 'duplicate-close') replace(close, { ...close.row, extraObservation: true }, true);
+      if (fault === 'duplicate-spawn') replace(spawn, { ...spawn.row, extraObservation: true }, true);
+      if (fault === 'observer') replace(spawn, { ...spawn.row, processIdentity: 'unrelated-observer' });
+      if (fault === 'child') replace(close, { ...close.row, childIdentity: 'unrelated-child' });
+      if (fault === 'argv') replace(spawn, { ...spawn.row, argv: ['-c', 'unobserved command'] });
+      if (fault === 'stdio') replace(spawn, { ...spawn.row, stdioAccessible: {} });
+      if (fault === 'close-status') replace(close, { ...close.row, code: null, signal: null });
+      if (fault === 'overlap') replace(close, { ...close.row, atMs: baseline.finishedAtMs });
+      if (fault === 'root') replace(entry, { ...entry.row, processIdentity: 'another-root' }, true);
+      if (fault === 'root-script') replace(entry, { ...entry.row, argv: [entry.row.argv[0], entry.row.argv[1], 'run', 'other'] });
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(replay, 'retained'), {
+        ...baseline, processTrace: { ...baseline.processTrace, out } });
+      const trace = result.observation.processTrace;
+      expect(trace.events.length).toBeGreaterThan(0);
+      expect(trace.streams.length).toBeGreaterThan(0);
+      expect(trace.npmLifecycle.spans.some(row => row.childIdentity === spawn.row.childIdentity)).toBe(false);
+      expect(trace.npmLifecycle.gaps.length).toBeGreaterThan(3);
+      if (fault === 'root' || fault === 'root-script') expect(trace.npmLifecycle.status).toBe('unknown');
+      expect(result.observation.orderedChainQualified).toBe(false);
+      expect(result.observation.operationalAcceptance).toBe(false);
+    } finally { rmSync(replay, { recursive: true, force: true }); }
+  });
+});
 
 describe('native affected-task parent receipt transport', () => {
   it.each([16384, 16385, 55278])('retains bounded authenticated observations from %i artifacts including streams', count => {

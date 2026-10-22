@@ -14,6 +14,7 @@ import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/
 import {
   SESSION_SEARCH_INDEXES,
   ISSUE_Q_SEARCH_INDEXES,
+  TEST_RUNS_SEARCH_INDEXES,
   SESSION_TURN_PARTS_TABLE,
   SESSION_TURN_TRGM_EXPR,
   SESSION_TURNS_TABLE,
@@ -46,6 +47,7 @@ const M501 = path.join(SQL_DIR, '501-session-turns.sql');
 const M1273 =
   process.env.P002_MIGRATION_SQL_UNDER_TEST ?? path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql');
 const M1512 = path.join(SQL_DIR, '1512-work-items-substring-trigram-indexes.sql');
+const M1558 = path.join(SQL_DIR, '1558-test-runs-file-path-substring-trigram-index.sql');
 const GENERATED_SCHEMA = path.resolve(here, '../../../libs/papercusp/libs/db/src/schema/generated.ts');
 
 const TRGM = 'session_turns_text_trgm_idx';
@@ -381,6 +383,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       [TS_DESC, 'built'],
       [TOOL_RESULT, 'deferred-table-missing'],
       ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      ...TEST_RUNS_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'built'],
     ]);
     for (const n of [TRGM, TS_DESC, VOCAB_TRGM]) expect(await indexValid(n)).toBe(true);
@@ -392,6 +395,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       [TS_DESC, 'present'],
       [TOOL_RESULT, 'deferred-table-missing'],
       ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      ...TEST_RUNS_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'present'],
     ]);
     expect(second.vocab.every((v) => v.action === 'current')).toBe(true);
@@ -521,6 +525,9 @@ describe('runSessionSearchIndexBuildOnce', () => {
     for (const i of ISSUE_Q_SEARCH_INDEXES) {
       expect(r.indexes.find((entry) => entry.name === i.name)?.action).toBe('deferred-table-missing');
     }
+    for (const i of TEST_RUNS_SEARCH_INDEXES) {
+      expect(r.indexes.find((entry) => entry.name === i.name)?.action).toBe('deferred-table-missing');
+    }
     expect(r.vocab.every((v) => v.action === 'would-build')).toBe(true);
     for (const n of [TRGM, TS_DESC, VOCAB_TRGM]) expect(await indexValid(n)).toBeNull();
     expect(await indexValid(TOOL_RESULT)).toBeNull();
@@ -593,6 +600,70 @@ describe('work_items:list literal q trigram indexes (EI-25883110093789830)', () 
         expect(built.indexes.find((entry) => entry.name === spec.name)?.action).toBe('built');
         expect(await indexValidOn(fresh.sql, spec.name)).toBe(true);
       }
+    } finally {
+      await fresh.cleanup();
+    }
+  }, 120_000);
+});
+
+describe('testing:runs filePath substring trigram index', () => {
+  const indexName = TEST_RUNS_SEARCH_INDEXES[0]!.name;
+
+  async function prepareTestRunsDb(fresh: FreshPgDb): Promise<void> {
+    // runSessionSearchIndexBuildOnce has a Guard 0 preflight for the session-turn,
+    // vocabulary, and vocabulary-state tables. The populated-ledger case must reach
+    // the per-index builder instead of returning early with `tables-missing`.
+    await fresh.sql.unsafe(
+      `CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (surface text, body jsonb)`,
+    );
+    await applyMigrationForTest(fresh.sql, M501);
+    await applyMigrationForTest(fresh.sql, M1273);
+    await fresh.sql.unsafe(`
+      CREATE TABLE harness_shared.test_runs (
+        id bigserial PRIMARY KEY,
+        file_path text NOT NULL
+      )
+    `).simple();
+  }
+
+  it('creates the matching index inline for a small or fresh ledger', async () => {
+    const fresh = await createFreshPgDb('test-runs-path-trgm-small');
+    try {
+      await prepareTestRunsDb(fresh);
+      await applyMigrationForTest(fresh.sql, M1558);
+      expect(await indexValidOn(fresh.sql, indexName)).toBe(true);
+      expect(
+        await explainWithIndexes(
+          fresh.sql,
+          "SELECT id FROM harness_shared.test_runs WHERE file_path ILIKE '%needle%'",
+        ),
+      ).toContain(indexName);
+    } finally {
+      await fresh.cleanup();
+    }
+  }, 120_000);
+
+  it('defers a populated ledger to the guarded concurrent builder', async () => {
+    const fresh = await createFreshPgDb('test-runs-path-trgm-large');
+    try {
+      await prepareTestRunsDb(fresh);
+      await fresh.sql.unsafe(`
+        INSERT INTO harness_shared.test_runs (file_path)
+        SELECT CASE WHEN n = 1 THEN 'apps/operator/needle.test.ts' ELSE 'ordinary/test-' || n::text END
+          FROM generate_series(1, 10001) AS n
+      `).simple();
+      await applyMigrationForTest(fresh.sql, M1558);
+      expect(await indexValidOn(fresh.sql, indexName)).toBeNull();
+
+      const built = await runSessionSearchIndexBuildOnce(fresh.sql, OPTS);
+      expect(built.indexes.find((entry) => entry.name === indexName)?.action).toBe('built');
+      expect(await indexValidOn(fresh.sql, indexName)).toBe(true);
+      expect(
+        await explainWithIndexes(
+          fresh.sql,
+          "SELECT id FROM harness_shared.test_runs WHERE file_path ILIKE '%needle%'",
+        ),
+      ).toContain(indexName);
     } finally {
       await fresh.cleanup();
     }

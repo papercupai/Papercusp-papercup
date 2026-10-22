@@ -159,9 +159,24 @@ export const ISSUE_Q_SEARCH_INDEXES = [
   },
 ] as const satisfies readonly SessionSearchIndexSpec[];
 
+/**
+ * `testing:runs` preserves literal substring matching for filePath. Its existing
+ * btree `(file_path, finished_at)` index cannot serve `ILIKE '%literal%'`, so
+ * populated ledgers need this GIN through the same guarded concurrent builder.
+ */
+export const TEST_RUNS_SEARCH_INDEXES = [
+  {
+    name: 'test_runs_file_path_substring_trgm_idx',
+    table: 'harness_shared.test_runs',
+    definition: 'USING gin (file_path gin_trgm_ops)',
+    stage: 'corpus',
+  },
+] as const satisfies readonly SessionSearchIndexSpec[];
+
 const ONLINE_SEARCH_INDEXES: readonly SessionSearchIndexSpec[] = [
   ...SESSION_SEARCH_INDEXES,
   ...ISSUE_Q_SEARCH_INDEXES,
+  ...TEST_RUNS_SEARCH_INDEXES,
 ];
 
 export type SessionSearchIndexName = (typeof SESSION_SEARCH_INDEXES)[number]['name'];

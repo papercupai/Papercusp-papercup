@@ -2404,12 +2404,13 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   });
 
   it.each([
-    { label: 'unbounded event', eventKey: 'work-item:claimable', expiresTs: null, timeoutBehavior: 'wake', expected: false },
-    { label: 'silent expiry', eventKey: 'work-item:claimable', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'expire', expected: false },
-    { label: 'bounded event wake', eventKey: 'work-item:claimable', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'wake', expected: true },
-    { label: 'bounded inbox wake', eventKey: 'coord:inbox-wake:su-caller', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'wake', expected: true },
-    { label: 'unbounded inbox wake', eventKey: 'coord:inbox-wake:su-caller', expiresTs: null, timeoutBehavior: 'wake', expected: false },
-  ])('runtime wiring: $label has the correct continuation guarantee', async ({ eventKey, expiresTs, timeoutBehavior, expected }) => {
+    { label: 'unbounded event', eventKey: 'work-item:claimable', expiresTs: null, timeoutBehavior: 'wake', once: true, activeWatch: false, expected: false },
+    { label: 'unbounded standing event watch', eventKey: 'work-item:claimable', expiresTs: null, timeoutBehavior: 'wake', once: false, activeWatch: true, expected: false },
+    { label: 'silent expiry', eventKey: 'work-item:claimable', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'expire', once: true, activeWatch: false, expected: false },
+    { label: 'bounded event wake', eventKey: 'work-item:claimable', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'wake', once: true, activeWatch: false, expected: true },
+    { label: 'bounded inbox wake', eventKey: 'coord:inbox-wake:su-caller', expiresTs: '2099-01-01T00:00:00.000Z', timeoutBehavior: 'wake', once: true, activeWatch: false, expected: true },
+    { label: 'unbounded inbox wake', eventKey: 'coord:inbox-wake:su-caller', expiresTs: null, timeoutBehavior: 'wake', once: false, activeWatch: false, expected: false },
+  ])('runtime wiring: $label has the correct continuation guarantee', async ({ eventKey, expiresTs, timeoutBehavior, once, activeWatch, expected }) => {
     withBoundedTimeout.mockImplementation(async (work: unknown) => ({
       value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
       degraded: false,
@@ -2419,15 +2420,20 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     resolveCurrentTurnStamp.mockResolvedValue({ verdict: 'agent-injected' });
     getPresence.mockResolvedValue({ contextTokens: 80, compactionLimit: 100 });
     currentContextTokensForOwner.mockResolvedValue(80);
-    listActiveAwaits.mockResolvedValue([{ eventKey, expiresTs, timeoutBehavior, once: true }]);
+    listActiveAwaits.mockResolvedValue([{ eventKey, expiresTs, timeoutBehavior, once }]);
 
     const b = body(await call({ next: 'settle only with a bounded wake' }));
 
     expect(b.continuation).toMatchObject({
       rewakeGuaranteed: expected,
       activeInboxWakeAwait: eventKey.startsWith('coord:inbox-wake:'),
+      activeUnboundedWakeWatch: activeWatch,
       nextWakeFresh: null,
     });
+    if (activeWatch) {
+      expect(b.continuation.guidance).toContain('active unbounded wake:true watch present');
+      expect(b.continuation.guidance).toContain('does not guarantee another turn if no event fires');
+    }
   });
 
   it.each([

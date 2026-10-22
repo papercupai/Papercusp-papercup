@@ -28,7 +28,8 @@
  *            then replies with the SpawnInvokeOnceResult.
  * Request  `spawn:cancel`     { requestId } → aborts that request's AbortController.
  *                           Also returns the server/connection generation for a
- *                           process:exec `fence` (including with no requestId).
+ *                           process:exec `fence` and event-loop delay p99 since
+ *                           the previous capabilities read (including with no requestId).
  * Request  `process:drain`    { serverGeneration, connectionId, requestId } on a
  *                           different connection → revokes the old connection,
  *                           waits for its exec to settle, confirms exit. A null

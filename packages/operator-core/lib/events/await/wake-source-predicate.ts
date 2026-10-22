@@ -89,7 +89,9 @@ export function nonWakeReason(
   if (rows === undefined) return null;
   if (rows.length === 0) return 'missing-target';
   const live = rows.filter((r) => !TERMINAL.has(r.status));
-  if (live.length === 0) return 'terminal-target';
+  // A settled await is specifically about the post-terminal git-sync commit. The terminal
+  // status is its prerequisite, so it cannot by itself make this event a dead wake source.
+  if (live.length === 0 && ref.verb !== 'settled') return 'terminal-target';
   if (ref.verb === 'done' && live.some((r) => r.takenBy === a.subscriberId)) return 'self-held-done';
   return null;
 }

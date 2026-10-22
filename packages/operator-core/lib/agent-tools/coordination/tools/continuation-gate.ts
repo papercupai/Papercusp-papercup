@@ -369,6 +369,10 @@ export interface ContinuationGateInputs {
    * deliberate re-wake for the current work.
    */
   activeInboxWakeAwait?: boolean | null;
+  /** Whether a standing, unbounded wake:true subscription is active. It may
+   *  re-invoke the session when its event fires, but it cannot guarantee a
+   *  wake when no matching event arrives. Keep this separate from the guarantee. */
+  activeUnboundedWakeWatch?: boolean | null;
   /** Does the guaranteed next wake actually start on FRESH context? An armed
    *  warm loop guarantees another turn but preserves this transcript, so it
    *  must not satisfy the context-pressure remedy. false steers the caller to
@@ -424,6 +428,8 @@ export interface ContinuationVerdict {
   rewakeGuaranteed: boolean | null;
   /** Whether the standing inbox-wake keepalive was active (null ⇒ unknown). */
   activeInboxWakeAwait: boolean | null;
+  /** Whether an unbounded standing wake:true watch was active (null ⇒ unknown). */
+  activeUnboundedWakeWatch: boolean | null;
   /** Whether the next wake sheds the current transcript (null ⇒ unknown). */
   nextWakeFresh: boolean | null;
   /** Why a present active loop does not itself guarantee another wake. */
@@ -472,6 +478,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   const shouldContinue = reasons.length === 0;
   const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
   const activeInboxWakeAwait = inputs.activeInboxWakeAwait ?? null;
+  const activeUnboundedWakeWatch = inputs.activeUnboundedWakeWatch ?? null;
   const nextWakeFresh = inputs.nextWakeFresh ?? null;
   const activeLoopRewakeBlockedReason = inputs.activeLoopRewakeBlockedReason ?? null;
   const selfCompactionAvailable = inputs.selfCompactionAvailable ?? null;
@@ -543,14 +550,15 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
                 : activeLoopRewakeBlockedReason === 'last-fire-no-loop-turn'
                   ? "its latest delivered fire was re-armed after the bounded grace without a loop-origin assistant turn (lastDeliveryOutcome='loop-delivered-wake-no-loop-turn')"
                 : null;
+    const awaitGap = activeInboxWakeAwait === true
+      ? 'no qualifying deliberate await; active standing coord:inbox-wake await present (liveness keepalive only); no owner present'
+      : 'no qualifying deliberate await; no owner present';
+    const unboundedWatchGap = activeUnboundedWakeWatch === true
+      ? '; active unbounded wake:true watch present (it can wake on a matching event, but does not guarantee another turn if no event fires)'
+      : '';
     const reWakeGap = activeLoopDiagnosis
-      ? `an armed loop EXISTS but is intentionally excluded from the guarantee because ${activeLoopDiagnosis}; ` +
-        (activeInboxWakeAwait === true
-          ? 'no qualifying deliberate await; active standing coord:inbox-wake await present (liveness keepalive only); no owner present'
-          : 'no registered await; no owner present')
-      : activeInboxWakeAwait === true
-        ? 'no armed loop, no qualifying deliberate await, active standing coord:inbox-wake await present (liveness keepalive only), no owner present'
-        : 'no armed loop, no registered await, no owner present';
+      ? `an armed loop EXISTS but is intentionally excluded from the guarantee because ${activeLoopDiagnosis}; ${awaitGap}${unboundedWatchGap}`
+      : `no armed loop, ${awaitGap}${unboundedWatchGap}`;
     const opening =
       `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
       `⚠ NO guaranteed re-wake (autonomous mode; ${reWakeGap}): ` +
@@ -662,6 +670,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     unreadInbox,
     rewakeGuaranteed,
     activeInboxWakeAwait,
+    activeUnboundedWakeWatch,
     nextWakeFresh,
     activeLoopRewakeBlockedReason,
     selfCompactionAvailable,
@@ -681,6 +690,7 @@ export function continuationGateFromReads(args: {
   ceilingPct?: number;
   rewakeGuaranteed?: boolean | null;
   activeInboxWakeAwait?: boolean | null;
+  activeUnboundedWakeWatch?: boolean | null;
   nextWakeFresh?: boolean | null;
   selfCompactionAvailable?: boolean | null;
   fleetWindDownLoopEndAuthorized?: boolean | null;
@@ -694,6 +704,7 @@ export function continuationGateFromReads(args: {
     ceilingPct: args.ceilingPct,
     rewakeGuaranteed: args.rewakeGuaranteed,
     activeInboxWakeAwait: args.activeInboxWakeAwait,
+    activeUnboundedWakeWatch: args.activeUnboundedWakeWatch,
     nextWakeFresh: args.nextWakeFresh,
     selfCompactionAvailable: args.selfCompactionAvailable,
     fleetWindDownLoopEndAuthorized: args.fleetWindDownLoopEndAuthorized,

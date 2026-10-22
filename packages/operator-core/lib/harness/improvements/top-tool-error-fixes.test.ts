@@ -46,6 +46,7 @@
  *     dispatch, so no refusal row is minted.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import * as fileOps from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -87,6 +88,10 @@ vi.mock('../../agent-tools/capability/bash-jobs', async (importOriginal) => ({
   getJob: registry.getJob,
   startBackground: registry.startBackground,
 }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, stat: vi.fn(actual.stat) };
+});
 
 import bashOutputTool from '../../agent-tools/capability/bash_output';
 import readTool from '../../agent-tools/capability/read';
@@ -156,6 +161,22 @@ afterAll(() => {
 });
 
 describe('D-023 rank 2 (capability:read read_failed, 448): ENOENT on a hand-retyped result-door cursor', () => {
+  it('retries the exact cursor when recovery finds the same path after an ENOENT', async () => {
+    const missing = Object.assign(new Error(`ENOENT: ${SPILL}`), { code: 'ENOENT' });
+    const statSpy = vi.mocked(fileOps.stat);
+    statSpy.mockClear();
+    statSpy.mockRejectedValueOnce(missing);
+
+    try {
+      const retried = await read({ file_path: SPILL, byte_offset: 0, byte_limit: 64 });
+      expect(retried.isError).not.toBe(true);
+      expect(parse(retried)).toMatchObject({ ok: true });
+      expect(statSpy.mock.calls.filter(([path]) => String(path) === SPILL).length).toBeGreaterThan(2);
+    } finally {
+      statSpy.mockClear();
+    }
+  });
+
   it('a changed run-id character returns scratch_path_mistyped with the exact cursor, and the cursor reads', async () => {
     const typo = join(SCRATCH, WS, TOOL, 'c3986847-b504-46ca-9db5-a3d6367ad1ed', BASENAME);
     const refused = await read({ file_path: typo, byte_offset: 0, byte_limit: 64 });

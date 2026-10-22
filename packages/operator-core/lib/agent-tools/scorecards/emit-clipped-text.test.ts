@@ -6,10 +6,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hasResultDoorTruncation } from '@papercusp/docs-engine';
 import { truncatedBodyVerdict } from '../docs/author';
 
-const getRubric = vi.fn();
+const readRubric = vi.fn();
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
-  return { ...real, getRubric: (...a: unknown[]) => getRubric(...a) };
+  return { ...real, readRubric: (...a: unknown[]) => readRubric(...a) };
 });
 
 import { emitScorecard } from './emit';
@@ -112,7 +112,7 @@ describe('calibration: ONE definition of the result door marker, shared with doc
 
 describe('emitScorecard — the guard sits at the write facade, before any store read', () => {
   beforeEach(() => {
-    getRubric.mockReset();
+    readRubric.mockReset();
   });
 
   const call = (evidence: string) =>
@@ -127,13 +127,13 @@ describe('emitScorecard — the guard sits at the write facade, before any store
     const res = await call(clip('graded draft evidence'));
     expect(res).toMatchObject({ ok: false, code: CLIPPED_SCORECARD_TEXT_CODE });
     expect((res as { error: string }).error).toContain('ratings.c1.evidence');
-    expect(getRubric).not.toHaveBeenCalled();
+    expect(readRubric).not.toHaveBeenCalled();
   });
 
   it('CONTROL: the identical call with whole evidence DOES reach the rubric read (the guard is not a blanket refusal)', async () => {
-    getRubric.mockResolvedValue(null);
+    readRubric.mockResolvedValue({ kind: 'missing' });
     const res = await call('complete, authored evidence');
     expect(res).toMatchObject({ ok: false, error: "rubric 'wi-10005715-rubric' not found" });
-    expect(getRubric).toHaveBeenCalledTimes(1);
+    expect(readRubric).toHaveBeenCalledTimes(1);
   });
 });

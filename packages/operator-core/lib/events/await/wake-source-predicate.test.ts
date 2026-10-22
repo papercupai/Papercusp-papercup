@@ -82,6 +82,19 @@ describe('nonWakeReason / isWakeSource (D-008 (1))', () => {
     );
   });
 
+  it('keeps a bounded settled await live when the target is already terminal', () => {
+    const settled = {
+      subscriberId: ME,
+      eventKey: 'work-item:settled:WI-1',
+      expiresTs: '2026-10-11T03:00:00.000Z',
+      timeoutBehavior: 'wake',
+    };
+    const terminal = targets({ 'WI-1': [{ status: 'done', takenBy: null }] });
+
+    expect(nonWakeReason(settled, terminal, PREFIX)).toBeNull();
+    expect(guaranteesWake(settled, terminal, PREFIX)).toBe(true);
+  });
+
   it('treats an item that was NOT looked up as live (positive-finding-only)', () => {
     expect(isWakeSource({ subscriberId: ME, eventKey: 'work-item:done:WI-9' }, NONE, PREFIX)).toBe(true);
   });

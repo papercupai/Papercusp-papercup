@@ -936,12 +936,13 @@ export interface UnguardedHaltTripwire {
 
 export const UNGUARDED_HALT_NOTE =
   'Turn ending under an autonomous mode (auto/drain) with NO guaranteed re-wake: no armed loop, ' +
-  'no registered event-await, and no owner present to speak next. Nothing will re-invoke this ' +
+  'no qualifying bounded event-await, and no owner present to speak next. Nothing will re-invoke this ' +
   'session — it silently halts until a human notices (the "ended a turn expecting a wake that was ' +
   'not armed" failure). Before ending: arm a loop (loop:arm), register a BOUNDED wake ' +
   '(events:await / deploy:await WITH an explicit timeout_sec), or self-compact to continue ' +
   '(session:request-compaction { autoContinue: true }). ' +
   '⚠ A registered await is only a guarantee if its EVENT CAN ACTUALLY FIRE and it is BOUNDED. ' +
+  'An unbounded standing watch:create { wake:true, once:false } watch can re-invoke the session on a matching event, but it does not guarantee a wake if no event fires. ' +
   'Ask what happens in the FAILURE branch: sleeping on release:deployed after a gate run wakes ' +
   'nobody if the gate reds, because no deploy is ever attempted. And an await SUPPRESSES ' +
   'monitor-loop fires while it sleeps, so an unbounded or impossible await silences an armed loop ' +

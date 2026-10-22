@@ -2147,6 +2147,7 @@ export default defineTool({
         // unknown ⇒ null → base guidance (non-breaking).
         let rewakeGuaranteed: boolean | null = null;
         let activeInboxWakeAwait: boolean | null = null;
+        let activeUnboundedWakeWatch: boolean | null = null;
         let nextWakeFresh: boolean | null = null;
         let activeLoopIntervalSec: number | null = null;
         let activeLoopGoal: string | null = null;
@@ -2178,6 +2179,12 @@ export default defineTool({
           activeLoopRewakeBlockedReason =
             loop?.active && !loopWake.guaranteed && loopWake.reason !== 'no-active-loop' ? loopWake.reason : null;
           activeInboxWakeAwait = awaits.some((a) => a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX));
+          activeUnboundedWakeWatch = awaits.some(
+            (a) =>
+              !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX) &&
+              a.once === false &&
+              a.expiresTs == null,
+          );
           const activeNonInboxAwaitCount = awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length;
           const guaranteedAwaitCount = awaits.filter((a) => awaitGuaranteesRewake(a, INBOX_WAKE_KEY_PREFIX)).length;
           rewakeGuaranteed = isRewakeGuaranteed({
@@ -2236,6 +2243,7 @@ export default defineTool({
           unreadInbox,
           rewakeGuaranteed,
           activeInboxWakeAwait,
+          activeUnboundedWakeWatch,
           nextWakeFresh,
           selfCompactionAvailable,
           fleetWindDownLoopEndAuthorized,
