@@ -27,7 +27,15 @@ vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
   harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
 }));
-vi.mock('./source', () => ({ listPlanIndexRows: vi.fn(async () => []) }));
+vi.mock('./source', () => ({
+  listPlanIndexRows: vi.fn(async () => []),
+  resolvePlanScope: vi.fn(async (opts: { workspaceId?: string } = {}) => ({
+    workspaceId: opts.workspaceId ?? 'default', harnessSlug: 'offsite-planner-demo',
+  })),
+}));
+vi.mock('../../harness/routines/hive-release-env', () => ({
+  resolveHarnessIsCoding: vi.fn(async () => null),
+}));
 vi.mock('./semantic-dedup', () => ({ confirmSimilarPlans: vi.fn(async () => ({ verdict: false })) }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: vi.fn(() => ({ recorded: { current: null }, afterWrite: vi.fn() })),

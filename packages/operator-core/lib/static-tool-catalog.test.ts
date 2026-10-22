@@ -22,6 +22,30 @@ function liveMcpNames(): Set<string> {
 }
 
 describe('static tool catalog derivation', () => {
+  it('resolves imported definition spreads and respects name overrides in source order', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-tool-spread-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      write('packages/operator-core/lib/agent-tools/definition.ts',
+        "export const definition = { name: 'fixture:read', description: 'read' } as const;");
+      write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT, [
+        "import { definition as imported } from './definition';",
+        "defineTool({ ...imported, agentRoles: ['judge'] });",
+        "defineTool({ ...imported, name: 'fixture:override' });",
+        "defineTool({ name: 'fixture:shadowed', ...imported });",
+        "defineTool({ name: 'fixture:unknown-shadow', ...unknownDefinition });",
+      ].join('\n'));
+      expect([...buildBuiltinToolCatalog(root)].sort()).toEqual(['fixture:override', 'fixture:read']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves extensionless dotted module names and still refuses a missing dotted module', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'static-dotted-module-'));
     const write = (path: string, text: string) => {

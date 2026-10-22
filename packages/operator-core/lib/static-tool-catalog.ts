@@ -319,7 +319,29 @@ function toolNamesIn(sourceFile: ts.SourceFile, importedObjects: StringObjectCon
           mcp && ts.isObjectLiteralExpression(mcp)
             ? literalString(propertyValue(mcp, 'name'), constants, objects)
             : undefined;
-        const name = projected ?? literalString(propertyValue(input, 'name'), constants, objects);
+        // Object spreads participate in the runtime definition, including an
+        // imported handler definition whose registration only overrides roles.
+        // Walk backwards so a later name (or spread) wins just as it does in JS.
+        let declared: string | undefined;
+        for (const property of [...input.properties].reverse()) {
+          if (ts.isPropertyAssignment(property)) {
+            const key = ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)
+              ? property.name.text : undefined;
+            if (key !== 'name') continue;
+            declared = literalString(property.initializer, constants, objects);
+            break;
+          }
+          if (ts.isSpreadAssignment(property)) {
+            const value = unwrapExpression(property.expression);
+            const entries = ts.isIdentifier(value) ? objects.get(value.text) : undefined;
+            // An unresolved spread might overwrite an earlier name.
+            if (!entries) break;
+            if (!entries.has('name')) continue;
+            declared = entries.get('name');
+            break;
+          }
+        }
+        const name = projected ?? declared;
         if (name) names.push(name);
       }
     }
