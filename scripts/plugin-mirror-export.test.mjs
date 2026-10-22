@@ -192,12 +192,13 @@ test('SDK-generated provider mirrors contain the executable bundle without priva
   const built = buildMirror([
     manifest({ main: './index.cjs', provider: {} }),
     file('adapter.ts', "import { helper } from '../../../../packages/operator-core/lib/helper';"),
-    file('index.cjs', header + '// packages/operator-core/lib/helper.ts\nmodule.exports = { answer: 42, text: `one\n// literal text\ntwo` };'),
+    file('index.cjs', header + '// packages/operator-core/lib/helper.ts\n/*! Example library notice */\nmodule.exports = { answer: 42, text: `one\n// literal text\ntwo` };'),
   ]);
   assert.equal(built.ok, true, JSON.stringify(built.problems));
   assert.ok(!built.files.some((f) => f.path === 'adapter.ts'));
   const output = built.files.find((f) => f.path === 'index.cjs').content.toString();
   assert.ok(!output.includes('packages/operator-core'));
+  assert.ok(output.includes('Example library notice'));
   const context = { module: { exports: {} } };
   runInNewContext(output, context);
   assert.equal(context.module.exports.answer, 42);
@@ -211,6 +212,10 @@ test('compiled provider export still refuses private runtime strings, escaped im
   assert.match(buildMirror(input("module.exports = 'packages/operator-core/lib/private.ts';")).problems.join('\n'), /monorepo source path/);
   assert.match(buildMirror(input("require('../outside.cjs');")).problems.join('\n'), /escapes the package directory/);
   assert.match(buildMirror(input("require('./adapter.ts');")).problems.join('\n'), /still imports its authoring source/);
+  assert.match(buildMirror(input('module.exports = {')).problems.join('\n'), /invalid generated JavaScript/);
+  const daemonSource = input('module.exports = {};');
+  daemonSource[0] = manifest({ main: './index.cjs', provider: {}, runtime: { daemonCommand: ['node', './adapter.ts'] } });
+  assert.match(buildMirror(daemonSource).problems.join('\n'), /still executes its authoring source/);
 });
 
 test('the first-party provider and trigger packages export as standalone mirrors', () => {

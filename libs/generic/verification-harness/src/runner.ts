@@ -8,7 +8,7 @@
  * subdir per phase, `result.json` rewritten after every phase so a killed run still leaves
  * its partial result) and repoints `<evidenceRoot>/latest` at it when it ends.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 import {
   appendFile,
@@ -77,7 +77,7 @@ export interface RunHarnessArgs {
   contract: HarnessContract;
   /** Parent of every run dir; the run lands at `<evidenceRoot>/<runId>`. */
   evidenceRoot: string;
-  /** Small original receipt files, relative to the run dir, retained on completion before pruning. */
+  /** Original receipts or bounded recursive PNG selections, relative to the run dir. */
   retainedArtifacts?: readonly string[];
   runPhase: (ctx: PhaseContext) => Promise<PhaseOutcome>;
   /** Fast checks that run before any phase; a failure blocks every phase. */
@@ -187,11 +187,57 @@ export async function loadRunResult(runDir: string): Promise<HarnessRunResult> {
   return parsed;
 }
 
+const PNG_SELECTION = '/**/*.png';
+const RETAINED_MANIFEST = 'retained-artifacts.json';
+const MAX_RETAINED_FILES = 128;
+const MAX_RETAINED_BYTES = 64 * 1024 * 1024;
+
 function validateRetainedArtifacts(files: readonly string[]): void {
   if (files.length > 32 || files.some(file => !file || file.includes('\\') || path.isAbsolute(file)
-    || file.split('/').some(part => !part || part === '.' || part === '..') || file === 'result.json')) {
+    || file.split('/').some(part => !part || part === '.' || part === '..')
+    || (file.includes('*') && (!file.endsWith(PNG_SELECTION) || file.slice(0, -PNG_SELECTION.length).includes('*')))
+    || file === 'result.json' || file === RETAINED_MANIFEST)) {
     throw new Error('invalid retained harness artifact path');
   }
+}
+
+/** Expand only the explicit PNG selection; never follow links or sweep arbitrary diagnostics. */
+async function expandRetainedArtifacts(runRoot: string, selectors: readonly string[]): Promise<string[]> {
+  const files = new Set<string>();
+  let visited = 0;
+  const add = (file: string) => {
+    files.add(file);
+    if (files.size > MAX_RETAINED_FILES) throw new Error('retained harness artifact file limit exceeded');
+  };
+  const walk = async (relative: string, depth: number): Promise<void> => {
+    if (++visited > 4096 || depth > 32) throw new Error('retained harness artifact scan limit exceeded');
+    const directory = path.join(runRoot, relative);
+    const info = await lstat(directory);
+    if (!info.isDirectory()) throw new Error('invalid retained harness artifact directory');
+    const resolved = path.relative(runRoot, await realpath(directory));
+    if (resolved === '..' || resolved.startsWith(`..${path.sep}`) || path.isAbsolute(resolved)) {
+      throw new Error('retained harness artifact directory outside run');
+    }
+    for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (++visited > 4096) throw new Error('retained harness artifact scan limit exceeded');
+      const file = `${relative}/${entry.name}`;
+      if (entry.isSymbolicLink()) throw new Error('invalid retained harness artifact symlink');
+      if (entry.isDirectory()) await walk(file, depth + 1);
+      else if (entry.name.endsWith('.png')) add(file);
+    }
+  };
+  for (const selector of selectors) {
+    if (!selector.endsWith(PNG_SELECTION)) { add(selector); continue; }
+    const directory = selector.slice(0, -PNG_SELECTION.length);
+    // A non-browser assertion or a blocked phase need not produce any PNGs.
+    try { await lstat(path.join(runRoot, directory)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    await walk(directory, 0);
+  }
+  return [...files].sort();
 }
 
 export async function writeRunResult(result: HarnessRunResult, retainedArtifacts: readonly string[] = []): Promise<void> {
@@ -217,24 +263,28 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
   const runRoot = await realpath(result.evidenceDir);
   // Passing runs require every declared original. Failed runs preserve the
   // available originals; a blocked phase may never have produced its receipt.
-  const originals = await Promise.all([...new Set(retainedArtifacts)].map(async relativeFile => {
+  const artifacts: { relativeFile: string; bytes: Buffer }[] = [];
+  let totalBytes = 0;
+  for (const relativeFile of await expandRetainedArtifacts(runRoot, retainedArtifacts)) {
     const source = path.join(runRoot, relativeFile);
     const info = await lstat(source).catch(error => {
       if (result.verdict !== 'pass' && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     });
-    if (!info) return null;
+    if (!info) continue;
     const resolved = await realpath(source);
     const relativeSource = path.relative(runRoot, resolved);
     if (!info.isFile() || info.size > 16 * 1024 * 1024 || !insideRoot(resolved)
       || relativeSource === '..' || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
       throw new Error('invalid retained harness artifact');
     }
+    if (totalBytes + info.size > MAX_RETAINED_BYTES) throw new Error('retained harness artifact byte limit exceeded');
     const artifactBytes = await readFile(source);
     if (artifactBytes.length > 16 * 1024 * 1024) throw new Error('invalid retained harness artifact');
-    return { relativeFile, bytes: artifactBytes };
-  }));
-  const artifacts = originals.filter((artifact): artifact is NonNullable<typeof artifact> => artifact !== null);
+    totalBytes += artifactBytes.length;
+    if (totalBytes > MAX_RETAINED_BYTES) throw new Error('retained harness artifact byte limit exceeded');
+    artifacts.push({ relativeFile, bytes: artifactBytes });
+  }
   artifacts.push({ relativeFile: 'result.json', bytes });
   const retainedRoot = path.join(root, 'retained');
   await mkdir(retainedRoot, { recursive: true });
@@ -242,6 +292,19 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
   const parent = path.join(retainedRoot, result.runId);
   await mkdir(parent, { recursive: true });
   if (!insideRoot(await realpath(parent))) throw new Error('retained harness result outside evidence root');
+  if (retainedArtifacts.length) {
+    artifacts.push({ relativeFile: RETAINED_MANIFEST, bytes: Buffer.from(`${JSON.stringify({
+      schemaVersion: 1, harness: result.harness, runId: result.runId,
+      selectors: [...retainedArtifacts],
+      artifacts: artifacts.map(artifact => ({
+        path: artifact.relativeFile,
+        originalPath: path.join(result.evidenceDir, artifact.relativeFile),
+        retainedPath: path.join(parent, artifact.relativeFile),
+        bytes: artifact.bytes.length,
+        sha256: createHash('sha256').update(artifact.bytes).digest('hex'),
+      })),
+    }, null, 2)}\n`) });
+  }
   for (const artifact of artifacts) {
     const destination = path.join(parent, artifact.relativeFile);
     await mkdir(path.dirname(destination), { recursive: true });

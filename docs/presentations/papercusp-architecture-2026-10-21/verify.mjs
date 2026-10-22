@@ -1,13 +1,14 @@
 // Artifact rehearsal: real browser navigation, layout, offline maps and PDF.
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
-const root = dirname(fileURLToPath(import.meta.url));
+// A fixture root lets the framework exercise corrupted copies without editing delivery files.
+const root = process.argv[2] ? resolve(process.argv[2]) : dirname(fileURLToPath(import.meta.url));
 const data = JSON.parse(await readFile(join(root, 'slides.json'), 'utf8'));
 const browser = await chromium.launch({ headless: true });
 const started = Date.now();

@@ -1,7 +1,7 @@
 {
   "status": "passed",
-  "checkedAt": "2026-10-21T19:24:57.739Z",
-  "mechanicalWalkthroughSeconds": 18,
+  "checkedAt": "2026-10-22T00:21:12.597Z",
+  "mechanicalWalkthroughSeconds": 13,
   "checks": [
     {
       "viewport": {
@@ -46,7 +46,7 @@
     {
       "path": "deck.pdf",
       "bytes": 731851,
-      "sha256": "2d8a2a408adc0ce28be8078f24ceb9dda2ffcba4171f0a6b9278cc486fa5ed6a"
+      "sha256": "a991148d3ec6c18515f559bec9f47a5f4daff7f504aa595405172b2ef145d1aa"
     },
     {
       "path": "presenter-notes.md",
@@ -65,8 +65,8 @@
     },
     {
       "path": "verify.mjs",
-      "bytes": 7698,
-      "sha256": "371c3134f2959c710a65c92dad83846f978ad648ab976151fc3412482e868e51"
+      "bytes": 7847,
+      "sha256": "857aa6d299946f86d395f7a275c1a7b13d02a9882ed94884aa83a17618cde380"
     },
     {
       "path": "README.md",

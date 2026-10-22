@@ -205,14 +205,19 @@ function compiledProviderFiles(files, manifest, problems) {
       }
     }
   }
-  if (manifest.runtime?.daemonCommand?.includes(source)) {
+  if (manifest.runtime?.daemonCommand?.some((arg) => typeof arg === 'string' && posix.normalize(arg) === source)) {
     problems.push(`generated provider daemon still executes its authoring source '${source}'`);
   }
   return runtimeFiles.map((f) => {
     if (!CODE_EXT.test(f.path) || !generated.test(f.content.toString('utf8'))) return f;
-    return { path: f.path, content: Buffer.from(transformSync(f.content.toString('utf8'), {
-      loader: 'js', minifyWhitespace: true, legalComments: 'none',
-    }).code) };
+    try {
+      return { path: f.path, content: Buffer.from(transformSync(f.content.toString('utf8'), {
+        loader: 'js', minifyWhitespace: true, legalComments: 'eof',
+      }).code) };
+    } catch (error) {
+      problems.push(`${f.path}: invalid generated JavaScript: ${error.message}`);
+      return f;
+    }
   });
 }
 

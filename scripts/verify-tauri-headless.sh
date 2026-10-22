@@ -1018,7 +1018,9 @@ if [ -f "$VH_SH" ]; then
   vh_phase prepare ""
   vh_phase boot prepare
   vh_phase assert boot
-  verifier_retained_args=()
+  # Successful browser screenshots must outlive count-pruning of the full run.
+  # The finalizer bounds this selection and records hashes and retained paths.
+  verifier_retained_args=(--retain-artifact 'phases/assert/playwright/**/*.png')
   if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
     verifier_retained_args+=(--retain-artifact phases/prepare/verifier-source-receipt.json)
   fi

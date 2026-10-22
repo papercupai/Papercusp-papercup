@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -478,6 +479,48 @@ describe('pruneRuns (evidence retention)', () => {
 });
 
 describe('completed receipt custody (EI-25507426663280898)', () => {
+  it('retains successful browser PNGs and a verifiable manifest after the original run is pruned', async () => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5ZkAAAAASUVORK5CYII=', 'base64');
+    const r = run(`
+vh_phase assert ""
+vh_init browser-proof "$ROOT/ev" --retain-artifact 'phases/assert/playwright/**/*.png'
+vh_begin assert
+mkdir -p "$VH_PHASE_DIR/playwright/passing case/nested"
+printf '%s' '${png.toString('base64')}' | base64 -d > "$VH_PHASE_DIR/playwright/passing case/desktop.png"
+cp "$VH_PHASE_DIR/playwright/passing case/desktop.png" "$VH_PHASE_DIR/playwright/passing case/nested/mobile.png"
+printf 'not compact evidence' > "$VH_PHASE_DIR/playwright/passing case/trace.zip"
+vh_end
+vh_finish
+`);
+    try {
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.result.verdict).toBe('pass');
+      const root = path.join(r.root, 'ev');
+      const retained = path.join(root, 'retained', r.result.runId);
+      const manifest = JSON.parse(readFileSync(path.join(retained, 'retained-artifacts.json'), 'utf8'));
+      expect(manifest).toMatchObject({ schemaVersion: 1, harness: 'browser-proof', runId: r.result.runId });
+      expect(manifest.artifacts.map((entry: { path: string }) => entry.path).sort()).toEqual([
+        'phases/assert/playwright/passing case/desktop.png',
+        'phases/assert/playwright/passing case/nested/mobile.png',
+        'result.json',
+      ]);
+      await runHarness({ contract: { name: 'browser-proof', phases: [{ id: 'assert' }] },
+        evidenceRoot: root, runId: '20990101T000000Z-2', runPhase: async () => ({ ok: true }) });
+      expect(await pruneRuns(root, 1)).toContain(r.result.runId);
+      expect(existsSync(r.result.evidenceDir)).toBe(false);
+      for (const entry of manifest.artifacts) {
+        const bytes = readFileSync(entry.retainedPath);
+        expect(entry.originalPath).toBe(path.join(r.result.evidenceDir, entry.path));
+        expect(entry.retainedPath).toBe(path.join(retained, entry.path));
+        expect(bytes.length).toBe(entry.bytes);
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(entry.sha256);
+        if (entry.path.endsWith('.png')) expect(bytes).toEqual(png);
+      }
+      expect(JSON.parse(readFileSync(path.join(retained, 'result.json'), 'utf8'))).toEqual(r.result);
+      expect(existsSync(path.join(retained, 'phases/assert/playwright/passing case/trace.zip'))).toBe(false);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+
   it('retains the exact shell completion receipt before a later count sweep removes its run', async () => {
     const r = run(`${chain}\nvh_begin prep\nvh_begin build\nvh_begin ship\nexit 0\n`);
     try {

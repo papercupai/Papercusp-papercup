@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -268,6 +268,63 @@ describe('evidence root byte ceiling', () => {
 });
 
 describe('declared completion receipt retention', () => {
+  it.each(['count', 'bytes', 'symlink', 'ancestor-symlink'])(
+    'refuses unsafe browser artifact %s before publishing a retained completion', async mode => {
+      const root = tmp(), outside = tmp(), runId = '20261022T000001Z-1';
+      try {
+        await expect(runHarness({
+          contract: { name: 'bounded-browser-proof', phases: [{ id: 'assert' }] },
+          evidenceRoot: root, runId,
+          retainedArtifacts: ['phases/assert/playwright/screens/**/*.png'],
+          runPhase: async ({ evidenceDir }) => {
+            const output = path.join(evidenceDir, 'playwright/screens');
+            if (mode === 'ancestor-symlink') {
+              mkdirSync(path.join(outside, 'screens'));
+              writeFileSync(path.join(outside, 'screens/private.png'), 'outside');
+              symlinkSync(outside, path.join(evidenceDir, 'playwright'));
+            } else {
+              mkdirSync(output, { recursive: true });
+              if (mode === 'symlink') {
+                writeFileSync(path.join(outside, 'private.png'), 'outside');
+                symlinkSync(path.join(outside, 'private.png'), path.join(output, 'linked.png'));
+              } else {
+                for (let i = 0; i < (mode === 'count' ? 129 : 5); i++) {
+                  const file = path.join(output, `${i}.png`);
+                  writeFileSync(file, 'x');
+                  if (mode === 'bytes') truncateSync(file, 16 * 1024 * 1024);
+                }
+              }
+            }
+            return { ok: true };
+          },
+        })).rejects.toThrow(mode === 'count' ? 'file limit exceeded'
+          : mode === 'bytes' ? 'byte limit exceeded'
+            : mode === 'symlink' ? 'artifact symlink' : 'directory outside run');
+        expect(existsSync(path.join(root, 'retained', runId, 'result.json'))).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+    });
+
+  it('allows a non-browser assertion with no PNG directory and keeps its custody manifest immutable', async () => {
+    const root = tmp();
+    try {
+      const result = await runHarness({
+        contract: { name: 'non-browser-proof', phases: [{ id: 'assert' }] },
+        evidenceRoot: root, retainedArtifacts: ['phases/assert/playwright/**/*.png'],
+        runPhase: async () => ({ ok: true }),
+      });
+      expect(result.verdict).toBe('pass');
+      const manifest = path.join(root, 'retained', result.runId, 'retained-artifacts.json');
+      const original = readFileSync(manifest);
+      expect(JSON.parse(original.toString()).artifacts.map((entry: { path: string }) => entry.path)).toEqual(['result.json']);
+      const output = path.join(result.evidenceDir, 'phases/assert/playwright');
+      mkdirSync(output, { recursive: true });
+      writeFileSync(path.join(output, 'late.png'), 'late evidence');
+      await expect(writeRunResult(result, ['phases/assert/playwright/**/*.png']))
+        .rejects.toThrow('retained harness artifact changed');
+      expect(readFileSync(manifest)).toEqual(original);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   const receipts = ['phases/prepare/source.json', 'phases/execute/lifecycle.json'];
   const source = Buffer.from('{"source":"original bytes", "sequence":1}\n');
   const lifecycle = Buffer.from('{"worker":23,"ended":true}\n');

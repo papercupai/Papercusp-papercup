@@ -638,6 +638,27 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(res.stdout).toBe(sourceRoot);
   });
 
+  it('declares compact browser PNG retention at the real verifier initialization boundary', () => {
+    const verifier = readFileSync(join(REPO_ROOT, 'scripts/verify-tauri-headless.sh'), 'utf8');
+    const start = verifier.indexOf('  verifier_retained_args=');
+    const end = verifier.indexOf('  verifier_begin_phase prepare', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const result = spawnSync('bash', ['-c', [
+      'set -eu',
+      'VERIFY_TAURI_SOURCE_REF=pinned',
+      'VERIFY_TAURI_EVIDENCE_ROOT=/unused/evidence',
+      'vh_init() { printf "%s\\n" "$@"; }',
+      verifier.slice(start, end),
+    ].join('\n')], { encoding: 'utf8', timeout: 5_000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim().split('\n')).toEqual([
+      'verify-tauri-headless', '/unused/evidence',
+      '--retain-artifact', 'phases/assert/playwright/**/*.png',
+      '--retain-artifact', 'phases/prepare/verifier-source-receipt.json',
+    ]);
+  });
+
   it('exports the retained assertion phase through the real verifier boundary', () => {
     const verifier = readFileSync(join(REPO_ROOT, 'scripts/verify-tauri-headless.sh'), 'utf8');
     const boundary = verifier.slice(verifier.lastIndexOf('\nverify_assertion_input_integrity || exit $?'));
