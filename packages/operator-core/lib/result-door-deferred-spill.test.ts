@@ -21,12 +21,11 @@ vi.mock('./scratch-reference', async (importOriginal) => {
   return {
     ...actual,
     persistVolatileScratchReference: vi.fn(async (
-      uri: string,
-      caller: Parameters<typeof actual.persistVolatileScratchReference>[1],
-    ) => ({
-      uri: `${actual.DURABLE_SCRATCH_REFERENCE_SCHEME}/${'a'.repeat(64)}`,
-      manifest: actual.readVolatileScratchReference(uri, caller).manifest,
-    })),
+      _uri: string,
+      _caller: Parameters<typeof actual.persistVolatileScratchReference>[1],
+    ) => {
+      throw new Error('durable scratch persistence is unavailable in unit tests');
+    }),
   };
 });
 import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
@@ -123,6 +122,7 @@ function readVolatileText(cursor: Record<string, unknown>, workspaceId = 'ws-1',
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   resetResultDoorAggregatesForTests();
   _resetScratchUsageForTests();
   sandbox = mkdtempSync(join(tmpdir(), 'papercusp-deferred-spill-test-'));
