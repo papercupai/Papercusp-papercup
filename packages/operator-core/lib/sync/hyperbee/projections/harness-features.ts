@@ -216,7 +216,8 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
   if (r.admitted_by !== undefined && !isStringOrNull(r.admitted_by)) return false;
   if (r.duplicate_of !== undefined && !isStringOrNull(r.duplicate_of)) return false;
   if (r.duplicate_source !== undefined && r.duplicate_source !== null &&
-      !['create-match', 'admission-promoter', 'fold', 'agent'].includes(String(r.duplicate_source))) return false;
+      (typeof r.duplicate_source !== 'string' ||
+       !['create-match', 'admission-promoter', 'fold', 'agent'].includes(r.duplicate_source))) return false;
   // metadata + tags + payload are JSONB blobs; accept anything (incl. null/missing).
   return true;
 }

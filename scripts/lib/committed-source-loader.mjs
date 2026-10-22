@@ -207,6 +207,10 @@ function viteTempConfigName(file) {
   return match?.[1] ?? null;
 }
 
+function isViteConfigFilename(file) {
+  return /^(?:vite|vitest)\.config\.(?:[cm]?(?:js|ts)|jsx|tsx)$/i.test(basename(file));
+}
+
 /** Vite's config bundler embeds its esbuild input source map in both CJS and ESM output. */
 function viteInlineSourceMap(bytes) {
   const source = bytes.toString('utf8');
@@ -249,7 +253,7 @@ function hasViteFileScopePrefix(file, source) {
     : source.startsWith(prefix, newline + 1);
 }
 
-/** Vite prefixes each JS/TS source with these scope constants before esbuild maps it. */
+/** Vite may prefix transformed source with these scope constants before esbuild maps it. */
 function viteSourceMatchesHead(file, source, head) {
   const headSource = head.toString('utf8');
   if (source === headSource) return true;
@@ -293,9 +297,11 @@ function unverifiableViteConfigBundle(file, reason) {
  */
 function judgeViteConfigBundle(file, bytes) {
   const tempConfigName = viteTempConfigName(file);
+  const namedConfig = isViteConfigFilename(file);
+  const isViteConfigBundle = tempConfigName !== null || namedConfig;
   const map = viteInlineSourceMap(bytes);
   if (!map) {
-    return tempConfigName
+    return isViteConfigBundle
       ? unverifiableViteConfigBundle(file, 'inline-source-map-missing-or-invalid')
       : null;
   }
@@ -305,22 +311,24 @@ function judgeViteConfigBundle(file, bytes) {
     source: map.sourcesContent[index],
   }));
   if (rows.some((row) => !row.file)) {
-    return tempConfigName
+    return isViteConfigBundle
       ? unverifiableViteConfigBundle(file, 'source-map-path-unresolvable')
       : null;
   }
 
   const mainRows = rows.filter((row) => {
-    if (typeof row.source !== 'string' || !hasViteFileScopePrefix(row.file, row.source)) return false;
+    if (typeof row.source !== 'string') return false;
     if (tempConfigName) return basename(row.file) === tempConfigName;
+    let sameFile;
     try {
-      return realpathSync(row.file) === realpathSync(file);
+      sameFile = realpathSync(row.file) === realpathSync(file);
     } catch {
-      return basename(row.file) === basename(file);
+      sameFile = basename(row.file) === basename(file);
     }
+    return sameFile && (namedConfig || hasViteFileScopePrefix(row.file, row.source));
   });
   if (mainRows.length !== 1) {
-    if (tempConfigName) return unverifiableViteConfigBundle(file, 'main-source-not-found-or-ambiguous');
+    if (isViteConfigBundle) return unverifiableViteConfigBundle(file, 'main-source-not-found-or-ambiguous');
     const hasViteSources = rows.some((row) => typeof row.source === 'string'
       && row.file && hasViteFileScopePrefix(row.file, row.source));
     return hasViteSources
@@ -335,7 +343,7 @@ function judgeViteConfigBundle(file, bytes) {
     try {
       where = locate(row.file);
     } catch {
-      return tempConfigName
+      return isViteConfigBundle
         ? unverifiableViteConfigBundle(file, 'source-path-unavailable')
         : null;
     }
@@ -344,7 +352,7 @@ function judgeViteConfigBundle(file, bytes) {
       continue;
     }
     if (typeof row.source !== 'string') {
-      return tempConfigName
+      return isViteConfigBundle
         ? unverifiableViteConfigBundle(file, 'source-content-missing')
         : null;
     }

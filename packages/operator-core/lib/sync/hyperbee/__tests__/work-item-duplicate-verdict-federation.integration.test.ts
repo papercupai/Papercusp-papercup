@@ -76,6 +76,15 @@ describe('duplicate verdict survives existing CDC, mapper and receiver', () => {
       if (duplicateOp.type !== 'put') throw new Error('expected duplicate put');
       expect(duplicateOp.value).toMatchObject({ duplicate_of: 'WI-CANONICAL', duplicate_source: 'agent' });
 
+      // Reject malformed verdicts before PostgreSQL sees them. In particular,
+      // String(['agent']) is a valid enum spelling, but an array is not a source.
+      const options = { workspaceId: WS, harnessSlug: HARNESS, sql };
+      const projection = kind === 'feature'
+        ? buildHarnessFeaturesProjection(options) : buildEngineerIssuesProjection(options);
+      for (const duplicate_source of [['agent'], { source: 'agent' }, 1, 'unknown']) {
+        expect(projection.decodeValue({ ...duplicateOp.value, duplicate_source })).toBeNull();
+      }
+
       await sql`UPDATE harness_shared.work_items SET duplicate_of=NULL,duplicate_source=NULL
         WHERE workspace_id=${WS} AND feature_id=${id}`;
       const clearedOps = await captured(id);

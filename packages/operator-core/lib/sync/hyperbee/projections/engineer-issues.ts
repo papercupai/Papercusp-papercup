@@ -193,7 +193,8 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (r.admitted_by !== undefined && !isStringOrNull(r.admitted_by)) return false;
   if (r.duplicate_of !== undefined && !isStringOrNull(r.duplicate_of)) return false;
   if (r.duplicate_source !== undefined && r.duplicate_source !== null &&
-      !['create-match', 'admission-promoter', 'fold', 'agent'].includes(String(r.duplicate_source))) return false;
+      (typeof r.duplicate_source !== 'string' ||
+       !['create-match', 'admission-promoter', 'fold', 'agent'].includes(r.duplicate_source))) return false;
   if (r.state_changed_at !== undefined && !isStringOrNull(r.state_changed_at)) return false;
   if (r.parent_id !== undefined && !isStringOrNull(r.parent_id)) return false;
   if (r.source_plan_slug !== undefined && !isStringOrNull(r.source_plan_slug)) return false;
