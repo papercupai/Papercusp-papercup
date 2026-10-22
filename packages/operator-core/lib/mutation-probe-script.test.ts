@@ -192,6 +192,44 @@ describe('mutation-probe.sh — TypeScript mutant syntax', () => {
 });
 
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
+  it('retains a committed source across guard legs when a cleanup scan cannot see its reader', () => {
+    const repo = join(dir, 'papercusp-lint-as-committed-probe');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+    git(repo, ['config', 'user.name', 'mutation-probe-test']);
+    const file = join(repo, 'subject.txt');
+    writeFileSync(file, ORIGINAL);
+    writeFileSync(join(repo, 'package.json'), '{}\n');
+    git(repo, ['add', 'subject.txt', 'package.json']);
+    git(repo, ['commit', '-qm', 'committed probe source']);
+    const marker = join(repo, '.git', 'lint-as-committed-owner.json');
+    writeFileSync(marker, JSON.stringify({ pid: process.pid, sha: git(repo, ['rev-parse', 'HEAD']),
+      keep: true, createdAtMs: Date.now() }));
+    const retentionModule = new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href;
+    const guard = join(dir, 'retained-source-guard.mjs');
+    writeFileSync(guard, [
+      `import { sweepStaleWorkRoots } from ${JSON.stringify(retentionModule)};`,
+      "import { existsSync, readFileSync } from 'node:fs';",
+      `sweepStaleWorkRoots({ root: ${JSON.stringify(dir)}, cwds: [], maxIdleKept: 0 });`,
+      `if (!existsSync(${JSON.stringify(join(repo, 'package.json'))})) throw new Error('source reclaimed between probe legs');`,
+      "console.log('GC_SOURCE_PRESENT');",
+      "if (!readFileSync(process.argv[2], 'utf8').includes('beta')) process.exitCode = 1;",
+    ].join('\n'));
+    const { code, out } = runProbeIO([
+      '--file', file, '--mutate', 's/beta/BROKEN/',
+      '--test', `node ${JSON.stringify(guard)} {}`,
+    ], process.env, repo);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out.match(/GC_SOURCE_PRESENT/g)).toHaveLength(3);
+    expect(readFileSync(file, 'utf8')).toBe(ORIGINAL);
+    expect(existsSync(join(repo, 'package.json'))).toBe(true);
+    const retained = JSON.parse(readFileSync(marker, 'utf8')).retainedFor;
+    expect(retained.length).toBeGreaterThan(0);
+    expect(retained.every((entry: { path: string }) => !existsSync(entry.path))).toBe(true);
+  });
+
   it('refuses a CommonJS npm guard that propagates the committed loader before starting its baseline', () => {
     const repo = join(dir, 'cjs-npm-guard');
     mkdirSync(repo);

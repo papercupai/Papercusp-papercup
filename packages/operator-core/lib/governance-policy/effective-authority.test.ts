@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   AUTHORITY_KINDS, authorityRevisionIsCurrent, comparePermissionPopulations,
-  evaluateEffectivePermission, resourcePermissionValue,
-  type AuthorityPolicy, type AuthoritySnapshot, type PermissionPopulationProof, type PermissionRequest,
+  evaluateEffectivePermission, revalidateEffectivePermission, resourcePermissionValue,
+  type AuthorityPolicy, type AuthorityRevisionVector, type AuthoritySnapshot, type PermissionPopulationProof, type PermissionRequest,
 } from './effective-authority';
 
 const request: PermissionRequest = {
@@ -120,6 +120,67 @@ describe('effective authority contract (P-024)', () => {
     snapshot.required = [...snapshot.required, { kind: 'vault', id: 'new-vault' }];
     snapshot.contextVaultIds = [...snapshot.contextVaultIds, 'new-vault'];
     expect(authorityRevisionIsCurrent(decision.revisions!, snapshot)).toBe(false);
+  });
+
+  it.each([null, undefined, {}, { contextRevision: 'context:1', authorities: [null] },
+    { contextRevision: 'context:1', authorities: 'all' }])('malformed stored revision tokens refuse: %j', token => {
+    expect(authorityRevisionIsCurrent(token as unknown as AuthorityRevisionVector, fixture())).toBe(false);
+    expect(revalidateEffectivePermission(fixture(), request, token as unknown as AuthorityRevisionVector))
+      .toMatchObject({ allowed: false, code: 'authority-stale' });
+  });
+
+  it('a current revision token cannot authorize a different resolved target', () => {
+    const snapshot = fixture();
+    snapshot.policies[0].rules!.resources = { allow: [resourcePermissionValue(request.resource)] };
+    const token = evaluateEffectivePermission(snapshot, request).revisions;
+    expect(revalidateEffectivePermission(snapshot, request, token).allowed).toBe(true);
+    expect(revalidateEffectivePermission(snapshot,
+      { ...request, resource: { ...request.resource, target: 'https://denied.example:443' } }, token))
+      .toMatchObject({ allowed: false, code: 'denied', decidingAuthority: { kind: 'identity' } });
+  });
+
+  it.each(['queued', 'in-flight'])('a %s authorization is checked again at the protected effect', async () => {
+    const snapshot = fixture();
+    const token = evaluateEffectivePermission(snapshot, request).revisions;
+    let resume!: () => void;
+    const paused = new Promise<void>(resolve => { resume = resolve; });
+    const effects: string[] = [];
+    const work = (async () => {
+      await paused;
+      const decision = revalidateEffectivePermission(snapshot, request, token);
+      if (decision.allowed) effects.push(request.resource.target);
+      return decision;
+    })();
+    const vault = snapshot.policies.find(policy => policy.id === 'second-vault')!;
+    vault.revision = 'second:2';
+    vault.rules = { resources: { allow: [] } };
+    resume();
+    expect(await work).toMatchObject({ allowed: false, code: 'denied',
+      decidingAuthority: { kind: 'vault', id: 'second-vault' } });
+    expect(effects).toEqual([]);
+  });
+
+  it('even a still-permitted action needs fresh authorization after a revision change', () => {
+    const snapshot = fixture();
+    const token = evaluateEffectivePermission(snapshot, request).revisions;
+    snapshot.contextRevision = 'context:2';
+    expect(revalidateEffectivePermission(snapshot, request, token))
+      .toMatchObject({ allowed: false, code: 'authority-stale', revisions: { contextRevision: 'context:2' } });
+    const fresh = evaluateEffectivePermission(snapshot, request);
+    expect(revalidateEffectivePermission(snapshot, request, fresh.revisions).allowed).toBe(true);
+  });
+
+  it('authority load order and duplicate scoped values cannot change the canonical trace', () => {
+    const snapshot = fixture();
+    snapshot.policies.find(policy => policy.kind === 'user')!.rules = { actions: { deny: ['net:*'] } };
+    snapshot.policies.find(policy => policy.kind === 'vault')!.rules = { resources: { allow: [] } };
+    const first = evaluateEffectivePermission(snapshot,
+      { ...request, constraints: { actions: ['net:read', 'net:connect', 'net:read'] } });
+    const permuted = { ...snapshot, policies: [...snapshot.policies].reverse(),
+      required: [...snapshot.required].reverse(), contextVaultIds: [...snapshot.contextVaultIds].reverse() };
+    expect(evaluateEffectivePermission(permuted,
+      { ...request, constraints: { actions: ['net:connect', 'net:read'] } })).toEqual(first);
+    expect(first.decidingAuthority).toEqual({ kind: 'user', id: 'user' });
   });
 });
 

@@ -45,11 +45,17 @@ const roots: string[] = [];
 beforeEach(() => {
   phases.snapshot.mockResolvedValue({ commit: null, porcelain: null });
 });
+async function cleanupDetachedReports() {
+  // Legacy recovery writes a unique file in a shared temporary directory.
+  // Only explicitly allocated fixture roots belong in the recursive cleanup.
+  const files = phases.detach.mock.calls.flatMap(([request]) =>
+    (request.detachedReportArtifacts ?? []).flatMap((artifact: { reportPath: string; failureDetailsPath?: string }) =>
+      [artifact.reportPath, artifact.failureDetailsPath].filter((path): path is string => Boolean(path))));
+  await Promise.all(files.map(path => rm(path, { force: true })));
+}
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const [request] of phases.detach.mock.calls) {
-    for (const artifact of request.detachedReportArtifacts ?? []) roots.push(dirname(artifact.reportPath));
-  }
+  await cleanupDetachedReports();
   Object.values(phases).forEach((mock) => mock.mockReset());
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -67,6 +73,22 @@ async function makeTestRoot(router = false) {
   }
   return root;
 }
+
+it('cleans detached report files while preserving their shared parent and sibling artifacts', async () => {
+  const root = await makeTestRoot();
+  const reportPath = join(root, 'detached-report.json');
+  const failureDetailsPath = join(root, 'detached-failures.json');
+  const siblingPath = join(root, 'another-run.json');
+  await Promise.all([reportPath, failureDetailsPath, siblingPath].map(path => writeFile(path, '{}')));
+  phases.detach({ detachedReportArtifacts: [{ reportPath, failureDetailsPath }] });
+
+  await cleanupDetachedReports();
+
+  await expect(readFile(reportPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(failureDetailsPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(siblingPath, 'utf8')).toBe('{}');
+  expect(await readFile(join(root, 'package.json'), 'utf8')).toContain('workspaces');
+});
 
 async function invoke(extra: Record<string, unknown> = {}) {
   const root = await makeTestRoot();

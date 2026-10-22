@@ -669,14 +669,15 @@ export function recreateInput(
   zone: string,
 ): GcpInstanceInsertInput | undefined {
   if (raw.scheduling?.maxRunDuration !== undefined) {
-    throw new Error('GCP recreation refuses relative maxRunDuration; retain an absolute terminationTime');
+    // Omit the replacement template, not the observation: teardown must still see this VM.
+    return undefined;
   }
   const finiteScheduling = raw.scheduling?.terminationTime !== undefined
     ? gcpFiniteCanaryScheduling(raw.scheduling.terminationTime) : undefined;
   if (finiteScheduling && (raw.scheduling?.provisioningModel !== 'STANDARD' ||
       raw.scheduling.instanceTerminationAction !== 'DELETE' || raw.scheduling.automaticRestart !== false ||
       raw.scheduling.onHostMaintenance !== 'TERMINATE')) {
-    throw new Error('GCP finite canary readback has inconsistent scheduling');
+    return undefined;
   }
   const boot = raw.disks?.find((disk) => disk.boot === true);
   const data = raw.disks?.find((disk) => disk.boot !== true);

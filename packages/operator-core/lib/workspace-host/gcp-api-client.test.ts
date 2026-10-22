@@ -1320,8 +1320,9 @@ describe('recreateInput keeps a spot host on spot (WI-10005210)', () => {
     const scheduling = { provisioningModel: 'STANDARD', terminationTime: '2026-08-22T08:00:00Z',
       instanceTerminationAction: 'DELETE', automaticRestart: false, onHostMaintenance: 'TERMINATE' };
     expect(gcpRecreateInput(raw(scheduling), boot, ZONE)?.scheduling).toEqual(scheduling);
-    expect(() => gcpRecreateInput(raw({ ...scheduling, instanceTerminationAction: 'STOP' }), boot, ZONE)).toThrow(/inconsistent/);
-    expect(() => gcpRecreateInput(raw({ maxRunDuration: { seconds: '3600' } }), boot, ZONE)).toThrow(/relative/);
+    // Unsupported policies have no replacement template; normal observation/teardown still works.
+    expect(gcpRecreateInput(raw({ ...scheduling, instanceTerminationAction: 'STOP' }), boot, ZONE)).toBeUndefined();
+    expect(gcpRecreateInput(raw({ maxRunDuration: { seconds: '3600' } }), boot, ZONE)).toBeUndefined();
   });
 
   const raw = (scheduling?: Record<string, unknown>) =>

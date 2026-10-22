@@ -67,7 +67,7 @@ export interface AuthorityTrace {
 }
 export type EffectivePermissionDecision = {
   allowed: boolean;
-  code: 'allowed' | 'invalid-request' | 'authority-unavailable' | 'authority-malformed' | 'denied';
+  code: 'allowed' | 'invalid-request' | 'authority-unavailable' | 'authority-malformed' | 'authority-stale' | 'denied';
   revisions: AuthorityRevisionVector | null;
   trace: AuthorityTrace[];
   decidingAuthority?: AuthorityRef;
@@ -153,13 +153,19 @@ export function evaluateEffectivePermission(
     actions: [...(request.constraints?.actions ?? []), request.action],
     resources: [...(request.constraints?.resources ?? []), resourcePermissionValue(request.resource)],
   };
+  for (const category of GOVERNED_CATEGORIES) {
+    if (governed[category]) governed[category] = [...new Set(governed[category])].sort();
+  }
+  const policies = [...snapshot.policies].sort((a, b) =>
+    AUTHORITY_KINDS.indexOf(a.kind) - AUTHORITY_KINDS.indexOf(b.kind) ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const revisions: AuthorityRevisionVector = {
     contextRevision: snapshot.contextRevision,
-    authorities: snapshot.policies.map(({ kind, id, revision }) => ({ kind, id, revision })),
+    authorities: policies.map(({ kind, id, revision }) => ({ kind, id, revision })),
   };
   const trace: AuthorityTrace[] = [];
   let decidingAuthority: AuthorityRef | undefined;
-  for (const policy of snapshot.policies) {
+  for (const policy of policies) {
     if (policy.state === 'not-applicable') continue;
     const verdict = evaluateInheritedPolicy([policyLayer(policy)], governed, now);
     trace.push(...verdict.trace.map(step => ({
@@ -175,10 +181,35 @@ export function evaluateEffectivePermission(
 }
 
 /** Queue/in-flight adapters must reject a token if any authority or context moved. */
-export function authorityRevisionIsCurrent(token: AuthorityRevisionVector, snapshot: AuthoritySnapshot): boolean {
-  if (snapshotProblem(snapshot) || token.contextRevision !== snapshot.contextRevision ||
+export function authorityRevisionIsCurrent(token: AuthorityRevisionVector | null | undefined, snapshot: AuthoritySnapshot): boolean {
+  if (!token || typeof token !== 'object' || !validText(token.contextRevision) ||
+      !Array.isArray(token.authorities) || token.authorities.some(ref => !ref ||
+        !AUTHORITY_KINDS.includes(ref.kind) || !validText(ref.id) || !validText(ref.revision)) ||
+      snapshotProblem(snapshot) || token.contextRevision !== snapshot.contextRevision ||
       token.authorities.length !== snapshot.policies.length || !unique(token.authorities.map(keyOf))) return false;
   return snapshot.policies.every(policy => token.authorities.some(ref => keyOf(ref) === keyOf(policy) && ref.revision === policy.revision));
+}
+
+/**
+ * Shared queue/in-flight contract: re-evaluate the actual resolved request and
+ * reject a stale authorization even if the new policy happens to permit it.
+ * Call inside the host's transaction/lease immediately before the protected
+ * effect; a successful pure check does not itself acquire that lease.
+ */
+export function revalidateEffectivePermission(
+  snapshot: AuthoritySnapshot,
+  request: PermissionRequest,
+  expected: AuthorityRevisionVector | null | undefined,
+  now: Date = new Date(),
+): EffectivePermissionDecision {
+  const decision = evaluateEffectivePermission(snapshot, request, now);
+  // Retain the current deciding authority and trace when revocation denies.
+  if (!decision.allowed) return decision;
+  if (!authorityRevisionIsCurrent(expected, snapshot)) {
+    return { ...decision, allowed: false, code: 'authority-stale',
+      reason: 'Authority or retained context changed; fresh authorization is required before effect' };
+  }
+  return decision;
 }
 
 /** Proof is over a pinned complete finite authority space, never sampled requests. */
@@ -208,7 +239,7 @@ export function comparePermissionPopulations(
   }
   if (before.populationRevision !== after.populationRevision || before.population.length !== after.population.length ||
       before.population.some(atom => !after.population.includes(atom))) return unknown('incomparable authority populations');
-  const added = after.allowed.filter(atom => !before.allowed.includes(atom));
-  const removed = before.allowed.filter(atom => !after.allowed.includes(atom));
+  const added = after.allowed.filter(atom => !before.allowed.includes(atom)).sort();
+  const removed = before.allowed.filter(atom => !after.allowed.includes(atom)).sort();
   return { kind: added.length ? 'widening' : removed.length ? 'narrowing' : 'neutral', added, removed };
 }

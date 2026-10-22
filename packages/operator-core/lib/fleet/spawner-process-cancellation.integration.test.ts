@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -14,6 +14,13 @@ vi.mock('../flag-override-store', () => ({ installFlagOverrideStore: () => {} })
 vi.mock('../flag-change-listener', () => ({ ensureFlagChangeListener: async () => {} }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
 vi.mock('./spawner-sidecar-spawn', () => ({ spawnSpawnerSidecar: async () => {} }));
+// Preserve the real managed forkserver and kernel scope while keeping its
+// durable task bookkeeping hermetic, like the forkserver integration suite.
+vi.mock('../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
+vi.mock('../task-manager/store', () => ({
+  registerTask: async (_spec: unknown, opts: { taskId: string }) => ({ taskId: opts.taskId, state: 'pending' }),
+  markSpawned: async () => {}, closeTask: async () => {},
+}));
 vi.mock('./sidecar-exec-process', async (original) => {
   const actual = await original<typeof import('./sidecar-exec-process')>();
   return {
@@ -33,6 +40,7 @@ import { runSpawnerSidecarServer } from './spawner-sidecar-server';
 import { SpawnerIpcClient, type SpawnerCallOpts } from './spawner-ipc-client';
 import { runCommandViaSpawnerSidecar, isSidecarInfrastructureFault } from './git-via-sidecar';
 import * as lifetime from './sidecar-exec-lifetime';
+import { currentForkserverProcess, prepareForkserverContainment } from './forkserver/forkserver-client';
 import { DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS, DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS } from '../dev-deploy-state';
 
 function receipt(): GovernedExecution {
@@ -97,6 +105,14 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+afterAll(async () => {
+  const proc = currentForkserverProcess();
+  if (!proc) return;
+  const snapshot = await prepareForkserverContainment();
+  proc.kill('SIGKILL');
+  if (snapshot) await vi.waitFor(() => expect(lifetime.observeSidecarExit(snapshot)).toBe('exited'), { timeout: 5000 });
+});
+
 function runChild(releasePath?: string, callerLabel?: ProcessExecCallerLabel) {
   const client = new SpawnerIpcClient(join(dir, 'server.sock'));
   clients.push(client);
@@ -130,14 +146,15 @@ function recoveryClient() {
 
 async function executionFence(client: SpawnerIpcClient) {
   const capabilities = await client.call<{
-    processExecFence: { serverGeneration: string; connectionId: string };
+    processExecFence: { serverGeneration: string; connectionId: string; forkserverIdentity: string | null };
     eventLoopDelayP99Ms: number;
-  }>('spawn:cancel', {});
+  }>('spawn:cancel', { prepareProcessExec: true });
   expect(capabilities.processExecFence).toMatchObject({
     serverGeneration: expect.any(String), connectionId: expect.any(String),
   });
   expect(Number.isFinite(capabilities.eventLoopDelayP99Ms)).toBe(true);
   expect(capabilities.eventLoopDelayP99Ms).toBeGreaterThanOrEqual(0);
+  expect(Object.hasOwn(capabilities.processExecFence, 'forkserverIdentity')).toBe(true);
   return capabilities.processExecFence;
 }
 

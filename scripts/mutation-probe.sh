@@ -1085,6 +1085,37 @@ finish() {
 trap 'finish "$?"' EXIT
 trap 'finish 130' INT
 trap 'finish 143' TERM
+# A probe consumes its source across several subprocesses and private mount
+# namespaces. A cleanup scan may not see the reader between those legs. Reuse
+# the committed runner's dependent-artifact hold for this scratch lifetime;
+# finish removes the scratch, making the retained source eligible again.
+if ! node --input-type=module - "$RUNNER_ROOT/scripts/lint-as-committed.mjs" "$SCRATCH" "$FILE" "$ORIGINAL_CWD" <<'JS'
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [helper, scratch, subject, cwd] = process.argv.slice(2);
+const roots = new Set();
+for (const candidate of [dirname(subject), cwd]) {
+  let root;
+  try {
+    root = execFileSync('git', ['-C', candidate, 'rev-parse', '--show-toplevel'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch { continue; }
+  if (existsSync(join(root, '.git', 'lint-as-committed-owner.json'))) roots.add(realpathSync(root));
+}
+if (roots.size) {
+  const { retainCommittedWorkRoot } = await import(pathToFileURL(helper).href);
+  for (const root of roots) {
+    const marker = JSON.parse(readFileSync(join(root, '.git', 'lint-as-committed-owner.json'), 'utf8'));
+    retainCommittedWorkRoot(root, marker.sha, scratch);
+    process.stdout.write(`MUTATION_PROBE_SOURCE_RETAINED ${JSON.stringify({ root, sha: marker.sha })}\n`);
+  }
+}
+JS
+then
+  die "could not retain the committed source for this probe"
+fi
 # A writable TMPDIR does not establish that npm's independent, host-stable
 # mutex root can allocate its metadata. Check both before spending a baseline,
 # and use the existing root resolver rather than deriving a second lock domain.

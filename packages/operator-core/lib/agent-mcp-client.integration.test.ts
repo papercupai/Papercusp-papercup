@@ -26,6 +26,7 @@ import type { BuiltSpawnContext } from './endpoint-route/routes/transport/_mcp-h
 let listener: AgentMcpListener | undefined;
 beforeEach(async () => {
   h.home = await mkdtemp(join(tmpdir(), 'native-client-'));
+  vi.stubEnv('PAPERCUSP_HOME', join(h.home, '.papercusp'));
   vi.stubEnv('WSL_INTEROP', '');
   vi.stubEnv('WSL_DISTRO_NAME', '');
   vi.stubEnv('PAPERCUSP_IPC_TCP', '');
@@ -46,6 +47,7 @@ const expectedCtx: BuiltSpawnContext = {
 async function server() {
   const witness = vi.fn();
   const fixture = { value: 'initial', writes: [] as string[] };
+  const catalogMeta = { 'papercusp/servingGeneration': 'fixture-catalog-v1' };
   const verify = vi.fn(async (extra: unknown) => {
     const headers = (extra as { requestInfo: { headers: Record<string, string> } }).requestInfo.headers;
     return headers.authorization === 'Bearer fixture-token'
@@ -55,10 +57,10 @@ async function server() {
   const register = (host: McpServer) => {
     host.server.setRequestHandler(ListToolsRequestSchema, async () => {
       witness('list');
-      return { tools: [{ name: 'echo', description: 'Read fixture row',
+      return { tools: [{ name: 'echo', description: 'Read fixture row', _meta: catalogMeta,
         annotations: { readOnlyHint: true }, inputSchema: {
         type: 'object', properties: { row: { type: 'string' } },
-      } }, { name: 'fixture_set', description: 'Reversibly update this isolated fixture',
+      } }, { name: 'fixture_set', description: 'Reversibly update this isolated fixture', _meta: catalogMeta,
         annotations: { readOnlyHint: false }, inputSchema: {
           type: 'object', properties: { value: { type: 'string' } }, required: ['value'],
         } }] };
@@ -86,6 +88,7 @@ async function server() {
     },
   });
   await writeEndpointIpcDiscovery('/tmp/ui-unused.sock', { port: 33170, agentMcp: listener.endpoint });
+  expect(existsSync(join(h.home, '.papercusp', 'endpoint-ipc.33170.json'))).toBe(true);
   return { witness, verify, fixture, register };
 }
 

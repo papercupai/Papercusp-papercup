@@ -769,9 +769,9 @@ describe('runWorkspaceHostLifecycle', () => {
       ...(isCanary ? { canary } : {}),
     });
 
-    const providerContext = planProvider.mock.calls[0]?.[1];
-    if (isCanary) expect(providerContext).toMatchObject({ canaryTeardownDeadlineAt: canary.teardownDeadlineAt });
-    else expect(providerContext).not.toHaveProperty('canaryTeardownDeadlineAt');
+    expect(planProvider).toHaveBeenCalledWith(expect.anything(), isCanary
+      ? expect.objectContaining({ canaryTeardownDeadlineAt: canary.teardownDeadlineAt })
+      : expect.not.objectContaining({ canaryTeardownDeadlineAt: expect.anything() }));
 
     expect(store.upsertHost).toHaveBeenCalledWith(
       expect.objectContaining({

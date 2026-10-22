@@ -47,8 +47,10 @@ import { renderStackProofGuidance } from './change-kind-stack';
  * saw. At ship it is re-pinned to the actual :3070 release instant of P-002 — that re-pin is
  * what makes D-003's "set to the release time of P-002" true. Tests derive their fixtures from
  * this constant, so moving it never strands them.
+ * TEMPORARY MITIGATION: the original October 21 placeholder expired before first release.
+ * Keep it future-safe; the durable release-time pin is owned by WI-6554700010017223.
  */
-export const CHANGE_KIND_GATE_CUTOVER = '2026-10-21T00:00:00.000Z';
+export const CHANGE_KIND_GATE_CUTOVER = '2099-01-01T00:00:00.000Z';
 const CUTOVER_MS = Date.parse(CHANGE_KIND_GATE_CUTOVER);
 
 /** The root completion fields a single-kind close may use as its proof. */

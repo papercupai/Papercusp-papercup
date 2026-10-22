@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { currentForkserverProcess, FORKSERVER_LOST_CODE, forkserverStats, spawnSidecarChild,
   forkserverContainmentIdentity, prepareForkserverContainment, type SidecarChild } from './forkserver-client';
+import { createTextCollector } from '../../child-output.js';
 import { execProcess, type ExecProcessDeps } from '../sidecar-exec-process';
 import type { GovernedExecution } from '../../resource-governor/execution';
 import { captureSidecarContainment, observeSidecarExit } from '../sidecar-exec-lifetime';
@@ -49,7 +50,10 @@ interface Outcome { code: number | null; signal: NodeJS.Signals | null; stdout: 
 function collect(child: Pick<SidecarChild, 'on' | 'once' | 'stdout' | 'stderr'>): Promise<Outcome> {
   return new Promise((resolve) => {
     const out: Outcome = { code: null, signal: null, stdout: '', stderr: '', events: [] };
-    child.stdout?.on('data', (d: Buffer) => { out.stdout += d.toString('utf8'); });
+    createTextCollector(child.stdout, {
+      retainText: false,
+      onDecodedText: (text) => { out.stdout += text; },
+    });
     child.stderr?.on('data', (d: Buffer) => { out.stderr += d.toString('utf8'); });
     child.once('spawn', () => out.events.push('spawn'));
     child.on('error', (e: NodeJS.ErrnoException) => { out.events.push('error'); out.error = e; if (e.code === FORKSERVER_LOST_CODE) resolve(out); });
@@ -358,7 +362,7 @@ describe.runIf(linux)('sidecar forkserver', () => {
     await viaForkserver('true', []); // warm: the forkserver is running before measuring
     const fallbacks = forkserverStats().fallbacks;
     const measured = await measuredExecBurst();
-    expect(measured.p99Ms).toBeLessThan(20);
+    expect(measured.p99Ms, JSON.stringify(measured)).toBeLessThan(20);
     expect(forkserverStats().fallbacks).toBe(fallbacks);
   });
 
