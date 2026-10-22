@@ -3824,7 +3824,13 @@ function endpointProtection(
   if (hasStrictOwnerAction(snapshot.payload)) {
     return { reason: 'owner-blocked', detail: `${role} ${snapshot.id} requires a strict owner capability` };
   }
-  const blockers = activeExternalBlockers(snapshot.payload);
+  // EI-26635063332991604: completion retains blocker history. Execution-only
+  // dependencies on a terminal twin cannot defer its pending counterpart forever;
+  // classify the twin by its completion below. Keep owner/policy blockers and the
+  // stored history intact, and continue enforcing every blocker on open endpoints.
+  const blockers = activeExternalBlockers(snapshot.payload).filter((blocker) =>
+    !terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency',
+  );
   if (blockers.length > 0) {
     return {
       reason: 'external-blocked',

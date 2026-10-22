@@ -69,6 +69,22 @@ afterAll(async () => {
 });
 
 describe('persistent transcript accounting', () => {
+  it('catches up only requested native sessions before applying the file cap', async () => {
+    await fs.writeFile(path.join(root, 'a-unrelated.jsonl'), context('gpt-6-sol') + usage(1000));
+    await fs.writeFile(path.join(root, 'z-accepted.jsonl'), context('gpt-6-sol') + usage(2000));
+    const result = await ingestInteractiveUsage({ adapters: adapter(),
+      sessionIds: ['z-accepted'], maxFilesPerTick: 1 });
+    expect(result.errors).toEqual([]);
+    expect(result.scannedFiles).toBe(1);
+    expect(result.samples).toBe(1);
+    const samples = await sql`SELECT session_id FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${WS}`;
+    expect(samples.map(row => row.session_id)).toEqual(['z-accepted']);
+    expect((await ingestInteractiveUsage({ adapters: adapter(),
+      sessionIds: ['z-accepted'], maxFilesPerTick: 1 })).samples).toBe(0);
+    expect((await ingestInteractiveUsage({ adapters: adapter(), sessionIds: [] })).scannedFiles).toBe(0);
+  });
+
   it('persists source-start ordinals and compaction generations through incremental ingestion', async () => {
     const file = path.join(root, 'carry-startup.jsonl');
     await fs.writeFile(file, line({ type: 'session_meta', payload: { forked_from_id: 'parent-session' } }) +

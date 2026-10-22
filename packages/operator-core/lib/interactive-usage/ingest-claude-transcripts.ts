@@ -389,6 +389,9 @@ export interface IngestOptions {
   /** Adapter set to ingest (P-015). Default: claude + codex + OMP
    *  (`defaultAdapters()` from ingest-adapters.ts). */
   adapters?: TranscriptAdapter[];
+  /** Exact native sessions for a bounded consumer catch-up. Filter before the
+   * file cap so unrelated rollouts cannot starve the requested population. */
+  sessionIds?: readonly string[];
   /** Also sweep each per-session Claude isolation root
    *  (`~/.papercusp/session-claude/<owner>/projects`) in addition to the
    *  global `~/.claude/projects` claude adapter. Default true; only applies
@@ -633,6 +636,8 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
     const files = entries
       .filter((e) => e.isFile() && e.name.endsWith('.jsonl'))
       .map((e) => path.join((e.parentPath ?? e.path ?? adapter.root) as string, e.name))
+      .filter((file) => !opts.sessionIds || opts.sessionIds.includes(
+        adapter.sessionIdForFile?.(file) ?? path.basename(file, '.jsonl')))
       .slice(0, maxFiles);
 
     for (const file of files) {

@@ -1084,6 +1084,7 @@ async function verifyDirectOperationModel(
   policy: { mode: 'exact' | 'allowed' | 'preferred'; models: readonly string[]; effort?: string },
   persistOrigins = false,
   forceNativeHistory = false,
+  usageCatchupAttempted = false,
 ): Promise<string | null> {
   if (pin.kind !== 'blueprint-operation' || typeof pin.harnessSlug !== 'string' ||
       typeof pin.operationId !== 'string' || typeof pin.specificationRevision !== 'string') {
@@ -1294,7 +1295,42 @@ async function verifyDirectOperationModel(
     // Even if the row/event counts hid a surplus, establish the complete
     // accepted native population before calling any response auxiliary.
     // This retry is bounded to one read of the immutable applied history.
-    if (!readNativeHistory) return verifyDirectOperationModel(sql, workspaceId, workItemId, pin, policy, persistOrigins, true);
+    if (!readNativeHistory) return verifyDirectOperationModel(sql, workspaceId, workItemId, pin, policy, persistOrigins, true, usageCatchupAttempted);
+    if (persistOrigins && !usageCatchupAttempted) {
+      // Provider events arrive before the periodic transcript ingester. Reuse
+      // its atomic watermark writer for this exact accepted launch population;
+      // never treat an un-ingested main-thread request as auxiliary evidence.
+      const nativeIds = [...new Set(rows.map(row => row.native_session_id))]
+        .filter((id): id is string => typeof id === 'string' &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+      if (nativeIds.length) {
+        const launches = await sql<Array<{ id: string | number; coord_owner_id: string }>>`
+          SELECT id, coord_owner_id FROM harness_shared.adv_sessions
+           WHERE workspace_id = ${workspaceId} AND feature = ${workItemId}
+             AND agent = 'codex'
+             AND launch_spec->'acceptedOperation'->'pin' = ${sql.json(pin as JSONValue)}
+           ORDER BY id LIMIT 33
+        `;
+        if (launches.length > 32) return 'accepted worker usage catch-up exceeds the bounded launch population';
+        const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+        const { join } = await import('node:path');
+        const { parseCodexChunk, codexSessionIdForFile } = await import('../interactive-usage/ingest-adapters');
+        const { ingestInteractiveUsage } = await import('../interactive-usage/ingest-claude-transcripts');
+        const result = await ingestInteractiveUsage({
+          adapters: launches.map(launch => ({ name: 'codex-operation-catchup',
+            root: join(codexHomeForSessionKey(launch.id), 'sessions'),
+            parse: parseCodexChunk, replayStateFromPrefix: true,
+            sessionIdForFile: codexSessionIdForFile,
+            ownerId: launch.coord_owner_id, advSessionId: Number(launch.id),
+          })),
+          includeIsolationRoots: false, sessionIds: nativeIds,
+          maxFilesPerTick: 32, maxBytesPerFile: 4 * 1024 * 1024,
+        }, { sql, workspaceId });
+        if (result.errors.length) return 'accepted worker usage catch-up failed';
+        if (result.ingestedFiles) return verifyDirectOperationModel(
+          sql, workspaceId, workItemId, pin, policy, persistOrigins, true, true);
+      }
+    }
     const refusal = 'accepted worker has unmatched request-grain model evidence';
     const acceptedSessions = new Set(rows.map(row => row.native_session_id));
     const pending: AttestationOrigin[] = [];

@@ -41,6 +41,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:
 import { builtinModules } from 'node:module';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { transformSync } from 'esbuild';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
@@ -179,6 +180,42 @@ SOFTWARE.
 `;
 }
 
+// SDK-generated providers ship their executable bundle. TypeScript is a build input;
+// esbuild's source-path comments are metadata. Parse/reprint rather than deleting text
+// that might occur in a JavaScript string. Retained runtime dependencies still fail closed.
+function compiledProviderFiles(files, manifest, problems) {
+  if (!manifest?.provider || typeof manifest.main !== 'string') return files;
+  const main = posix.normalize(manifest.main);
+  const entry = files.find((f) => f.path === main);
+  const generated = /^\/\/ Generated (?:from ([^\r\n]+?) )?by @papercusp\/plugin-sdk\/scripts\/build-provider-daemons\.mjs\. Do not edit\./;
+  const match = entry && generated.exec(entry.content.toString('utf8'));
+  if (!match?.[1]) return files;
+  const source = posix.normalize(posix.join(posix.dirname(main), match[1]));
+  if (source.startsWith('../') || posix.isAbsolute(source) || !/\.tsx?$/.test(source)) {
+    problems.push(`invalid generated provider source: ${source}`);
+    return files;
+  }
+  const runtimeFiles = files.filter((f) => f.path !== source);
+  for (const f of runtimeFiles) {
+    if (!CODE_EXT.test(f.path)) continue;
+    for (const spec of importSpecifiers(f.content.toString('utf8'))) {
+      const target = posix.normalize(posix.join(posix.dirname(f.path), spec));
+      if (spec.startsWith('.') && (target === source || `${target}.ts` === source)) {
+        problems.push(`${f.path}: generated provider still imports its authoring source '${spec}'`);
+      }
+    }
+  }
+  if (manifest.runtime?.daemonCommand?.includes(source)) {
+    problems.push(`generated provider daemon still executes its authoring source '${source}'`);
+  }
+  return runtimeFiles.map((f) => {
+    if (!CODE_EXT.test(f.path) || !generated.test(f.content.toString('utf8'))) return f;
+    return { path: f.path, content: Buffer.from(transformSync(f.content.toString('utf8'), {
+      loader: 'js', minifyWhitespace: true, legalComments: 'none',
+    }).code) };
+  });
+}
+
 /**
  * Turn the committed package files into the mirror's file set, or refuse.
  * Returns { ok:true, files } or { ok:false, problems }.
@@ -198,10 +235,11 @@ export function buildMirror(files, { year } = {}) {
   if (manifest && (typeof manifest.name !== 'string' || !manifest.name || typeof manifest.version !== 'string' || !manifest.version)) {
     problems.push('papercusp.json must declare a non-empty name and version (the Cupboard publish check requires both)');
   }
-  problems.push(...selfContainmentProblems(files));
-  problems.push(...internalReferenceProblems(files));
+  const publicFiles = compiledProviderFiles(files, manifest, problems);
+  problems.push(...selfContainmentProblems(publicFiles));
+  problems.push(...internalReferenceProblems(publicFiles));
 
-  const out = files.map((f) => ({ path: f.path, content: f.content }));
+  const out = publicFiles.map((f) => ({ path: f.path, content: f.content }));
   const hasLicense = files.some((f) => /^LICEN[CS]E(?:\.(?:md|txt))?$/i.test(f.path));
   if (!hasLicense && manifest) {
     if (manifest.license === 'MIT') out.push({ path: 'LICENSE', content: Buffer.from(mitLicense({ year })) });

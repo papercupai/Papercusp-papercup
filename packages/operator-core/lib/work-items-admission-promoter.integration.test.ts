@@ -2041,6 +2041,34 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(loser).toEqual({ status: 'dropped', canonical: 'WI-canonical' });
   }, 60_000);
 
+  it('judges a pending counterpart against a completed twin with a retained runtime blocker', async () => {
+    const blocker = {
+      kind: 'runtime', capability: 'live-dependency', capabilitySource: 'explicit',
+      ref: 'runtime:completed-work', summary: 'Obsolete execution dependency', status: 'active',
+      createdAt: new Date(NOW - 30_000).toISOString(), updatedAt: new Date(NOW - 30_000).toISOString(), createdBy: 'su-test',
+    };
+    await seedItem({
+      id: 'WI-canonical', admission: 'admitted', status: 'done', createdAtMs: NOW - 20_000,
+      authority: 'committed', payload: { externalBlockers: [blocker] },
+    });
+    await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
+    const llmCall = judgementCall('r-finding-merge');
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'promoter-terminal-runtime-blocker',
+      sql: db.sql, llmCall, now: () => NOW,
+    });
+    expect(llmCall).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ promoted: 0, merged: 1, held: 0, guardRefusals: [] });
+    const [loser] = await db.sql`
+      SELECT status, payload #>> '{admissionMerge,canonicalId}' AS canonical
+        FROM harness_shared.work_items WHERE feature_id = 'WI-loser'`;
+    expect(loser).toEqual({ status: 'dropped', canonical: 'WI-canonical' });
+    const [canonical] = await db.sql`
+      SELECT payload->'externalBlockers' AS blockers FROM harness_shared.work_items WHERE feature_id = 'WI-canonical'`;
+    expect(canonical.blockers).toEqual([blocker]);
+    expect(await db.sql`SELECT verdict FROM harness_shared.dedup_adjudications`).toEqual([{ verdict: 'r-finding-merge' }]);
+  }, 60_000);
+
   it('never merges or judges a loser that already participates in an active dependency', async () => {
     await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 20_000 });
     await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });

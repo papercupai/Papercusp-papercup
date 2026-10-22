@@ -553,6 +553,11 @@ describe('responsePayload', () => {
 // `pending`, on every promoter tick — the pending row could never be judged or admitted.
 describe('admission endpoint protection — terminal twins', () => {
   const pendingReview = { status: 'pending', submittedBy: 'su-test', ledgerIdeaId: 'idea-1', round: 1 };
+  const executionBlocker = {
+    kind: 'runtime', capability: 'live-dependency', capabilitySource: 'explicit',
+    ref: 'runtime:completed-work', summary: 'Execution dependency', status: 'active',
+    createdAt: '2026-10-21T00:00:00Z', updatedAt: '2026-10-21T00:00:00Z', createdBy: 'su-test',
+  };
   const snapshot = (id: string, overrides: Partial<AdmissionMergeSnapshot> = {}): AdmissionMergeSnapshot => ({
     id,
     workspaceId: 'ws',
@@ -608,6 +613,53 @@ describe('admission endpoint protection — terminal twins', () => {
       payload: { agentReview: { ...pendingReview, status: 'revision-requested' }, _claimHold: true },
     });
     expect(admissionEndpointBlock(done)).toBeNull();
+  });
+
+  it.each(['runtime', 'event', 'gate'])('does not let a completed twin retain a transient %s execution blocker', (kind) => {
+    const done = snapshot('EI-completed-blocker', {
+      state: 'done',
+      completionAuthority: 'committed',
+      payload: { externalBlockers: [{ ...executionBlocker, kind }] },
+    });
+    expect(admissionEndpointBlock(done)).toBeNull();
+    expect(done.payload).toMatchObject({ externalBlockers: [{ status: 'active' }] });
+  });
+
+  it('keeps execution blockers on open twins and classifies terminal twins without completion permanently', () => {
+    const payload = { externalBlockers: [executionBlocker] };
+    expect(admissionEndpointBlock(snapshot('EI-open-blocker', { payload }))).toMatchObject({
+      reason: 'external-blocked', permanent: false,
+    });
+    expect(admissionEndpointBlock(snapshot('EI-dropped-blocker', { state: 'dropped', payload }))).toMatchObject({
+      reason: 'terminal-canonical-without-completion', permanent: true,
+    });
+  });
+
+  it('preserves owner capability protection on completed twins with execution residue', () => {
+    const done = snapshot('EI-owner-blocker', {
+      state: 'done',
+      completionAuthority: 'committed',
+      payload: { externalBlockers: [executionBlocker, { ...executionBlocker, kind: 'human', capability: 'credential' }] },
+    });
+    expect(admissionEndpointBlock(done)).toMatchObject({ reason: 'owner-blocked', permanent: false });
+  });
+
+  it('selects a pending row for real judgement when its completed twin retains an execution blocker', () => {
+    const pending = item('EI-10');
+    const twin = item('EI-4', { state: 'done', admission: 'admitted' });
+    const result = prescreenPromoterWindow({
+      window: [pending],
+      pairs: [pair(pending, twin, [pending.id])],
+      snapshots: new Map([
+        ['EI-10', snapshot('EI-10', { admission: 'pending', kind: 'bug' })],
+        ['EI-4', snapshot('EI-4', { state: 'done', completionAuthority: 'committed', payload: { externalBlockers: [executionBlocker] } })],
+      ]),
+      batchSize: 5,
+      nowMs: 1,
+    });
+    expect(result.batch.map((entry) => entry.id)).toEqual(['EI-10']);
+    expect(result.pairs).toHaveLength(1);
+    expect(result.forcedHolds.has('EI-10')).toBe(false);
   });
 
   it('does not defer a pending row whose only twin is terminal with a stale review', () => {

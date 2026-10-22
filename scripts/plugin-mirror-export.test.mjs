@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 import {
   buildMirror,
@@ -186,8 +187,38 @@ test('readCommittedPackage exports committed content only: uncommitted edits and
   }
 });
 
-test('the first-party slack and bug-triage packages export as standalone mirrors', () => {
-  for (const name of ['slack', 'bug-triage']) {
+test('SDK-generated provider mirrors contain the executable bundle without private build inputs', () => {
+  const header = '// Generated from adapter.ts by @papercusp/plugin-sdk/scripts/build-provider-daemons.mjs. Do not edit.\n';
+  const built = buildMirror([
+    manifest({ main: './index.cjs', provider: {} }),
+    file('adapter.ts', "import { helper } from '../../../../packages/operator-core/lib/helper';"),
+    file('index.cjs', header + '// packages/operator-core/lib/helper.ts\nmodule.exports = { answer: 42, text: `one\n// literal text\ntwo` };'),
+  ]);
+  assert.equal(built.ok, true, JSON.stringify(built.problems));
+  assert.ok(!built.files.some((f) => f.path === 'adapter.ts'));
+  const output = built.files.find((f) => f.path === 'index.cjs').content.toString();
+  assert.ok(!output.includes('packages/operator-core'));
+  const context = { module: { exports: {} } };
+  runInNewContext(output, context);
+  assert.equal(context.module.exports.answer, 42);
+  assert.equal(context.module.exports.text, 'one\n// literal text\ntwo');
+});
+
+test('compiled provider export still refuses private runtime strings, escaped imports and source dependencies', () => {
+  const header = '// Generated from adapter.ts by @papercusp/plugin-sdk/scripts/build-provider-daemons.mjs. Do not edit.\n';
+  const input = (code) => [manifest({ main: './index.cjs', provider: {} }),
+    file('adapter.ts', 'export const x = 1;'), file('index.cjs', header + code)];
+  assert.match(buildMirror(input("module.exports = 'packages/operator-core/lib/private.ts';")).problems.join('\n'), /monorepo source path/);
+  assert.match(buildMirror(input("require('../outside.cjs');")).problems.join('\n'), /escapes the package directory/);
+  assert.match(buildMirror(input("require('./adapter.ts');")).problems.join('\n'), /still imports its authoring source/);
+});
+
+test('the first-party provider and trigger packages export as standalone mirrors', () => {
+  for (const name of [
+    'slack', 'bug-triage', 'facebook', 'google-contacts', 'facebook-pages', 'instagram',
+    'x', 'threads', 'tiktok', 'linkedin', 'linkedin-company', 'youtube', 'mastodon',
+    'reddit', 'bluesky', 'devto', 'hashnode', 'discord',
+  ]) {
     const files = readCommittedPackage({ name });
     assert.ok(files.some((f) => f.path === 'papercusp.json'), `${name}: manifest at the package root`);
     const built = buildMirror(files);

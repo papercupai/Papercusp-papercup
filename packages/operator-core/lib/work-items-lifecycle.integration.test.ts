@@ -69,6 +69,7 @@ import { createPostgresGatewayRequestOutcomeStore, type GatewayRequestOutcomeRec
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
+let restoreOperationUsageCatchup: (() => void) | undefined;
 const readMigration = (f: string) =>
   readFileSync(resolve(SQL_DIR, f), 'utf8')
     .split('\n')
@@ -603,7 +604,14 @@ describe('blueprint direct-item revision pin', () => {
     const item = await wi.getWorkItem(itemId, 'papercup');
     const pin = (item?.payload as Record<string, unknown>).blueprintOperation;
     const owner = `codex-model-owner-${itemId}`;
-    const sessionId = `codex-model-session-${itemId}`;
+    const sessionId = '00000000-0000-4000-8000-000000000006';
+    const usageModule = await import('./interactive-usage/ingest-claude-transcripts');
+    const emptyCatchup = { root: 'test', scannedFiles: 0, ingestedFiles: 0,
+      samples: 0, skippedUnchanged: 0, bootstrapPending: 0,
+      totals: { turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      errors: [] };
+    const catchup = vi.spyOn(usageModule, 'ingestInteractiveUsage').mockResolvedValue(emptyCatchup);
+    restoreOperationUsageCatchup = () => catchup.mockRestore();
     const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'state-a' };
     await db.sql`
       INSERT INTO harness_shared.adv_sessions
@@ -684,7 +692,7 @@ describe('blueprint direct-item revision pin', () => {
 
     // Managed carry changes the native id on the SAME accepted launch. The
     // applied ledger retains its predecessor; a shared owner alone cannot.
-    const successor = `${sessionId}-successor`;
+    const successor = '00000000-0000-4000-8000-000000000007';
     const [launch] = await db.sql`UPDATE harness_shared.adv_sessions SET session_id = ${successor}
       WHERE workspace_id = 'default' AND session_id = ${sessionId} RETURNING id`;
     const successorBinding = await readActiveOperationModelPolicy('default', owner, 'codex');
@@ -765,7 +773,35 @@ describe('blueprint direct-item revision pin', () => {
       await db.sql`UPDATE harness_shared.coord_event_log SET body = ${db.sql.json(originalEvent.body)}
         WHERE id = ${auxiliaryReceipt.id}`;
     }
+    // A new provider request is already attested, but the periodic ingester
+    // has not persisted its native usage yet. Completion must catch up the
+    // accepted population once, then repeat the full model/effort checks.
+    const late = { ...evidence, requestId: '123e4567-e89b-42d3-a456-426614174006',
+      providerResponseId: 'resp-codex-late',
+      usage: { ...evidence.usage, inputTokens: 140, outputTokens: 19 } };
+    await recordDirectOperationModelAttestation(db.sql, successorBinding.attestation, late);
+    catchup.mockClear();
+    catchup.mockResolvedValueOnce({ ...emptyCatchup, ingestedFiles: 1 });
+    await expect(close()).rejects.toThrow('unmatched request-grain');
+    expect(catchup).toHaveBeenCalledTimes(1);
+    catchup.mockResolvedValueOnce({ ...emptyCatchup, errors: [{ file: 'test', error: 'read failure' }] });
+    await expect(close()).rejects.toThrow('usage catch-up failed');
+    expect((await wi.getWorkItem(itemId, 'papercup'))?.state).toBe('open');
+    catchup.mockClear();
+    catchup.mockImplementationOnce(async (options, scope) => {
+      expect(options).toMatchObject({ includeIsolationRoots: false,
+        sessionIds: expect.arrayContaining([sessionId, successor]), maxFilesPerTick: 32 });
+      expect(scope).toEqual({ sql: db.sql, workspaceId: 'default' });
+      await db.sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, session_id, source, provider, model, input_tokens, output_tokens,
+         cache_read_tokens, cache_creation_tokens, usage_provenance)
+        VALUES ('default', ${successor}, 'interactive', 'openai', 'gpt-5.6-sol', 115, 19, 20, 5,
+          ${db.sql.json({ grain: 'request', modelSource: 'transcript',
+            sourceId: 'cumulative:0:codex-request-late', inputTotalTokens: 140 })})`;
+      return { ...emptyCatchup, scannedFiles: 1, ingestedFiles: 1, samples: 1 };
+    });
     expect((await close())?.state).toBe('done');
+    expect(catchup).toHaveBeenCalledTimes(1);
     // The origin proof lives on the operation receipt, not the diagnostic
     // outcome retention window. A later result read must remain verifiable.
     await db.sql`DELETE FROM harness_shared.gateway_request_outcomes`;
@@ -1638,6 +1674,8 @@ describe('EI-6554700010011175 — terminal closes protect announced gates', () =
 });
 
 afterEach(async () => {
+  restoreOperationUsageCatchup?.();
+  restoreOperationUsageCatchup = undefined;
   await setLeaseFlag(false);
 });
 
