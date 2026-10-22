@@ -2936,10 +2936,12 @@ async function gitSyncRuntimeGate(
   slug: string,
   workspaceId: string,
   repoPathOverride?: string | null,
-): Promise<{ gate: GitSyncEligibility; entry?: ProjectEntry }> {
+): Promise<{ gate: GitSyncEligibility; entry?: ProjectEntry; projects?: readonly ProjectEntry[] }> {
   let entry: ProjectEntry | undefined;
+  let projects: readonly ProjectEntry[] | undefined;
   try {
-    entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
+    projects = (await loadHarnessRegistry(workspaceId)).projects;
+    entry = projects.find((p) => p.slug === slug);
   } catch (e) {
     console.warn(
       `[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`,
@@ -2947,12 +2949,12 @@ async function gitSyncRuntimeGate(
     return { gate: { eligible: true } };
   }
   // A vanished registry entry reads the same as a vanished checkout: no path.
-  if (!entry) return { gate: { eligible: false, reason: 'no_path' } };
+  if (!entry) return { gate: { eligible: false, reason: 'no_path' }, projects };
   // A manual fire pins the exact tree it measured before entering the action.
   // Validate that pinned path rather than silently gating a freshly-resolved
   // sibling checkout if the ambient registry changes underneath the call.
   const gatedEntry = repoPathOverride === undefined ? entry : { ...entry, path: repoPathOverride ?? '' };
-  return { gate: gitSyncEligibility(gatedEntry), entry: gatedEntry };
+  return { gate: gitSyncEligibility(gatedEntry), entry: gatedEntry, projects };
 }
 
 /** P-004/P-006: build the live attribution roster (active agents + their declared files) from
@@ -3486,7 +3488,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     > => {
       eligibilityRanLive = true;
       await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
-      const { gate: g, entry } = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
+      const { gate: g, entry, projects } = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
       if (!g.eligible) {
         if (g.reason === 'no_path' && workspaceId) {
           // WI-10006867: a vanished checkout gets its own lifecycle (missing-checkout.ts) —
@@ -3532,16 +3534,14 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // needs the full registry; a failed read stays governed (fail-closed).
         let governed = true;
         if (integrationRead.mode === 'review' && entry && !entry.hive_slug && !entry.fork_remote) {
-          try {
-            governed = integrationModeGovernsHarness(entry, (await loadHarnessRegistry(workspaceId)).projects);
-          } catch {
-            governed = true;
-          }
+          governed = integrationModeGovernsHarness(entry, projects ?? []);
         }
         const integration: IntegrationPushDecision = governed
           ? resolveIntegrationPushRemote({
               read: integrationRead,
               ...(entry?.fork_remote ? { forkRemote: entry.fork_remote } : {}),
+              ...(entry ? { entry } : {}),
+              ...(projects ? { projects } : {}),
               // D-017: a working copy with submodules pushes them to the pot's per-submodule forks.
               ...(integrationRead.mode === 'review'
                 ? { submoduleForks: await readSubmoduleForks(workspaceId, potHomeSlug) }

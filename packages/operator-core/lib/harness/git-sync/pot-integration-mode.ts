@@ -210,7 +210,11 @@ export type IntegrationPushDecision =
   /** Commit locally, push nowhere. Never falls back to the main repository. */
   | {
       kind: 'commit-only';
-      reason: 'working_copy_fork_missing' | 'integration_mode_unknown' | 'integration_mode_malformed';
+      reason:
+        | 'working_copy_fork_missing'
+        | 'integration_mode_unknown'
+        | 'integration_mode_malformed'
+        | 'direct_upstream_other_hive';
       message: string;
     };
 
@@ -220,6 +224,42 @@ export interface ResolveIntegrationPushInput {
   forkRemote?: string;
   /** D-017: the pot's per-submodule forks (hiveGit.submoduleForks), carried onto a `fork` decision. */
   submoduleForks?: SubmoduleForksRead;
+  /** The registry entry whose checkout is being synced, when the registry was readable. */
+  entry?: IntegrationModeHarnessEntry;
+  /** The already-loaded workspace registry; the action passes this through to avoid another read. */
+  projects?: readonly IntegrationModeHarnessEntry[];
+}
+
+/**
+ * Normalize a registry GitHub remote to the case-insensitive owner/repository identity.
+ * `github_remote` is normally stored as HTTPS, but accepting SSH here keeps the guard
+ * correct when an older registry row still carries that equivalent form.
+ */
+function normalizedGithubRemote(remote: string | null | undefined): string | null {
+  if (!remote) return null;
+  const parsed = parseGithubUrl(remote);
+  return parsed ? `${parsed.owner}/${parsed.repo}`.toLowerCase() : null;
+}
+
+/**
+ * Find a self-repository hive that owns the upstream named by a member entry while
+ * belonging to a different hive. A member's own hive home is the only same-owner
+ * exception; absent or unparseable registry data leaves the legacy direct decision
+ * unchanged because this is a targeted cross-hive ownership guard.
+ */
+function differentSelfRepositoryOwner(
+  entry: IntegrationModeHarnessEntry | undefined,
+  projects: readonly IntegrationModeHarnessEntry[] | undefined,
+): IntegrationModeHarnessEntry | undefined {
+  if (!entry?.hive_slug || !projects) return undefined;
+  const remote = normalizedGithubRemote(entry.github_remote);
+  if (!remote) return undefined;
+  return projects.find(
+    (candidate) =>
+      candidate.self_repo === true &&
+      candidate.slug !== entry.hive_slug &&
+      normalizedGithubRemote(candidate.github_remote) === remote,
+  );
 }
 
 /** PURE: decide this tick's push target from the mode read and the fork URL. */
@@ -244,6 +284,17 @@ export function resolveIntegrationPushRemote(input: ResolveIntegrationPushInput)
     };
   }
   if (read.mode === 'direct') {
+    const otherHiveOwner = differentSelfRepositoryOwner(input.entry, input.projects);
+    if (otherHiveOwner) {
+      return {
+        kind: 'commit-only',
+        reason: 'direct_upstream_other_hive',
+        message:
+          `direct-mode member upstream '${input.entry?.github_remote}' belongs to self-repository hive ` +
+          `'${otherHiveOwner.slug}', while this member belongs to '${input.entry?.hive_slug}' — ` +
+          'committing locally and pushing nowhere to prevent a cross-hive main-repository write',
+      };
+    }
     return {
       kind: 'unchanged',
       reason: read.source === 'set' ? 'integration mode direct (explicit)' : 'integration mode direct (default — not configured)',

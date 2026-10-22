@@ -4513,6 +4513,47 @@ describe('clean sync outcome', () => {
     );
   });
 
+  it('WI-6554700010019061: passes the loaded registry to the direct-mode cross-hive guard', async () => {
+    registryProjects = [
+      {
+        slug: 'papercusp',
+        path: join(tmpRoot, 'papercusp-home'),
+        self_repo: true,
+        github_remote: 'https://github.com/Papercusp/papercup.git',
+      },
+      {
+        slug: 'papercusp-pr-drill-20261014-2',
+        path: repoDir,
+        hive_slug: 'papercusp-pr-drill-20261014-2-pot',
+        github_remote: 'git@github.com:papercusp/papercup.git',
+      },
+    ];
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
+
+    await action({
+      ...ctx,
+      installSlug: 'papercusp-pr-drill-20261014-2',
+      triggerConfig: { push: true },
+    });
+
+    expect(runGitSyncMock).toHaveBeenCalledWith(
+      'papercusp-pr-drill-20261014-2',
+      expect.objectContaining({
+        config: expect.objectContaining({
+          push: false,
+          pushSubmoduleOrigins: false,
+        }),
+      }),
+    );
+  });
+
   it.each(['bridged', 'p2p-only'] as const)(
     'EI-20232774599730947: %s mode makes the superproject truly commit-only while preserving submodule-origin sync',
     async (mode) => {

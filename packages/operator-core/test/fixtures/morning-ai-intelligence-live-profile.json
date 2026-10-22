@@ -1,6 +1,10 @@
 {
   "origin": "http://127.0.0.1:3170",
   "runtimeUnits": ["hono-host:3170"],
+  "dailySchedule": {
+    "name": "plan-schedule-papercusp-ai-brief-daily-2026-10-07",
+    "timezone": "America/New_York"
+  },
   "dailyEdition": {
     "reportId": "rpt_3df026bb-8684-48f0-9850-72f6144b44c6",
     "editionDate": "2026-10-21",

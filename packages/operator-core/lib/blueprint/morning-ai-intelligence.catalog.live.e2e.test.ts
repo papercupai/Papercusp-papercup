@@ -92,6 +92,24 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
   describe.skipIf(!selectedProfile?.dailyEdition)('the selected persisted daily edition', () => {
     const edition = selectedProfile?.dailyEdition;
 
+    it('retains one armed daily operation with the next occurrence at 09:00 in the confirmed timezone', async () => {
+      const schedule = selectedProfile.dailySchedule;
+      const observed = await read(`
+        const inventory = await tools.schedule.inventory({ source: 'routines', name: ${JSON.stringify(selectedProfile?.dailySchedule?.name)} });
+        if (!Array.isArray(inventory.rows)) throw new Error('Schedule inventory unavailable');
+        return inventory.rows.filter(row => row.name === ${JSON.stringify(selectedProfile?.dailySchedule?.name)});
+      `);
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toMatchObject({ armed: true, cadence: 'cron', lastError: null,
+        detail: { targetRole: 'system:blueprint-operation' } });
+      expect(schedule.timezone).toBe('America/New_York');
+      const localTime = new Intl.DateTimeFormat('en-GB', { timeZone: schedule.timezone,
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+      expect(localTime.format(new Date(observed[0].nextFire))).toBe('09:00');
+      expect(localTime.format(new Date(observed[0].lastFire))).toBe('09:00');
+      expect(new Date(observed[0].nextFire).getTime()).toBeGreaterThan(Date.now());
+    }, 60_000);
+
     async function readEdition() {
       return read(`
         const result = await tools.reports.get({ id: ${JSON.stringify(edition?.reportId)} });
@@ -117,7 +135,7 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
 
     it('retains opportunities with existing fit, confidence, limits and a next action', async () => {
       const report = await readEdition();
-      const section = report.body.match(/## Papercusp opportunities\n([\s\S]*?)(?=\n## |$)/)?.[1];
+      const section: string | undefined = report.body.match(/## Papercusp opportunities\n([\s\S]*?)(?=\n## |$)/)?.[1];
       expect(section, 'The actual saved edition must contain the required section').toBeDefined();
       const opportunities = section!.split(/\n(?=\d+\. )/).filter(value => value.trim());
       expect(opportunities.length).toBeGreaterThan(0);

@@ -125,6 +125,48 @@ describe('resolveIntegrationPushRemote', () => {
     );
     expect(resolveIntegrationPushRemote({ read: { mode: 'direct', source: 'absent' } }).kind).toBe('unchanged');
   });
+  it('direct mode is commit-only when a member points at another self-repository hive upstream', () => {
+    const owner = {
+      slug: 'papercusp',
+      self_repo: true,
+      github_remote: 'https://github.com/Papercusp/papercup.git',
+    };
+    const member = {
+      slug: 'papercusp-pr-drill-20261014-2',
+      hive_slug: 'papercusp-pr-drill-20261014-2-pot',
+      github_remote: 'git@github.com:papercusp/papercup.git',
+    };
+    expect(
+      resolveIntegrationPushRemote({
+        read: { mode: 'direct', source: 'absent' },
+        entry: member,
+        projects: [owner, member],
+      }),
+    ).toMatchObject({
+      kind: 'commit-only',
+      reason: 'direct_upstream_other_hive',
+      message: expect.stringContaining("self-repository hive 'papercusp'"),
+    });
+  });
+  it('direct mode still pushes for a member whose upstream owner is its own hive home', () => {
+    const owner = {
+      slug: 'shop-hive',
+      self_repo: true,
+      github_remote: 'https://github.com/acme/shop.git',
+    };
+    const member = {
+      slug: 'shop-worker',
+      hive_slug: 'shop-hive',
+      github_remote: 'https://github.com/acme/shop.git',
+    };
+    expect(
+      resolveIntegrationPushRemote({
+        read: { mode: 'direct', source: 'set' },
+        entry: member,
+        projects: [owner, member],
+      }),
+    ).toMatchObject({ kind: 'unchanged' });
+  });
   it('review with a fork pushes the fork through the pot-fork remote', () => {
     const d = resolveIntegrationPushRemote({ read: { mode: 'review', source: 'set' }, forkRemote: FORK });
     expect(d).toMatchObject({ kind: 'fork', remoteName: POT_FORK_REMOTE_NAME, url: FORK });
