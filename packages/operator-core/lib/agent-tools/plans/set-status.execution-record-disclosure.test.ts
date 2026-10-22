@@ -32,7 +32,11 @@ const claimMocks = vi.hoisted(() => ({
   releaseOwnClaim: vi.fn(async () => null),
 }));
 const reconcileMocks = vi.hoisted(() => ({
+  resyncDependentPlanItemLanesNow: vi.fn(async () => []),
   resyncPlanItemLaneNow: vi.fn(async () => null),
+}));
+const planDrainMocks = vi.hoisted(() => ({
+  planDrainTransitionMutationGated: vi.fn(async () => ({ newBody: null, value: { applied: false, to: null } })),
 }));
 
 vi.mock('../_harness-scope', async (orig) => ({
@@ -44,6 +48,9 @@ vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
 vi.mock('./draft-item-start-gate', () => ({ checkDraftItemStartGateLive: vi.fn(async () => null) }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
+}));
+vi.mock('./plan-drain-transition', () => ({
+  planDrainTransitionMutationGated: planDrainMocks.planDrainTransitionMutationGated,
 }));
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
 // A REAL identity — unlike the residual-warning sibling, this suite needs the wip
@@ -69,6 +76,10 @@ vi.mock('../../plan-items/claim-discipline', () => ({
   claimForWork: claimMocks.claimForWork,
   releaseOwnClaim: claimMocks.releaseOwnClaim,
 }));
+vi.mock('../../plan-items/claims', async (orig) => ({
+  ...(await orig<typeof import('../../plan-items/claims')>()),
+  getClaim: vi.fn(async () => null),
+}));
 vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
   findAllLinkedWorkItems: vi.fn(async () => []),
   reconcileLinkedWorkItemsForPlanItem: vi.fn(async () => ({
@@ -80,7 +91,7 @@ vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
     skippedUnprovenLink: [],
     skippedGatedState: [],
   })),
-  resyncDependentPlanItemLanesNow: vi.fn(async () => []),
+  resyncDependentPlanItemLanesNow: reconcileMocks.resyncDependentPlanItemLanesNow,
   resyncPlanItemLaneNow: reconcileMocks.resyncPlanItemLaneNow,
 }));
 // Keep the conversion IO boundary closed without importing server startup.
@@ -144,7 +155,11 @@ function lockReturnsMutatorValue(knownItems: Set<string>, currentStatus = 'todo'
     const intent = (opts as { intent: string }).intent;
     const itemId = /P-\d{3,}/.exec(intent)?.[0] ?? '';
     const fakeBody = knownItems.has(itemId) ? `- **${itemId}** \`${currentStatus}\` x` : '';
-    const { value } = await (mutate as (b: string | null) => Promise<{ value: unknown }>)(fakeBody);
+    const { value } = await (mutate as (
+      b: string | null,
+      metadata: unknown,
+      scope: { workspaceId: string; harnessSlug: string },
+    ) => Promise<{ value: unknown }>)(fakeBody, undefined, { workspaceId: 'default', harnessSlug: 'papercup' });
     return { kind: 'ok', value, filePath: 'plan.md' } as never;
   });
 }
@@ -238,6 +253,23 @@ describe('plans:set-status wip — execution-record disclosure (EI-2242774101424
     expect(reconcileMocks.resyncPlanItemLaneNow).toHaveBeenCalledWith(
       'plan-a',
       'P-003',
+      null,
+      'su-caller',
+    );
+  });
+
+});
+
+describe('plans:set-status terminal dependent-lane cascade', () => {
+  it('passes the authenticated caller through the cascade', async () => {
+    lockReturnsMutatorValue(new Set(['P-001']), 'wip');
+
+    const b = await body({ slug: 'plan-a', item: 'P-001', status: 'done' });
+
+    expect(b.results[0], JSON.stringify(b.results[0])).toMatchObject({ ok: true });
+    expect(reconcileMocks.resyncDependentPlanItemLanesNow).toHaveBeenCalledWith(
+      'plan-a',
+      'P-001',
       null,
       'su-caller',
     );

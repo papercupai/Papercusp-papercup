@@ -3914,7 +3914,26 @@ export function darkFlagReviewLane(c: DarkCase): "parking" | "owner" {
 // used to justify defaults. PG + this process's env checked; PostHog not probed.
 // Membership, watermark and owner review clock unchanged. Renew only after this
 // substantive review; the production-defaults hard-deadline guard remains active.
-export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-10-20";
+// ─── REVIEW 2026-10-22 (EI-26544037126856550, WI-10006055 gate repair) —
+// Re-derived all 12 parking entries (8 parked + 4 incomplete) and retained them.
+// CLOUDFLARE_PUBLISH/HARNESS_PHASES/DESIGN/TESTING remain V1 scope cuts;
+// THE_HIVE preserves the public Pot lexicon; CONVERSATIONS_RAIL_TAB retains its
+// explicit owner park. TEMPLATES_MARKETPLACE still gates automatic remote merge
+// in templates/list.ts; RUBRICS_MARKETPLACE retains the local-first v1 boundary.
+// EXTERNAL_BENCH is permanently retired. ONBOARDING_PREVIEW_FEATURES still gates
+// mobile-pairing and update-channel preview inputs (optional-setup-items.ts);
+// telemetry already ships. CAPABILITY_EXEC_SANDBOX retains its trusted-owner
+// rollout hold: WI-10002560's current checkpoint requires explicit owner resume,
+// while confined callers already require enforcement independently. The opt-in
+// SUBSTRATE_SIDECAR boot branch has no rollout proof established by this review;
+// its in-process default remains. No defaults or graduation gates changed.
+// Re-ran collectDarkFlagFindings with the full PG override census + audit child
+// env: zero CRITICAL, four informational owner-authority overrides. The current
+// @global map shadows generic-test, so the prior three-CRITICAL fixture finding
+// is no longer effective live state. PostHog overrides were not probed. Full
+// per-flag evidence is in item comment 1193509. Renew parking review for 14 days;
+// membership, watermark and the separate owner-review clock stay unchanged.
+export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-11-05";
 export const DARK_FLAGS_OWNER_REVIEW_BY = "2026-10-01";
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //

@@ -627,18 +627,28 @@ async function blobAtCommit(
   depth = 0,
   requireSuccessfulProbe = false,
 ): Promise<{ blob: string; repo: string; rel: string } | null> {
+  const probeError = (path: string, detail: string): Error => new Error(
+    `git ls-tree repository=${JSON.stringify(repo.slice(0, 180))} commit=${commit} path=${JSON.stringify(path.slice(0, 160))}: ${detail}`,
+  );
+  const errorDetail = (error: unknown): string =>
+    (error instanceof Error ? error.message : String(error)).split('\n')[0]!.slice(0, 200);
   let directEntry = '';
   try {
     // Unlike rev-parse --verify, ls-tree reports a missing path with a successful,
     // empty result. A failed probe therefore cannot masquerade as file absence.
     directEntry = (await git(repo, ['ls-tree', commit, '--', rel])).trim();
   } catch (error) {
-    if (requireSuccessfulProbe) throw error;
+    if (requireSuccessfulProbe) throw probeError(rel, errorDetail(error));
     return null;
   }
   const directBlob = /^[0-7]{6} blob ([0-9a-f]{40})\t/.exec(directEntry);
   if (directBlob) return { blob: directBlob[1]!, repo, rel };
-  if (directEntry) return null;
+  if (directEntry) {
+    // A directory, gitlink, or malformed response is not a successful empty lookup.
+    // Preserve the entry and actual repository so the next refusal is diagnosable.
+    if (requireSuccessfulProbe) throw probeError(rel, `expected a blob; received ${JSON.stringify(directEntry.slice(0, 200))}`);
+    return null;
+  }
   if (depth >= MAX_GITLINK_DEPTH) return null;
   const parts = rel.split('/');
   for (let i = parts.length - 1; i >= 1; i -= 1) {
@@ -647,12 +657,18 @@ async function blobAtCommit(
     try {
       entry = (await git(repo, ['ls-tree', commit, '--', dir])).trim();
     } catch (error) {
-      if (requireSuccessfulProbe) throw error;
+      if (requireSuccessfulProbe) throw probeError(dir, errorDetail(error));
       return null;
     }
     const gitlink = /^160000 commit ([0-9a-f]{40})\t/.exec(entry);
     if (gitlink) return blobAtCommit(resolve(repo, dir), gitlink[1]!, parts.slice(i).join('/'), git, depth + 1, requireSuccessfulProbe);
-    if (entry) return null; // the directory is a real tree at this commit, and `rel` is not in it
+    if (entry) {
+      // A valid tree/blob ancestor establishes absence. Unexpected output cannot.
+      if (requireSuccessfulProbe && !/^[0-7]{6} (?:tree|blob) [0-9a-f]{40}\t/.test(entry)) {
+        throw probeError(dir, `expected a tree, blob, or gitlink; received ${JSON.stringify(entry.slice(0, 200))}`);
+      }
+      return null;
+    }
   }
   return null;
 }
@@ -688,7 +704,7 @@ async function verifyAsCommittedContent(
     }
     if (!committed) {
       const where = mapping.repoPrefix ? `the ${mapping.repoPrefix} repository` : 'the harness repository';
-      return { ok: false, path, reason: `is absent at ${at} (looked up in ${where})` };
+      return { ok: false, path, reason: `is absent at ${at} (looked up in ${where}: ${JSON.stringify(repo.slice(0, 240))})` };
     }
     // proof-freshness-pinned-candidate-2026-10-06 D-001 (b): the working-tree bytes are NOT
     // compared any more. The binding's fingerprint is measured from git objects at this

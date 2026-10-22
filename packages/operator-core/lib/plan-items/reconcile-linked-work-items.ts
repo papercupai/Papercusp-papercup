@@ -1445,6 +1445,7 @@ export async function resyncDependentPlanItemLanesNow(
   planSlug: string,
   dependencyItemId: string,
   harnessSlug?: string | null,
+  createdBy?: string | null,
 ): Promise<string[]> {
   try {
     const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined }).catch(() => null);
@@ -1453,7 +1454,7 @@ export async function resyncDependentPlanItemLanesNow(
       .filter((item) => item.blockedBy.includes(dependencyItemId))
       .map((item) => item.id);
     for (const itemId of dependentItemIds) {
-      await resyncPlanItemLaneNow(planSlug, itemId, harnessSlug).catch(() => null);
+      await resyncPlanItemLaneNow(planSlug, itemId, harnessSlug, createdBy).catch(() => null);
     }
     return dependentItemIds;
   } catch {

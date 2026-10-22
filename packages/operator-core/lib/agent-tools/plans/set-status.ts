@@ -1921,7 +1921,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       }
       const oldTerminal = result.value.oldStatus !== null && isTerminalStatus(result.value.oldStatus);
       if (oldTerminal !== isTerminalStatus(it.status)) {
-        await resyncDependentPlanItemLanesNow(it.slug, it.itemId, harnessSlug ?? null);
+        await resyncDependentPlanItemLanesNow(it.slug, it.itemId, harnessSlug ?? null, agentId?.ownerId);
       }
     } catch (e) {
       console.warn(

@@ -33,6 +33,12 @@ const LAUNCHED_UNREAD = [
   'Run is still running; output at /tmp/affected-9182.log.',
 ].join('\n');
 
+const COMPLETED_TYPECHECK_PENDING_REVIEW = [
+  'Typecheck completed exit0; LINT_TSC_RESULT status=clean at 2026-10-21T12:18:12.187Z.',
+  'Log read: /tmp/su6c30-p006-tsc-final-1221.log.',
+  'Keep CAS35 while reviewer is in flight.',
+].join('\n');
+
 describe('describeUnreadRun', () => {
   it('fires on a body with BOTH an in-flight admission and a run artifact, when no checks were stored', () => {
     const advisory = describeUnreadRun(LAUNCHED_UNREAD, 0);
@@ -102,6 +108,21 @@ describe('describeUnreadRun', () => {
     const body = 'The historical transcript said "still running".\n' +
       'The new run has results pending; output at /tmp/current.log.';
     expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['results pending']);
+  });
+
+  it('does not attach a pending amendment review to a completed typecheck log (EI-26592020421986807)', () => {
+    expect(describeUnreadRun(COMPLETED_TYPECHECK_PENDING_REVIEW, 0)).toBeNull();
+    // The broad historical matcher combines the review status with the completed log.
+    expect(naiveUnreadRun(COMPLETED_TYPECHECK_PENDING_REVIEW, 0)).not.toBeNull();
+  });
+
+  it('keeps a separate unread typecheck actionable beside the completed log and pending review', () => {
+    const body = COMPLETED_TYPECHECK_PENDING_REVIEW +
+      '\nThe new typecheck run is still in-flight; output: /tmp/new-typecheck.log.';
+    const advisory = describeUnreadRun(body, 0);
+
+    expect(advisory?.signals.inFlight).toEqual(['in-flight']);
+    expect(advisory?.signals.runRefs).toContain('/tmp/new-typecheck.log');
   });
 
   it('ignores an unread-run advisory quoted from a checkpoint receipt being reconciled', () => {

@@ -1402,7 +1402,7 @@ export const JUDGE_SAFE_POST_COMPACTION_RECOVERY_INSTRUCTION =
   'engineering coordination or mutate work state.';
 
 const JUDGE_SAFE_SELF_RECALL_POINTER =
-  'The supplied evaluation context is the recovery source; use only the evidence and tools explicitly permitted to the judge role.';
+  "If this carry omits the evaluation kickoff or earlier task context, recover it from your own transcript chain with `sessions:read { session:'self', order:'asc', limit:40 }`. The judge role may read only that self-scoped transcript.";
 
 export function isJudgeCarryRole(role?: string | null): boolean {
   return role?.trim().toLowerCase() === 'judge';

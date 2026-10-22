@@ -836,7 +836,7 @@ describe('renderCarryDoc (pure)', () => {
     expect(text).toContain('recovery marker is incomplete');
   });
 
-  it('renders judge recovery without engineering or transcript-recall directives', () => {
+  it('renders judge recovery with self-only transcript recall and without engineering directives', () => {
     const base = doc();
     const text = renderCarryDoc(
       {
@@ -849,6 +849,7 @@ describe('renderCarryDoc (pure)', () => {
 
     expect(text).toContain('- role: judge');
     expect(text).toContain('assigned evaluation');
+    expect(text).toContain("sessions:read { session:'self', order:'asc', limit:40 }");
     for (const forbidden of [
       'coord:orient',
       'coord:declare-intent',
@@ -856,20 +857,20 @@ describe('renderCarryDoc (pure)', () => {
       'loop:status',
       'code:run',
       'sessions:search',
-      'sessions:read',
     ]) {
       expect(text).not.toContain(forbidden);
     }
   });
 
-  it('keeps judge fallback recovery tool-neutral when the marker is absent or incomplete', () => {
+  it('keeps judge fallback recovery self-scoped when the marker is absent or incomplete', () => {
     const base = doc();
     for (const recovery of [null, automaticRecovery(false)]) {
       const text = renderCarryDoc(
         { ...base, identity: { ...base.identity, role: 'judge' }, automaticRecovery: recovery },
         NOW,
       );
-      expect(text).toContain('evaluation context');
+      expect(text).toContain('evaluation kickoff');
+      expect(text).toContain("sessions:read { session:'self', order:'asc', limit:40 }");
       expect(text).not.toContain('coord:orient');
       expect(text).not.toContain('sessions:search');
     }

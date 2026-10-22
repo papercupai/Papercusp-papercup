@@ -157,6 +157,7 @@ const {
   reconcileLinkedWorkItemsForPlanItem,
   reconcileOrphanedPlanItemWorkItems,
   reconcilePlanAuthoredDependenciesNow,
+  resyncDependentPlanItemLanesNow,
   resyncPlanItemLaneNow,
   syncLinkedWorkItemsToPlanLane,
   planLaneBlockerRef,
@@ -1758,6 +1759,56 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       expect(result).toBeNull();
       expect(edges).toEqual([]);
       expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toBeUndefined();
+    }
+  });
+
+  it.each([
+    { label: 'the matching holder', createdBy: 'su-holder', admitted: true },
+    { label: 'a different caller', createdBy: 'su-other', admitted: false },
+    { label: 'no authenticated caller', createdBy: undefined, admitted: false },
+  ])('D-050: terminal P-001 cascade resyncs held P-002..P-004 as $label', async ({ createdBy, admitted }) => {
+    const plan = 'p-terminal-dependent-cascade';
+    const dependentItems = ['P-002', 'P-003', 'P-004'];
+    const targetIds = dependentItems.map((id) => `F-target-${id.slice(-1)}`);
+    const blockerId = 'F-live-blocker';
+    for (const targetId of targetIds) {
+      stub({ id: targetId, harness: 'sheets', state: 'wip', family: 'feature', assignee: 'su-holder' });
+    }
+    stub({ id: blockerId, harness: 'sheets', state: 'todo', family: 'feature' });
+    await insertDependencyRows([...targetIds, blockerId]);
+    for (const targetId of targetIds) {
+      await rootSql`
+        UPDATE harness_shared.work_items
+           SET status = 'wip', taken_by = 'su-holder'
+         WHERE workspace_id = ${WS} AND harness_slug = 'sheets' AND feature_id = ${targetId}`;
+    }
+    for (const [index, itemId] of dependentItems.entries()) {
+      await edge({ plan, item: itemId, srcKind: 'feature', srcRef: `sheets#${targetIds[index]}` });
+    }
+    await edge({ plan, item: 'P-005', srcKind: 'feature', srcRef: `sheets#${blockerId}` });
+    h3.getPlanRow.mockResolvedValue({ items: [
+      { id: 'P-001', status: 'done', blockedBy: [] },
+      ...dependentItems.map((id) => ({ id, status: 'wip', blockedBy: ['P-001', 'P-005'] })),
+      { id: 'P-005', status: 'todo', blockedBy: [] },
+    ] });
+
+    const resynced = await resyncDependentPlanItemLanesNow(plan, 'P-001', null, createdBy);
+    const edges = await rootSql`
+      SELECT blocked_ref, blocker_ref, created_by FROM harness_shared.work_item_deps
+       WHERE blocker_ref = ${`sheets#${blockerId}`} ORDER BY blocked_ref`;
+
+    expect(resynced).toEqual(dependentItems);
+    expect(edges).toEqual(admitted
+      ? targetIds.map((id) => ({
+          blocked_ref: `sheets#${id}`,
+          blocker_ref: `sheets#${blockerId}`,
+          created_by: 'su-holder',
+        }))
+      : []);
+    for (let index = 0; index < dependentItems.length; index++) {
+      expect(h2.items.get(targetIds[index])?.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toEqual(admitted
+        ? { planSlug: plan, itemId: dependentItems[index], blockerWorkItemIds: [blockerId] }
+        : undefined);
     }
   });
 
