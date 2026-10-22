@@ -43,8 +43,14 @@ test('durable coordination effects reuse thread/member identities and isolate ne
   await spawn.run(args, ctx);
   await spawn.run(args, ctx);
   const first = calls.spawnRoles[0].map((s) => s.idempotencyKey);
+  assert.ok(first.every((key) => typeof key === 'string' && key.length > 0));
   assert.deepEqual(calls.spawnRoles[1].map((s) => s.idempotencyKey), first);
   assert.equal(new Set(first).size, 2);
+  await spawn.run(args, { ...ctx, effectId: 'coord-program:run-2:step' });
+  const independentRun = calls.spawnRoles[2].map((s) => s.idempotencyKey);
+  assert.ok(independentRun.every((key) => typeof key === 'string' && key.length > 0));
+  assert.equal(new Set(independentRun).size, 2);
+  assert.equal(independentRun.some((key) => first.includes(key)), false);
 });
 
 test('coord:thread-open opens a thread + returns ids', async () => {

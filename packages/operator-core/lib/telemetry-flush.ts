@@ -57,7 +57,7 @@ export interface FlushResult {
 
 const RETENTION_DAYS = Number(process.env.PAPERCUSP_TELEMETRY_RETENTION_DAYS ?? 30);
 
-async function resolveTelemetryConfig(): Promise<{
+export async function resolveTelemetryConfig(): Promise<{
   host?: string;
   projectKey?: string;
   distinctId: string;

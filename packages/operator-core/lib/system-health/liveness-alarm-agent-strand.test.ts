@@ -18,6 +18,7 @@ import {
   type AgentStrandHealth,
 } from './agent-strand-census';
 import { coordinationStatus } from './thresholds';
+import { strandMetrics } from './compute';
 import type { CoordinationHealth, HealthPanel, SystemHealth } from './types';
 
 // P-011(b), plan parked-agent-census-resumption-and-root-cause-2026-10-09 (BAR R-12): a standing
@@ -76,11 +77,14 @@ describe('agent-strand alarm observation provenance', () => {
 
   function journey(snapshot: SystemHealth) {
     const records: EscalationRecord[] = [];
+    const pages: string[] = [];
+    const resolved = new Set<string>();
+    let now = 1_000_100;
     const deps: AlarmDeps = {
       readLast: () => snapshot,
       readSharedHealth: async () => snapshot,
       readAutoloopFireRows: async () => [],
-      now: () => 1_000_100,
+      now: () => now,
       escalate: async (input) => {
         records.push({
           msg_id: `agent-strand-${records.length}`,
@@ -92,12 +96,18 @@ describe('agent-strand alarm observation provenance', () => {
           ...input.meta,
         } as EscalationRecord);
       },
-      listOpen: async () => records.filter((record) => !record.resolved),
-      resolve: async () => {},
-      page: async () => {},
+      listOpen: async () => records.filter((record) => !resolved.has(record.msg_id)),
+      resolve: async id => { resolved.add(id); },
+      page: async signal => { pages.push(signal.key); },
       pageResolved: async () => {},
     };
-    return { deps, records };
+    return {
+      deps, records, pages, resolved,
+      observe(next: SystemHealth, elapsedMs = 2_000) {
+        now += elapsedMs;
+        snapshot = { ...next, evaluatedAt: now };
+      },
+    };
   }
 
   it('pins the emitting artifact and exact threshold observation without changing dedup identity', async () => {
@@ -136,6 +146,86 @@ describe('agent-strand alarm observation provenance', () => {
     expect(unreadable.records[0]).toMatchObject({
       agentStrandObservation: { wedged: null, wedgedByClass: null, stranded: AGENT_STRANDED_ALARM_THRESHOLD },
     });
+  });
+
+  it.each([
+    ['agents-wedged', AGENT_WEDGED_ALARM_THRESHOLD, 0],
+    ['agents-stranded', 0, AGENT_STRANDED_ALARM_THRESHOLD],
+  ] as const)('pages once per %s episode and permits a new page after recovery and flap suppression', async (signature, wedged, stranded) => {
+    const active = health({ data: coordination(strand(wedged, stranded)) });
+    const recovered = health({ status: 'ok', data: coordination(strand(0, 0)) });
+    const run = journey(active);
+    run.deps.debounceMs = 1_000;
+    run.deps.flapWindowMs = 30_000;
+    run.deps.flapThreshold = 2;
+
+    await runLivenessAlarmTick('ws', run.deps);
+    for (let i = 0; i < 3; i++) {
+      run.observe(active);
+      await runLivenessAlarmTick('ws', run.deps);
+    }
+    expect(run.records).toHaveLength(1);
+    expect(run.pages).toEqual([signature]);
+    expect(run.resolved.size).toBe(0);
+
+    for (let episode = 0; episode < 2; episode++) {
+      run.observe(recovered);
+      await runLivenessAlarmTick('ws', run.deps);
+      expect(run.resolved.size).toBe(episode + 1);
+      run.observe(active);
+      await runLivenessAlarmTick('ws', run.deps);
+    }
+    // The third fire is still durable, but is suppressed as a flap.
+    expect(run.records).toHaveLength(3);
+    expect(run.pages).toEqual([signature, signature]);
+    run.observe(active);
+    await runLivenessAlarmTick('ws', run.deps);
+    expect(run.records).toHaveLength(3);
+
+    run.observe(recovered);
+    await runLivenessAlarmTick('ws', run.deps);
+    run.observe(recovered, 30_001);
+    await runLivenessAlarmTick('ws', run.deps);
+    run.observe(active);
+    await runLivenessAlarmTick('ws', run.deps);
+    expect(run.records).toHaveLength(4);
+    expect(run.resolved.size).toBe(3);
+    expect(run.pages).toEqual([signature, signature, signature]);
+  });
+});
+
+describe('coordination panel population metrics', () => {
+  it('carries measured wedged class counts and stranded totals into coordination panel metrics', () => {
+    const census = summarizeAgentStrand(new Map([
+      ['auth', { wedged: 'auth-blocked' }],
+      ['quota-1', { wedged: 'quota-blocked' }],
+      ['quota-2', { wedged: 'quota-blocked' }],
+      ['unbound', { wedged: 'unbound-successor' }],
+      ['pending', { wedged: 'pending-turn-stuck' }],
+      ['healthy', {}],
+    ]), ['stranded-1', 'stranded-2']);
+    expect(strandMetrics(census).map(({ label, value }) => [label, value])).toEqual([
+      ['wedged', 5],
+      ['wedged · auth-blocked', 1],
+      ['wedged · quota-blocked', 2],
+      ['wedged · unbound-successor', 1],
+      ['wedged · pending-turn-stuck', 1],
+      ['stranded', 2],
+    ]);
+  });
+
+  it('keeps an unobserved census leg unreadable while retaining measured metrics from the other leg', () => {
+    const census = strand(3, 2);
+    expect(strandMetrics({ ...census, wedgedUnreadable: true }).map(({ label, value }) => [label, value]))
+      .toEqual([['wedged', 'unreadable'], ['stranded', 2]]);
+    expect(strandMetrics({ ...census, strandedUnreadable: true })).toContainEqual({
+      label: 'stranded', value: 'unreadable', tone: 'warn',
+    });
+    expect(strandMetrics({ ...census, strandedUnreadable: true })).toContainEqual({
+      label: 'wedged', value: 3, tone: 'warn',
+    });
+    expect(strandMetrics(null)).toEqual([]);
+    expect(strandMetrics(undefined)).toEqual([]);
   });
 });
 
@@ -201,6 +291,23 @@ describe('agents-wedged / agents-stranded alarm', () => {
 });
 
 describe('coordinationStatus with the agent-strand census', () => {
+  it.each([
+    [AGENT_WEDGED_ALARM_THRESHOLD, 0, ['agents-wedged']],
+    [0, AGENT_STRANDED_ALARM_THRESHOLD, ['agents-stranded']],
+    [AGENT_WEDGED_ALARM_THRESHOLD, AGENT_STRANDED_ALARM_THRESHOLD, ['agents-stranded', 'agents-wedged']],
+  ])('keeps coordination population severity at WARN without a duplicate generic panel page (%s, %s)', (wedged, stranded, signatures) => {
+    const data = coordination(strand(wedged, stranded));
+    const status = coordinationStatus(data);
+    expect(status).toBe('warn');
+    expect(keys(health({ status, data })).sort()).toEqual(signatures);
+  });
+
+  it('retains an independent nonpopulation panel warning when the population recovers', () => {
+    const data = { ...coordination(strand(0, 0)), leaderlessFleets: 1 };
+    expect(coordinationStatus(data)).toBe('warn');
+    expect(keys(health({ status: coordinationStatus(data), data }))).toEqual([]);
+  });
+
   it('warns on any wedged or stranded session but never goes crit (the alarm owns paging)', () => {
     expect(coordinationStatus(coordination(strand(0, 0)))).toBe('ok');
     expect(coordinationStatus(coordination(strand(1, 0)))).toBe('warn');

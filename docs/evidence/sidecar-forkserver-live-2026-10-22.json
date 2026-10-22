@@ -7,72 +7,103 @@
     "python3",
     "docs/evidence/sidecar-forkserver-live-probe.py"
   ],
-  "startedAt": "2026-10-22T14:30:26.116258+00:00",
-  "finishedAt": "2026-10-22T14:30:31.219682+00:00",
+  "startedAt": "2026-10-22T16:15:03.498972+00:00",
+  "finishedAt": "2026-10-22T16:15:08.830624+00:00",
   "exitCode": 0,
-  "summary": "Three-second live bg-host trace; forkserver syscall activity is the positive control for zero sidecar fork calls.",
+  "summary": "Three-second live bg-host trace with forkserver activity and marked git-sync child CPU/I/O progress overlapping the trace.",
   "assertions": [
     {
       "id": "stable-live-runtime",
       "passed": true,
-      "evidence": "bg-host MainPID before=2138906, after=2138906; sidecar=2158514."
+      "evidence": "bg-host MainPID before=2503713, after=2503713; sidecar=2524241."
     },
     {
       "id": "trace-instrument-available",
       "passed": true,
-      "evidence": "[{\"label\": \"sidecar\", \"traceLineCount\": 734, \"instrumentErrors\": [], \"unmeasuredCallCount\": 0}, {\"label\": \"forkserver\", \"traceLineCount\": 516, \"instrumentErrors\": [], \"unmeasuredCallCount\": 0}]"
+      "evidence": "[{\"label\": \"sidecar\", \"traceLineCount\": 290, \"instrumentErrors\": [], \"unmeasuredCallCount\": 0}, {\"label\": \"forkserver\", \"traceLineCount\": 149, \"instrumentErrors\": [], \"unmeasuredCallCount\": 0}]"
     },
     {
       "id": "forkserver-positive-control",
       "passed": true,
-      "evidence": "[{\"label\": \"sidecar\", \"pid\": 2158514, \"forkCallCount\": 0}, {\"label\": \"forkserver\", \"pid\": 2166935, \"forkCallCount\": 86}]"
+      "evidence": "[{\"label\": \"sidecar\", \"pid\": 2524241, \"forkCallCount\": 0}, {\"label\": \"forkserver\", \"pid\": 2532850, \"forkCallCount\": 22}]"
+    },
+    {
+      "id": "git-sync-overlap-progress",
+      "passed": true,
+      "evidence": "{\"before\": {\"pid\": 2624362, \"parentPid\": 2532850, \"startTicks\": \"147467907\", \"atWindowSeconds\": 0.0014886120334267616, \"marker\": \"PAPERCUSP_GIT_SYNC_PUSH=1\", \"cpuTicks\": 11, \"rchar\": 1522251, \"wchar\": 1, \"syscr\": 237, \"syscw\": 1}, \"after\": {\"pid\": 2624362, \"parentPid\": 2532850, \"startTicks\": \"147467907\", \"atWindowSeconds\": 0.0540671250782907, \"marker\": \"PAPERCUSP_GIT_SYNC_PUSH=1\", \"cpuTicks\": 14, \"rchar\": 1531832, \"wchar\": 281654, \"syscr\": 274, \"syscw\": 6}}"
     },
     {
       "id": "sidecar-no-child-forks",
       "passed": true,
-      "evidence": "sidecar=2158514, windowSeconds=3.000097, forkCalls=0, forkSeconds=0."
+      "evidence": "sidecar=2524241, windowSeconds=3.038866, forkCalls=0, forkSeconds=0."
     },
     {
       "id": "sidecar-fork-and-read-budget",
       "passed": true,
-      "evidence": "All read time conservatively bounds exec-wait reads: forkSeconds=0, readSeconds=0.046668, windowSeconds=3.000097; sum/window must be below0.05."
+      "evidence": "All read time conservatively bounds exec-wait reads: forkSeconds=0, readSeconds=0.047571999999999996, windowSeconds=3.038866; sum/window must be below0.05."
     }
   ],
   "traces": [
     {
       "label": "sidecar",
-      "pid": 2158514,
-      "startTicks": "146495161",
+      "pid": 2524241,
+      "startTicks": "147029967",
       "forkCallCount": 0,
       "forkSeconds": 0,
-      "readSeconds": 0.046668,
+      "readSeconds": 0.047571999999999996,
       "unmeasuredCallCount": 0,
-      "traceLineCount": 734,
+      "traceLineCount": 290,
       "instrumentErrors": [],
-      "rawEvidence": "/tmp/sidecar-forkserver-live-tkzg79r6/sidecar.strace",
-      "rawSha256": "58a5f40c1fa658a5cf9e5e49d169e41e104967b4e90055833ddaafce4021ddc7"
+      "rawEvidence": "/tmp/sidecar-forkserver-live-pzou0hxe/sidecar.strace",
+      "rawSha256": "955fa5f58a8ce745f963ffe52c780328cd87689f4a30f92cbeee05c141c7157a"
     },
     {
       "label": "forkserver",
-      "pid": 2166935,
-      "startTicks": "146496225",
-      "forkCallCount": 86,
-      "forkSeconds": 0.650696,
-      "readSeconds": 0.841331,
+      "pid": 2532850,
+      "startTicks": "147030916",
+      "forkCallCount": 22,
+      "forkSeconds": 0.175679,
+      "readSeconds": 0.26681,
       "unmeasuredCallCount": 0,
-      "traceLineCount": 516,
+      "traceLineCount": 149,
       "instrumentErrors": [],
-      "rawEvidence": "/tmp/sidecar-forkserver-live-tkzg79r6/forkserver.strace",
-      "rawSha256": "30a7a2de40d20051cc458d3deae274327ccfe05ea6b3ea13cc5ce43765772cd1"
+      "rawEvidence": "/tmp/sidecar-forkserver-live-pzou0hxe/forkserver.strace",
+      "rawSha256": "cec75dd73730bf9f41b211f891e1e04876a5627df26fa8e4081450699345e7ad"
     }
   ],
-  "windowSeconds": 3.0000972650013864,
-  "sidecarBlockedPercent": 1.555549566489753,
+  "windowSeconds": 3.038866190938279,
+  "gitSyncWitness": {
+    "before": {
+      "pid": 2624362,
+      "parentPid": 2532850,
+      "startTicks": "147467907",
+      "atWindowSeconds": 0.0014886120334267616,
+      "marker": "PAPERCUSP_GIT_SYNC_PUSH=1",
+      "cpuTicks": 11,
+      "rchar": 1522251,
+      "wchar": 1,
+      "syscr": 237,
+      "syscw": 1
+    },
+    "after": {
+      "pid": 2624362,
+      "parentPid": 2532850,
+      "startTicks": "147467907",
+      "atWindowSeconds": 0.0540671250782907,
+      "marker": "PAPERCUSP_GIT_SYNC_PUSH=1",
+      "cpuTicks": 14,
+      "rchar": 1531832,
+      "wchar": 281654,
+      "syscr": 274,
+      "syscw": 6
+    }
+  },
+  "sidecarBlockedPercent": 1.5654522776243622,
   "runtime": {
-    "bgHostPid": 2138906,
-    "sidecarPid": 2158514,
+    "bgHostPid": 2503713,
+    "sidecarPid": 2524241,
     "forkserverPids": [
-      2166935
+      2532850
     ]
   },
   "limitations": [

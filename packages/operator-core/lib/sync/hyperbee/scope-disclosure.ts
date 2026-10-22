@@ -39,6 +39,8 @@ export interface ScopedLogDisclosure {
    *  high-water per grantor; a trailing epoch is refusable by spawn-class
    *  consumers). */
   scopeEpoch: number;
+  /** Authenticated writer length; absent only on a legacy three-field entry. */
+  logLength?: number;
 }
 
 const CORE_KEY_RE = /^[0-9a-f]{64}$/;
@@ -53,7 +55,11 @@ export function packScopedLog(d: ScopedLogDisclosure): string {
   if (!Number.isSafeInteger(d.scopeEpoch) || d.scopeEpoch < 0) {
     throw new Error(`scope-disclosure: scope epoch must be a non-negative integer (got ${d.scopeEpoch})`);
   }
-  return `${formatScopeId(d.scope)}|${d.logCoreKeyHex}|${d.scopeEpoch}`;
+  if (d.logLength !== undefined && (!Number.isSafeInteger(d.logLength) || d.logLength < 0)) {
+    throw new Error('scope-disclosure: log length must be a non-negative safe integer');
+  }
+  return `${formatScopeId(d.scope)}|${d.logCoreKeyHex}|${d.scopeEpoch}` +
+    (d.logLength === undefined ? '' : `|${d.logLength}`);
 }
 
 /** Parse an untrusted wire entry. FAIL-CLOSED: null on any malformation — the
@@ -61,14 +67,17 @@ export function packScopedLog(d: ScopedLogDisclosure): string {
 export function parseScopedLog(entry: string): ScopedLogDisclosure | null {
   if (typeof entry !== 'string' || entry.length > 300) return null;
   const parts = entry.split('|');
-  if (parts.length !== 3) return null;
+  if (parts.length !== 3 && parts.length !== 4) return null;
   const scope = parseScopeId(parts[0]);
   if (!scope) return null;
   if (!CORE_KEY_RE.test(parts[1])) return null;
   if (!/^(0|[1-9][0-9]{0,15})$/.test(parts[2])) return null;
   const epoch = Number(parts[2]);
   if (!Number.isSafeInteger(epoch)) return null;
-  return { scope, logCoreKeyHex: parts[1], scopeEpoch: epoch };
+  if (parts.length === 4 && (!/^(0|[1-9][0-9]{0,15})$/.test(parts[3]) ||
+      !Number.isSafeInteger(Number(parts[3])))) return null;
+  return { scope, logCoreKeyHex: parts[1], scopeEpoch: epoch,
+    ...(parts.length === 4 ? { logLength: Number(parts[3]) } : {}) };
 }
 
 /** The injected roster predicate (C6: cache-bypassing; X9: numeric ids). */

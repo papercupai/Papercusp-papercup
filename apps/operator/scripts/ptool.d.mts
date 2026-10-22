@@ -107,6 +107,7 @@ export function ptoolConnectionRetryOptions(args?: {}, env?: NodeJS.ProcessEnv):
     maxAttempts: number;
     totalTimeoutMs?: undefined;
 };
+export function withPtoolConnectionPhaseTrace(trace: any, phase: any, route: any, operation: any): Promise<any>;
 /**
  * Parse argv into the ptool invocation shape. The first non-flag positional
  * is the tool name (`group:verb`); everything else is a flag. Pure.

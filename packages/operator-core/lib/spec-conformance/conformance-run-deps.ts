@@ -133,6 +133,11 @@ export async function judgeTestsFromLedger(
   },
   sql: Sql = getOrgPg().sql,
 ): Promise<EvaluatedConformanceCheck> {
+  const currentBuildSha = input.currentBuildSha === undefined ? getBuildInfo().sha : input.currentBuildSha;
+  const normalizedCurrentBuildSha = currentBuildSha?.trim() || null;
+  const matchingBuildSha = normalizedCurrentBuildSha && SPEC_CONFORMANCE_BUILD_SHA_RE.test(normalizedCurrentBuildSha)
+    ? normalizedCurrentBuildSha.toLowerCase()
+    : null;
   const rows = (await sql`
     SELECT DISTINCT ON (file_path)
            id, file_path, status, finished_at, commit_sha, worktree_dirty, execution_details
@@ -144,7 +149,17 @@ export async function judgeTestsFromLedger(
        AND source IS DISTINCT FROM 'mutation-probe'
        AND (workspace_id = ${input.workspaceId} OR workspace_id IS NULL)
        AND status IN ('pass', 'fail', 'error')
-     ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+     -- Concurrent reviewers may test other commits in this same workspace.
+     -- Prefer this build's newest run; retain foreign rows as a diagnostic
+     -- fallback when there is no match. Unpinned errors stay fail-closed.
+     ORDER BY file_path,
+              CASE WHEN ${matchingBuildSha}::text IS NULL
+                     OR nullif(btrim(commit_sha), '') IS NULL
+                     OR (commit_sha ~ '^[a-fA-F0-9]{7,64}$' AND (
+                       starts_with(lower(btrim(commit_sha)), ${matchingBuildSha}::text)
+                       OR starts_with(${matchingBuildSha}::text, lower(btrim(commit_sha)))
+                     )) THEN 0 ELSE 1 END,
+              finished_at DESC NULLS LAST, id DESC
   `) as Array<{
     id: number | string;
     file_path: string;
@@ -154,8 +169,6 @@ export async function judgeTestsFromLedger(
     worktree_dirty: boolean | null;
     execution_details: unknown;
   }>;
-  const currentBuildSha = input.currentBuildSha === undefined ? getBuildInfo().sha : input.currentBuildSha;
-  const normalizedCurrentBuildSha = currentBuildSha?.trim() || null;
   const currentBuildProblems = rows.flatMap((row) => {
     if (row.status === 'error') return [];
     if (!normalizedCurrentBuildSha || !SPEC_CONFORMANCE_BUILD_SHA_RE.test(normalizedCurrentBuildSha)) {

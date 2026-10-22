@@ -795,10 +795,22 @@ describe('docs:search handler', () => {
       mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
       let releaseSearch: (() => void) | undefined;
       searchDocs.mockImplementationOnce(
-        async () =>
-          await new Promise((resolve) => {
-            releaseSearch = () => resolve({ hits: [{ slug: 'p1', title: 'P1', excerpt: 'ex' }] });
-          }),
+        async (...params: unknown[]) => {
+          const engineCtx = params[2] as { metadata: (data: Record<string, unknown>) => void };
+          return await new Promise((resolve) => {
+            releaseSearch = () => {
+              engineCtx.metadata({ docsLexicalTiming: {
+                version: 1,
+                totalElapsedMs: 20_000,
+                outcome: 'complete',
+                completedMs: { listPages: 10, getContent: 19_900, ranking: 90 },
+                active: null,
+                pages: { listed: 37, searchable: 33, loaded: 33 },
+              } });
+              resolve({ hits: [{ slug: 'p1', title: 'P1', excerpt: 'ex' }] });
+            };
+          });
+        },
       );
       const tool = (await import('../search')).default;
       const log = vi.fn();
@@ -817,6 +829,9 @@ describe('docs:search handler', () => {
       releaseSearch?.();
       await pending;
       expect(log).toHaveBeenCalledWith(expect.stringMatching(/lexicalSearch completed in \d+ms/));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining(
+        'docsLexicalTiming total=20000ms outcome=complete phases=listPages=10ms,getContent=19900ms,ranking=90ms pages=37/33/33',
+      ));
       expect(log.mock.calls.flat().join(' ')).not.toContain('private query text');
     } finally {
       vi.useRealTimers();

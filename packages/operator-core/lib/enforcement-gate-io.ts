@@ -37,6 +37,44 @@ export { REFUSAL_MARKER_TTL_MS, wasRecentlyRefused, markRefused, clearRefused, _
  *  riding a seam that must not slow down or fail because of it. */
 export const FLUSH_GATE_BUDGET_MS = 4_000;
 
+interface FlushGatePhaseMeasurement {
+  phase: string;
+  elapsedMs: number;
+}
+
+interface FlushGatePhaseTrace {
+  phase: string;
+  phaseStartedAtMs: number;
+  completed: FlushGatePhaseMeasurement[];
+}
+
+/** Track bounded, low-cardinality phases without changing the gate verdict. */
+async function withFlushGatePhase<T>(
+  trace: FlushGatePhaseTrace | undefined,
+  phase: string,
+  work: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal?.aborted) throw signal.reason ?? new Error('flush gate timed out');
+  if (!trace) {
+    const result = await work();
+    if (signal?.aborted) throw signal.reason ?? new Error('flush gate timed out');
+    return result;
+  }
+  const startedAtMs = Date.now();
+  trace.phase = phase;
+  trace.phaseStartedAtMs = startedAtMs;
+  try {
+    const result = await work();
+    if (signal?.aborted) throw signal.reason ?? new Error('flush gate timed out');
+    return result;
+  } finally {
+    trace.completed.push({ phase, elapsedMs: Date.now() - startedAtMs });
+    trace.phase = 'between-phases';
+    trace.phaseStartedAtMs = Date.now();
+  }
+}
+
 /** Matches the structured refusal emitted by the host checkpoint writer. Keep
  * this local structural check deliberately independent of the turn-end module:
  * tests and the bundled sidecar mock that module at this seam, and an error
@@ -99,6 +137,8 @@ export async function writeFlushFallback(input: {
   brief: CarryBrief | null;
   nowMs?: number;
   snapshotAllHeld?: boolean;
+  phaseTrace?: FlushGatePhaseTrace;
+  signal?: AbortSignal;
 }): Promise<FlushFallbackResult> {
   const nowMs = input.nowMs ?? Date.now();
   const result: FlushFallbackResult = { checkpointedItems: [] };
@@ -109,19 +149,22 @@ export async function writeFlushFallback(input: {
   if (hasHeldTripwire || input.snapshotAllHeld) {
     try {
       const { autoCheckpointStaleHeldItems } = await import('./turn-end-tracking-io');
-      const written = await autoCheckpointStaleHeldItems({
-        ownerId: input.ownerId,
-        workspaceId: input.workspaceId,
-        sessionId: input.sessionId,
-        sinceIso: input.sinceIso,
-        journalNote: input.journalNote,
-        nowMs,
-        ...(input.snapshotAllHeld ? { mode: 'respawn' as const } : {}),
-        // The advisory gate already built this carry snapshot to detect its
-        // tripwires. Reuse its held rows; a mandatory respawn deliberately omits
-        // this preview so autoCheckpointStaleHeldItems reads every held item.
-        ...(!input.snapshotAllHeld && input.brief ? { heldItems: input.brief.heldItems } : {}),
-      });
+      const written = await withFlushGatePhase(input.phaseTrace, 'fallback-work-item-checkpoints', () =>
+        autoCheckpointStaleHeldItems({
+          ownerId: input.ownerId,
+          workspaceId: input.workspaceId,
+          sessionId: input.sessionId,
+          sinceIso: input.sinceIso,
+          journalNote: input.journalNote,
+          nowMs,
+          ...(input.snapshotAllHeld ? { mode: 'respawn' as const } : {}),
+          // The advisory gate already built this carry snapshot to detect its
+          // tripwires. Reuse its held rows; a mandatory respawn deliberately omits
+          // this preview so autoCheckpointStaleHeldItems reads every held item.
+          ...(!input.snapshotAllHeld && input.brief ? { heldItems: input.brief.heldItems } : {}),
+        }),
+        input.signal,
+      );
       result.checkpointedItems = written.map((w) => w.id);
     } catch (error) {
       if (input.snapshotAllHeld) throw error;
@@ -137,9 +180,12 @@ export async function writeFlushFallback(input: {
       const note = input.journalNote?.trim()
         ? `## Next action\n${input.journalNote.trim()}`
         : `## Next action\n${MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION} Resume the armed loop.`;
-      await setLoopCarryNote(
-        { harness: input.brief.loop.harness, ownerId: input.ownerId },
-        `⟦auto-checkpoint mechanical @${atIso}⟧ — the system wrote this because the loop was armed with no carry-note at a flush boundary; replace it with a real loop:checkpoint.\n\n${note}`,
+      await withFlushGatePhase(input.phaseTrace, 'fallback-loop-carry-note', () =>
+        setLoopCarryNote(
+          { harness: input.brief!.loop!.harness, ownerId: input.ownerId },
+          `⟦auto-checkpoint mechanical @${atIso}⟧ — the system wrote this because the loop was armed with no carry-note at a flush boundary; replace it with a real loop:checkpoint.\n\n${note}`,
+        ),
+        input.signal,
       );
       result.loopCarryNoteWritten = input.brief.loop.harness;
     } catch (error) {
@@ -320,12 +366,35 @@ export async function runFlushGate(input: {
     }
   }
   if (!flushGateEnabled()) return clear;
-  const { value } = await withBoundedTimeout(runFlushGateInner(input), {
+  const timeoutMs = flushGateBudgetMs();
+  const phaseTrace: FlushGatePhaseTrace = {
+    phase: 'start',
+    phaseStartedAtMs: Date.now(),
+    completed: [],
+  };
+  const result = await withBoundedTimeout((signal) => runFlushGateInner(input, phaseTrace, signal), {
     fallback: clear,
-    timeoutMs: flushGateBudgetMs(),
+    timeoutMs,
     label: `flush-gate:${input.boundary}`,
+    // Emit one richer line below instead of the generic bounded-timeout warning.
+    warn: false,
   });
-  return value;
+  if (result.reason === 'timeout') {
+    const completedPhases = phaseTrace.completed
+      .map(({ phase, elapsedMs }) => `${phase}:${elapsedMs}ms`)
+      .join(',') || 'none';
+    console.warn(
+      `[bounded-timeout] flush-gate:${input.boundary} exceeded ${timeoutMs}ms — degrading to fallback; ` +
+      `elapsedMs=${result.elapsedMs} activePhase=${phaseTrace.phase} ` +
+      `activePhaseElapsedMs=${Math.max(0, Date.now() - phaseTrace.phaseStartedAtMs)} ` +
+      `completedPhases=${completedPhases}`,
+    );
+  } else if (result.reason === 'error') {
+    console.warn(
+      `[bounded-timeout] flush-gate:${input.boundary} failed: ${result.errorMessage ?? 'unknown error'} — degrading to fallback`,
+    );
+  }
+  return result.value;
 }
 
 /**
@@ -411,7 +480,7 @@ async function runFlushGateInner(input: {
   nowMs?: number;
   getWorkItemStateFn?: GetWorkItemStateFn;
   countAgentToolCallsFn?: CountAgentToolCallsFn;
-}): Promise<FlushGateOutcome> {
+}, phaseTrace: FlushGatePhaseTrace, signal: AbortSignal): Promise<FlushGateOutcome> {
   const nowMs = input.nowMs ?? Date.now();
   // Only FETCH when the caller didn't provide a brief at all (undefined). An
   // explicit `null` means the caller already tried and the read failed (e.g. the
@@ -419,19 +488,26 @@ async function runFlushGateInner(input: {
   let brief: CarryBrief | null;
   if (input.brief === undefined) {
     try {
-      const { buildCarryBrief } = await import('./carry-brief');
-      brief = await buildCarryBrief(input.ownerId, { workspaceId: input.workspaceId });
+      brief = await withFlushGatePhase(phaseTrace, 'load-carry-brief', async () => {
+        const { buildCarryBrief } = await import('./carry-brief');
+        return buildCarryBrief(input.ownerId, { workspaceId: input.workspaceId });
+      }, signal);
     } catch {
       brief = null;
     }
   } else {
     brief = input.brief;
   }
-  const agentToolCallsSinceNote = await resolveAgentToolCallsSinceNote(
-    brief,
-    input.ownerId,
-    nowMs,
-    input.countAgentToolCallsFn,
+  const agentToolCallsSinceNote = await withFlushGatePhase(
+    phaseTrace,
+    'count-agent-tool-calls-since-note',
+    () => resolveAgentToolCallsSinceNote(
+      brief,
+      input.ownerId,
+      nowMs,
+      input.countAgentToolCallsFn,
+    ),
+    signal,
   );
   const rawTripwires = detectFlushTripwires(brief, nowMs, agentToolCallsSinceNote, input.boundary);
   const heldItemHarness = new Map<string, string | null>(
@@ -440,10 +516,15 @@ async function runFlushGateInner(input: {
   const terminalCheck =
     rawTripwires.length === 0
       ? { tripwires: rawTripwires, droppedTerminalHeldItemIds: [] }
-      : await dropTerminalHeldTripwires(
-          rawTripwires,
-          heldItemHarness,
-          input.getWorkItemStateFn ?? defaultGetWorkItemState,
+      : await withFlushGatePhase(
+          phaseTrace,
+          'recheck-terminal-held-items',
+          () => dropTerminalHeldTripwires(
+            rawTripwires,
+            heldItemHarness,
+            input.getWorkItemStateFn ?? defaultGetWorkItemState,
+          ),
+          signal,
         );
   const tripwires = terminalCheck.tripwires;
   const droppedTerminalHeldItemIds = terminalCheck.droppedTerminalHeldItemIds;
@@ -455,33 +536,45 @@ async function runFlushGateInner(input: {
   // session:request-compaction caller leaves `mode` unset and remains bounded
   // by exactly the existing refuse → mechanical-fallback sequence.
   if (input.mode === 'forced' && tripwires.length > 0) {
-    const fallback = await writeFlushFallback({
-      ownerId: input.ownerId,
-      workspaceId: input.workspaceId,
-      sessionId: input.sessionId,
-      sinceIso: input.sinceIso,
-      journalNote: input.journalNote ?? null,
-      tripwires,
-      brief,
-      nowMs,
-    });
+    const fallback = await withFlushGatePhase(phaseTrace, 'forced-mechanical-fallback', () =>
+      writeFlushFallback({
+        ownerId: input.ownerId,
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        sinceIso: input.sinceIso,
+        journalNote: input.journalNote ?? null,
+        tripwires,
+        brief,
+        nowMs,
+        phaseTrace,
+        signal,
+      }),
+      signal,
+    );
     // A prior deliberate refusal may have left a marker behind. The forced
     // path has now crossed the boundary itself, so retire that marker just as
     // the normal mechanical-fallback rung does; never create one here.
-    await clearRefused(input.boundary, input.ownerId);
+    await withFlushGatePhase(phaseTrace, 'clear-refusal-marker', () => clearRefused(input.boundary, input.ownerId), signal);
     return { verdict: 'mechanical-fallback', tripwires, droppedTerminalHeldItemIds, fallback };
   }
 
-  const alreadyRefused = await wasRecentlyRefused(input.boundary, input.ownerId, nowMs);
+  const alreadyRefused = await withFlushGatePhase(
+    phaseTrace,
+    'read-refusal-marker',
+    () => wasRecentlyRefused(input.boundary, input.ownerId, nowMs),
+    signal,
+  );
   const verdict = decideFlushGate({ tripwires, alreadyRefused });
 
   if (verdict === 'clear') {
     // A clean boundary retires any stale marker so the next real one starts fresh.
-    if (alreadyRefused) await clearRefused(input.boundary, input.ownerId);
+    if (alreadyRefused) {
+      await withFlushGatePhase(phaseTrace, 'clear-stale-refusal-marker', () => clearRefused(input.boundary, input.ownerId), signal);
+    }
     return { verdict, tripwires, droppedTerminalHeldItemIds };
   }
   if (verdict === 'refuse') {
-    await markRefused(input.boundary, input.ownerId, nowMs);
+    await withFlushGatePhase(phaseTrace, 'write-refusal-marker', () => markRefused(input.boundary, input.ownerId, nowMs), signal);
     return {
       verdict,
       tripwires,
@@ -490,16 +583,21 @@ async function runFlushGateInner(input: {
     };
   }
   // mechanical-fallback: write durable state, then let the caller proceed.
-  const fallback = await writeFlushFallback({
-    ownerId: input.ownerId,
-    workspaceId: input.workspaceId,
-    sessionId: input.sessionId,
-    sinceIso: input.sinceIso,
-    journalNote: input.journalNote ?? null,
-    tripwires,
-    brief,
-    nowMs,
-  });
-  await clearRefused(input.boundary, input.ownerId);
+  const fallback = await withFlushGatePhase(phaseTrace, 'mechanical-fallback', () =>
+    writeFlushFallback({
+      ownerId: input.ownerId,
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      sinceIso: input.sinceIso,
+      journalNote: input.journalNote ?? null,
+      tripwires,
+      brief,
+      nowMs,
+      phaseTrace,
+      signal,
+    }),
+    signal,
+  );
+  await withFlushGatePhase(phaseTrace, 'clear-refusal-marker', () => clearRefused(input.boundary, input.ownerId), signal);
   return { verdict, tripwires, droppedTerminalHeldItemIds, fallback };
 }

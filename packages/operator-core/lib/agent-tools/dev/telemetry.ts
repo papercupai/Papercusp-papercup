@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { flagPollSuspects, handlerPhaseRollup, telemetryRollup } from '../../dev-data';
+import { runtimeObservabilityHealth } from '../../observability/runtime';
 
 export default defineTool({
   name: 'dev:telemetry',
@@ -61,6 +62,7 @@ export default defineTool({
           text: JSON.stringify({
             count: result.entries.length,
             poll_suspects: pollSuspects,
+            observability: runtimeObservabilityHealth(),
             ...(handlerPhases ? { handler_phases: handlerPhases } : {}),
             entries: result.entries,
           }),

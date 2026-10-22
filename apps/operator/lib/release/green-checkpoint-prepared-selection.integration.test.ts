@@ -48,6 +48,29 @@ async function lineage() {
     recursive: true,
   });
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const controller = new AbortController();
+  onTestFinished(() => controller.abort());
+  const exec: typeof runCmd = async (cmd, args, options = {}) => {
+    const tail: string[] = [];
+    try {
+      return await runCmd(cmd, args, {
+        ...options,
+        timeoutMs: 60_000,
+        hardTimeoutMs: 60_000,
+        killProcessGroupOnTimeout: true,
+        signal: controller.signal,
+        onOutput: (stream, text) => {
+          options.onOutput?.(stream, text);
+          tail.push(text.slice(-500));
+          if (tail.length > 6) tail.shift();
+        },
+      });
+    } catch (error) {
+      throw new Error(
+        `fixture command ${cmd} ${args.join(" ")}: ${String(error)}\n${tail.join("")}`,
+      );
+    }
+  };
   vi.stubEnv("PC_HEAVY_DIR", join(root, "pc-heavy"));
   vi.stubEnv("PAPERCUSP_DEPENDENCY_GENERATION_ROOT", join(root, "generations"));
   vi.stubEnv("PAPERCUSP_QUIET_CUT", "0");
@@ -113,13 +136,13 @@ async function lineage() {
   const knownGoodGeneration = await ensureCheckpointDependencyGeneration(
     cfg,
     knownGood,
-    runCmd,
+    exec,
   );
   const tip = commit("3.0.0");
   const tipGeneration = await ensureCheckpointDependencyGeneration(
     cfg,
     tip,
-    runCmd,
+    exec,
   );
   expect(knownGoodGeneration.inputFingerprint).not.toBe(
     tipGeneration.inputFingerprint,
@@ -154,7 +177,7 @@ async function lineage() {
       target: null,
       checkpointSelection: { deps, opts },
     };
-    const result = await beginCheckpointPreflight(cfg, tip, runCmd, input);
+    const result = await beginCheckpointPreflight(cfg, tip, exec, input);
     if (result.kind !== "ready")
       throw new Error("fixture candidate must be applicable");
     onTestFinished(() => {
@@ -189,6 +212,7 @@ async function lineage() {
     deps,
     events,
     prepare,
+    exec,
     carry,
   };
 }
@@ -239,7 +263,7 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     };
     const real = realCheckpointDeps(
       f.cfg,
-      runCmd,
+      f.exec,
       "independent-prepared-run",
       undefined,
       undefined,
@@ -291,7 +315,7 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
         expect(existsSync(f.lockDir)).toBe(false);
         order.push("prepare-unlocked");
       }
-      return runCmd(cmd, args, options);
+      return f.exec(cmd, args, options);
     };
     const input: SelectionInput = {
       target: null,
@@ -341,7 +365,7 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     const exec: typeof runCmd = async (cmd, args, options) => {
       if (args.includes("--ensure-ref"))
         throw new Error("independent fixture: publication failed");
-      return runCmd(cmd, args, options);
+      return f.exec(cmd, args, options);
     };
     const input: SelectionInput = {
       target: null,
@@ -377,7 +401,7 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
           expect(existsSync(f.lockDir)).toBe(false);
           preparationCount += 1;
         }
-        return runCmd(cmd, args, options);
+        return f.exec(cmd, args, options);
       };
       const opts: CheckpointOpts = { ...budget, noPush: true };
       const input: SelectionInput = {

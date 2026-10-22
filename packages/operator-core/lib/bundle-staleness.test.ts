@@ -7,9 +7,10 @@
  * pre-fix code and concludes it works). So the corrupt-marker case below
  * deliberately asserts staleness rather than a clean `null`.
  */
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   __resetBundleStalenessCacheForTests,
@@ -95,5 +96,63 @@ describe('getBundleStaleness', () => {
     expect(getBundleStaleness()).toBeNull();
     writeFileSync(marker, JSON.stringify({ schema: 'x', outfile: '/late/arrival.mjs' }));
     expect(getBundleStaleness()).toBeNull();
+  });
+});
+
+describe('bundle-stale diagnostic attribution (WI-6554700010017040)', () => {
+  function writeMarker(log: string) {
+    const buildLog = join(dir, 'build.log');
+    const outfile = join(dir, 'host.mjs');
+    writeFileSync(buildLog, log);
+    writeFileSync(outfile, 'export {};\n');
+    execFileSync(process.execPath, [
+      resolve(__dirname, '../../../apps/operator/bin/write-bundle-stale-marker.mjs'),
+      marker, 'host.ts', outfile, buildLog,
+    ], { timeout: 10_000 });
+    return getBundleStaleness();
+  }
+
+  it('names the refusing free-reference guard sites instead of preceding compiler warnings', () => {
+    const stale = writeMarker([
+      '▲ [WARNING] Import will always be undefined [import-is-undefined]',
+      '    apps/operator/bin/host-spa.ts:42:25:',
+      '▲ [WARNING] Import will always be undefined [import-is-undefined]',
+      '    apps/operator/bin/host-spa.ts:45:27:',
+      '🚨 free reference `papercuspPath` at packages/operator-core/lib/fleet-logs-gc.ts:240:12 — no binding in scope and not a host global; the bundle would throw ReferenceError when this runs',
+      '🚨 free reference `papercuspPath` at packages/operator-core/lib/fleet-logs-gc.ts:1272:54 — no binding in scope and not a host global; the bundle would throw ReferenceError when this runs',
+      '🚨 free reference `papercuspPath` at packages/operator-core/lib/fleet-logs-gc.ts:240:12 — no binding in scope and not a host global; the bundle would throw ReferenceError when this runs',
+      'BUNDLE_FREE_REFS_RESULT status=refused findings=3',
+    ].join('\n'));
+    expect(stale?.failingFiles).toEqual([
+      'packages/operator-core/lib/fleet-logs-gc.ts:240:12',
+      'packages/operator-core/lib/fleet-logs-gc.ts:1272:54',
+    ]);
+    expect(stale?.error).toContain('BUNDLE_FREE_REFS_RESULT status=refused');
+  });
+
+  it('keeps primary esbuild error sites and excludes warning and related-note locations', () => {
+    const stale = writeMarker([
+      '✘ [ERROR] Expected "}" but found "s"',
+      '    packages/operator-core/lib/broken.ts:12:7:',
+      '    packages/operator-core/lib/related.ts:4:2:',
+      '▲ [WARNING] Unused import',
+      '    packages/operator-core/lib/warning.ts:8:3:',
+      '✘ [ERROR] Another parse error',
+      '    packages/operator-core/lib/other.ts:20:9',
+    ].join('\n'));
+    expect(stale?.failingFiles).toEqual([
+      'packages/operator-core/lib/broken.ts:12:7',
+      'packages/operator-core/lib/other.ts:20:9',
+    ]);
+  });
+
+  it('does not attribute an unlocated failure to warning-only locations', () => {
+    const stale = writeMarker([
+      '▲ [WARNING] Unused import',
+      '    packages/operator-core/lib/warning.ts:8:3:',
+      'build step failed without a source location',
+    ].join('\n'));
+    expect(stale?.failingFiles).toEqual([]);
+    expect(stale?.error).toContain('build step failed without a source location');
   });
 });

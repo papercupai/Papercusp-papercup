@@ -656,7 +656,7 @@ describe('routinesTickImpl — loop rebase survives critical pool shed (EI-21859
     const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
     const shedSection = source.split('// EI-11171 critical-routine floor (cont.):')[1] ?? '';
     const branch = shedSection.match(/if \(poolCritical\) \{[\s\S]*?return;\n  \}/)?.[0] ?? '';
-    expect(branch).toContain('await runLoopRebaseSweep(sql);');
+    expect(branch).toContain('await runLoopRebaseSweep(sql, DBOS);');
     expect(source).toContain('async function runLoopRebaseSweep');
   });
 });
@@ -736,10 +736,10 @@ describe('WI-10000846 — dispatch is decoupled from the periodic sweeps', () =>
       source.split('async function routinesSweepTickImpl(): Promise<void> {')[1]?.split('async function routinesSweepPassImpl')[0] ??
       '';
     // Positive control: the wrapper was extracted and it delegates to the pass body.
-    expect(wrapper).toContain('await routinesSweepPassImpl()');
+    expect(wrapper).toContain('await routinesSweepPassImpl(timedSweepDbos)');
     const enter = wrapper.indexOf('tryEnterInProcessPass(');
     expect(enter).toBeGreaterThan(-1);
-    expect(enter).toBeLessThan(wrapper.indexOf('await routinesSweepPassImpl()'));
+    expect(enter).toBeLessThan(wrapper.indexOf('await routinesSweepPassImpl(timedSweepDbos)'));
     // The entry is released in a finally, so a throwing pass cannot block every later pass.
     expect(wrapper).toMatch(/finally\s*\{\s*exitInProcessPass\(/);
     // No DBOS step may run before the guard decides.

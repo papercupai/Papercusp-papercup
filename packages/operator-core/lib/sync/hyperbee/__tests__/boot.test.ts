@@ -2461,7 +2461,7 @@ describe('bootHarnessSubstrate — P-531 replication progress ownership', () => 
     });
   });
 
-  async function fixture() {
+  async function fixture(initialLength = 100) {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'mb-progress-'));
     cleanups.push(() => { rmSync(workspaceRoot, { recursive: true, force: true }); });
     let now = 1_000_000;
@@ -2472,7 +2472,7 @@ describe('bootHarnessSubstrate — P-531 replication progress ownership', () => 
       const fresh = {
         keyHex, length: 0, contiguousLength: 0,
         get: vi.fn(async () => null), update: async () => {},
-        prefetch: () => {}, has: async () => false,
+        prefetch: () => undefined, has: async () => false,
         peersCount: () => 0, close: vi.fn(async () => {}),
       };
       sessions.push(fresh);
@@ -2486,12 +2486,18 @@ describe('bootHarnessSubstrate — P-531 replication progress ownership', () => 
     });
     cleanups.push(() => handle.close());
     await handle.mergeNow();
-    const frame = await validAnnounce({ log_core_key: 'e1'.repeat(32), log_length: 100 });
+    const author = makeAnnounceIdentityOverride('progress-author', 4242, 'progress-key');
+    const announce = (length: number) => buildAnnounce({
+      device_pubkey: author.devicePubkey, github_user_id: author.userId,
+      github_login: 'progress-author', attestation_gist_id: 'gist-progress-author',
+      log_core_key: 'e1'.repeat(32), log_length: length,
+    }, bytes => author.override.sign('progress-key', bytes));
+    const frame = await announce(initialLength);
     expect(await handle.onAnnounce(frame)).toEqual({ admit: true });
     const events = (kind: BootHistoryKind) => listBootHistory({
       workspaceId: 'ws-progress', harnessSlug: 's-progress', kinds: [kind],
     });
-    return { handle, frame, sessions, open, events, advance: (ms: number) => { now += ms; } };
+    return { handle, frame, sessions, open, events, announce, advance: (ms: number) => { now += ms; } };
   }
 
   it('reopens a stalled signed inventory leg by 30 seconds, without a diagnostic episode', async () => {
@@ -2509,7 +2515,20 @@ describe('bootHarnessSubstrate — P-531 replication progress ownership', () => 
     expect(f.handle.admitted.get(f.frame.log_core_key)).toBe(f.sessions[1]);
     expect(f.events('replication_repair')).toHaveLength(1);
     expect(f.events('replication_repair')[0]!.message).toContain('30000ms without progress');
-    expect(f.sessions.every(s => !s.get.mock.calls.length)).toBe(true);
+    expect(f.sessions.every(s => !vi.mocked(s.get).mock.calls.length)).toBe(true);
+  });
+
+  it('learns signed writer growth through the same-identity reannounce shortcut', async () => {
+    const f = await fixture(0);
+    f.advance(90_000);
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(1);
+    await f.handle.onAnnounce(await f.announce(100));
+    f.advance(30_000);
+    await f.handle.mergeNow();
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(2);
+    expect(f.events('replication_repair')[0]!.message).toContain('writer=100');
   });
 
   it('retries past three unsuccessful sessions with zero peers and a zero-length fresh view', async () => {

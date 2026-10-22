@@ -89,6 +89,7 @@ import type { InvocationFrictionRef } from './harness/improvements/invocation-fr
 import { trackDetached } from './detached-imports';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { installedPerUseChokepoint } from './agent-tools/per-use-chokepoint';
+import { beginToolTrace, runToolTrace, finishToolTrace } from './observability/runtime';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -1984,6 +1985,8 @@ export function isPaletteUiPollRead(input: {
 }
 
 async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
+  const otel = finishToolTrace(input);
+  if (otel) input = { ...input, metadataJson: { ...input.metadataJson, otel } };
   // Close this call's in-flight entry FIRST — before every early return below.
   // Placement is load-bearing: the palette-poll drop and the buildTelemetryRow bail
   // both `return` without writing a row, and settling after either of them would
@@ -2184,7 +2187,7 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
   resolvePremises: resolveDispatchPremises,
-  aroundInvoke: installedPerUseChokepoint,
+  aroundInvoke: request => runToolTrace(request, () => installedPerUseChokepoint(request)),
   // D-030 kernel seat: the generic dispatcher invokes this before any
   // decorators and immediately before handler execution. The resolver is
   // replaceable by the activation/control owner without changing the shared
@@ -2195,7 +2198,9 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // Turn-level presence beat (liveness-hardening P-001): mark activity as soon
   // as a projected dispatch starts, so a long-running handler remains visible
   // while it is still in flight rather than only after settlement.
-  onDispatchStart: ({ ctx, toolName, callId }) => {
+  onDispatchStart: event => {
+    beginToolTrace(event);
+    const { ctx, toolName, callId } = event;
     maybeBeatPresenceOnDispatch(ctx);
     // Open an in-flight entry so "is this agent executing right now?" is answerable
     // WHILE the handler runs, not only after it settles (EI-21548894457555139). The

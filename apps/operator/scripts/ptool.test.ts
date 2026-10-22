@@ -67,6 +67,7 @@ import {
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_CHECKPOINT_RUN_TIMEOUT_MS,
   PTOOL_CONNECT_TIMEOUT_MS,
+  PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS,
   PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS,
   PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS,
   PTOOL_COORD_ORIENT_TIMEOUT_MS,
@@ -110,11 +111,81 @@ import {
   timeoutForTool,
   toolNotOkReason,
   unwrapOutputEnvelope,
+  withPtoolConnectionPhaseTrace,
 } from './ptool.mjs';
 import {
   AGENT_LAUNCH_CLIENT_TIMEOUT_MS,
   AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
 } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
+
+describe('ptool post-connect phase diagnostics', () => {
+  const trace = { traceId: 'bounded-test-trace', toolName: 'code:run', operatorConnectSequence: 1 };
+  const route = { routeClass: 'local-direct', host: '127.0.0.1', port: 3271 };
+
+  it.each(['tools-list', 'tools-call', 'result-output'])(
+    'identifies a stalled %s phase before an outer caller can kill the process', async (stage) => {
+      vi.useFakeTimers();
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let settle!: (value: unknown) => void;
+      const result = { privatePayload: 'never emit this content' };
+      const operation = vi.fn(() => new Promise(resolve => { settle = resolve; }));
+      try {
+        const pending = withPtoolConnectionPhaseTrace(trace, stage, route, operation);
+        await vi.advanceTimersByTimeAsync(PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+        expect(operation).toHaveBeenCalledTimes(1);
+        const event = JSON.parse(String(log.mock.calls[0][0]).replace('ptool: connection trace ', ''));
+        expect(event).toMatchObject({ ...trace, event: 'phase-pending', stage, route,
+          elapsedMs: PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS });
+        // The diagnostic observes the unresolved call; it neither times it out
+        // nor retries it. Its original result and private content stay intact.
+        settle(result);
+        await expect(pending).resolves.toBe(result);
+        expect(log).toHaveBeenCalledTimes(2);
+        expect(String(log.mock.calls[1][0])).toContain('"event":"phase-complete"');
+        expect(JSON.stringify(log.mock.calls)).not.toContain(result.privatePayload);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        log.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('preserves the original rejection and clears its pending timer', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let reject!: (error: Error) => void;
+    const failure = new Error('private failure details');
+    try {
+      const pending = withPtoolConnectionPhaseTrace(trace, 'tools-call', route,
+        () => new Promise((_, fail) => { reject = fail; }));
+      const rejected = expect(pending).rejects.toBe(failure);
+      await vi.advanceTimersByTimeAsync(PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+      reject(failure);
+      await rejected;
+      expect(String(log.mock.calls[1][0])).toContain('"event":"phase-attempt-failed"');
+      expect(JSON.stringify(log.mock.calls)).not.toContain(failure.message);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps fast phases quiet and cancels their diagnostic timer', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(withPtoolConnectionPhaseTrace(trace, 'tools-list', route, async () => 7)).resolves.toBe(7);
+      await vi.advanceTimersByTimeAsync(PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+      expect(log).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('ptool bootstrap dependencies', () => {
   it('keeps the repository ptool source directly executable (EI-22055633156739019)', () => {

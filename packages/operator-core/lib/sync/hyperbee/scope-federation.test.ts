@@ -83,6 +83,33 @@ function fakeRoster(members: Record<string, number[]>, epoch = 1): ScopeRoster {
 
 const remoteKeyHex = (n: number) => n.toString(16).padStart(64, '0');
 
+describe('P-531 scoped inventory growth', () => {
+  it('announces current lengths without cutting an authorized live scope when its length changes', async () => {
+    const store = new FakeStore();
+    const registry = new ScopeCoreRegistry(store);
+    const f = new ScopeFederation({ registry, roster: fakeRoster({ 'fleet:42/widgets': [7] }),
+      selfGithubUserId: 42, buildScopedAnnounce });
+    await f.ensureOwnScopes([SCOPE_A]);
+    const own = [...store.byName.values()][0]!;
+    Object.defineProperty(own, 'length', { value: 4, configurable: true });
+    const { ctx, muxer, sent } = fakeCtx();
+    await f.onPeerAnnounce(frame(7), ctx);
+    expect(sent[0]!.scoped_logs?.[0]).toMatch(/\|4$/);
+    const detach = vi.spyOn(own.replicator, 'detachFrom');
+    Object.defineProperty(own, 'length', { value: 9, configurable: true });
+    await f.redisclose();
+    expect(sent[1]!.scoped_logs?.[0]).toMatch(/\|9$/);
+    expect(own.attachedMuxes.has(muxer)).toBe(true);
+    expect(detach).not.toHaveBeenCalled();
+    const relayKey = remoteKeyHex(55);
+    await registry.admitRemoteScopedCore({ scope: SCOPE_A, logCoreKeyHex: relayKey, scopeEpoch: 1, logLength: 12 });
+    await f.redisclose();
+    expect(sent[2]!.scoped_logs).toContain(packScopedLog({
+      scope: SCOPE_A, logCoreKeyHex: relayKey, scopeEpoch: 1, logLength: 12,
+    }));
+  });
+});
+
 function frame(githubUserId: number, scopedLogs?: string[]): SignedAnnounce {
   return {
     device_pubkey: 'dp',

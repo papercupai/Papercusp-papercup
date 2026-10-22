@@ -1912,6 +1912,10 @@ describe('durable detached snapshot lifecycle', () => {
       ledger: 'measured', rowCount: null, ledgerStatus: null },
     { name: 'unreadable ledger', reason: 'ledger-read-unavailable', requestedFiles: ['lib/first.test.ts'],
       ledger: 'unavailable', rowCount: null, ledgerStatus: null },
+    { name: 'query construction rejected', reason: 'ledger-read-unavailable', requestedFiles: ['lib/first.test.ts'],
+      ledger: 'construction', rowCount: null, ledgerStatus: null },
+    { name: 'ledger query deadline', reason: 'ledger-read-unavailable', requestedFiles: ['lib/first.test.ts'],
+      ledger: 'deadline', rowCount: null, ledgerStatus: null },
     { name: 'empty ledger', reason: 'ledger-empty', requestedFiles: ['lib/first.test.ts'],
       ledger: 'empty', rowCount: 0, ledgerStatus: null },
     { name: 'nonterminal ledger', reason: 'ledger-verdict-unavailable', requestedFiles: ['lib/first.test.ts'],
@@ -1943,19 +1947,21 @@ describe('durable detached snapshot lifecycle', () => {
       task_detail: { requestedFiles: scenario.requestedFiles },
     };
     const updates: unknown[][] = [];
-    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const sql = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = strings.join(' ');
-      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{ ...durableRow }];
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return Promise.resolve([{ ...durableRow }]);
       if (statement.includes('FROM harness_shared.test_runs')) {
-        if (scenario.ledger === 'unavailable') throw new Error('database unavailable');
-        return ledgerRows;
+        if (scenario.ledger === 'construction') throw Object.assign(new Error('private query text'), { code: '08006' });
+        if (scenario.ledger === 'unavailable') return Promise.reject(Object.assign(new Error('private query text'), { code: '57014' }));
+        if (scenario.ledger === 'deadline') return new Promise(() => {});
+        return Promise.resolve(ledgerRows);
       }
       if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
         updates.push(values);
         Object.assign(durableRow, { status: values[0], output: values[3], truncated: values[4] });
-        return [{ run_id: runId }];
+        return Promise.resolve([{ run_id: runId }]);
       }
-      return [];
+      return Promise.resolve([]);
     }) as unknown as Sql;
 
     const withheld = await store.getRunAsync(runId, sql);
@@ -1967,7 +1973,12 @@ describe('durable detached snapshot lifecycle', () => {
       requestedFileCount: scenario.requestedFiles?.length ?? null,
       ledgerRowCount: scenario.rowCount,
       ledgerStatus: scenario.ledgerStatus,
+      ...(scenario.ledger === 'unavailable' ? { ledgerReadFailure: { phase: 'query', errorName: 'Error', errorCode: '57014' } }
+        : scenario.ledger === 'construction' ? { ledgerReadFailure: { phase: 'construction', errorName: 'Error', errorCode: '08006' } }
+        : scenario.ledger === 'deadline' ? { ledgerReadFailure: { phase: 'deadline', errorName: 'TestingRunSnapshotQueryTimeout', timeoutMs: 1000 } }
+        : {}),
     });
+    expect(withheld!.output).not.toContain('private query text');
     expect(withheld!.output.length).toBeLessThanOrEqual(16 * 1024);
     expect(withheld!.output.match(/Vitest PASS withheld/g)).toHaveLength(1);
     const repeated = await store.getRunAsync(runId, sql);

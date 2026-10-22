@@ -3,8 +3,8 @@ import { mkdtemp, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PushSnapshot, SnapshotSymbol } from '../code-intelligence/push-snapshot';
-import { declarationContentHash, resolvePlanItemAnchors, stripRenderedAnchorLines } from './anchors';
+import type { PushSnapshot, SnapshotSymbol } from '../../code-intelligence/push-snapshot';
+import { declarationContentHash, resolvePlanItemAnchors, stripRenderedAnchorLines } from '../../plan-items/anchors';
 
 const roots: string[] = [];
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -27,7 +27,7 @@ async function fixture() {
 }
 afterEach(async () => { vi.useRealTimers(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
-describe('plan-item code anchors', () => {
+describe('plan item anchors', () => {
   it('resolves a real declaration, positive callers and transitive reaching tests', async () => {
     const f = await fixture();
     const [anchor] = await resolvePlanItemAnchors([{ symbol: 'planned' }], { ...f, budgetMs: 5000 });

@@ -288,6 +288,10 @@ async function bootViaSidecarHost(args: {
         swarmJoinRetryMs: 0,
         reverifyIntervalMs: 0,
         loadRevokedOverride: async () => new Set(),
+        // This fixture isolates unencrypted replication/restart behavior. It
+        // has no real GitHub identity or epoch-key store; re-key composition
+        // has its own fail-closed integration suite.
+        rekeyDepsOverride: null,
         ...args.bootExtra,
       });
       captured = handle;

@@ -2691,7 +2691,7 @@ async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
  * P-011(b): one metric per wedge class plus the stranded count. An unreadable leg renders as
  * `unreadable` rather than 0, and a snapshot without the census renders no strand metrics at all.
  */
-function strandMetrics(strand: AgentStrandHealth | null | undefined): HealthMetric[] {
+export function strandMetrics(strand: AgentStrandHealth | null | undefined): HealthMetric[] {
   if (!strand) return [];
   const out: HealthMetric[] = [];
   if (strand.wedgedUnreadable) {

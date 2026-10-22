@@ -1697,10 +1697,11 @@ const ensureCodexHome = defineTool({
         import('../../../capability-envelope/session-confinement-store')
           .then(() => import('../../../capability-envelope/session-confinement-port')),
       ]);
-    const rawRecord = await measure('handler.read-launch-spec', () =>
-      readSuLaunchSpecByOwner(owner, advSessionId));
+    const [rawRecord, sessionRow] = await Promise.all([
+      measure('handler.read-launch-spec', () => readSuLaunchSpecByOwner(owner, advSessionId)),
+      measure('handler.read-session-row', () => getAdvSession(advSessionId)),
+    ]);
     const persistedRecord = parseSuLaunchSpecRecord(rawRecord);
-    const sessionRow = await measure('handler.read-session-row', () => getAdvSession(advSessionId));
     if (sessionRow?.coordOwnerId && sessionRow.coordOwnerId !== owner) {
       return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'owner-mismatch' }), {
         status: 200,
@@ -1850,10 +1851,34 @@ const ensureCodexHome = defineTool({
     // absence of a hint as a request to switch to the local login.
     const gatewayInputs = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow?.launchArgv, owner));
     const repairGatewayAuto = gatewayInputs.requireGatewayProvider === true || body.requireGatewayProvider === true;
-    const denyAmbientContext = !(await measure('handler.session-policy', () =>
-      sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId })));
-    const repairCompactionLimit = await measure('handler.compaction-limit', () =>
-      compactionLimitForResumeRow({ coordOwnerId: owner, launchArgv: sessionRow?.launchArgv }, repairModel));
+    // Independent reads previously accumulated before the funded render and
+    // exceeded the launcher's request deadline even when repair succeeded.
+    // Observe render rejection immediately while retaining the existing
+    // pinned-source fallback below; no home write runs before all checks settle.
+    const fundedRebuild = (async () => {
+      const { rebuildSuLaunchArtifactFunded } = await import('../../../cupboard/identity-activation-restart');
+      return measure('handler.rebuild-launch-artifact', () => rebuildSuLaunchArtifactFunded({
+        ownerId: owner,
+        operatorBaseUrl: new URL(req.url).origin,
+        record: repairRecord,
+        modeSection: composeModePromptSection({
+          autoMode: record.autoMode,
+          drainMode: record.drainMode,
+          loopArmed: record.loopArmed,
+        }),
+      }, { rebuild: rebuildSuLaunchArtifact }));
+    })().then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    const [allowsAmbientContext, repairCompactionLimit, fundedAttempt] = await Promise.all([
+      measure('handler.session-policy', () =>
+        sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId })),
+      measure('handler.compaction-limit', () =>
+        compactionLimitForResumeRow({ coordOwnerId: owner, launchArgv: sessionRow?.launchArgv }, repairModel)),
+      fundedRebuild,
+    ]);
+    const denyAmbientContext = !allowsAmbientContext;
     const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfigAsync({
       sessionKey: advSessionId,
       recordedSqliteHome: repairRecord.codexSqliteHome,
@@ -1881,18 +1906,8 @@ const ensureCodexHome = defineTool({
     // dropping stack entries is answered as a typed 402.
     let identityActivation: { identityActivationRefusal: unknown; removedLayerRefs: readonly string[] } | null = null;
     try {
-      const { rebuildSuLaunchArtifactFunded } = await import('../../../cupboard/identity-activation-restart');
-      const funded = await measure('handler.rebuild-launch-artifact', () =>
-        rebuildSuLaunchArtifactFunded({
-          ownerId: owner,
-          operatorBaseUrl: new URL(req.url).origin,
-          record: repairRecord,
-          modeSection: composeModePromptSection({
-            autoMode: record.autoMode,
-            drainMode: record.drainMode,
-            loopArmed: record.loopArmed,
-          }),
-        }, { rebuild: rebuildSuLaunchArtifact }));
+      if (!fundedAttempt.ok) throw fundedAttempt.error;
+      const funded = fundedAttempt.value;
       rebuilt = funded.rebuilt;
       if (funded.identityActivationRefusal) {
         identityActivation = {

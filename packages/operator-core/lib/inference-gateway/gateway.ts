@@ -20,6 +20,7 @@
  * way back (undici already decoded the body) and forces `accept-encoding: identity` upstream.
  */
 import http from 'node:http';
+import { beginGatewayTrace, finishGatewayTrace } from '../observability/runtime';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import { readProcessIdentity } from '../process-identity';
@@ -2638,6 +2639,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         .catch(error => log('warn', `spawn first-request evidence write failed: ${error instanceof Error ? error.message : String(error)}`));
     },
     onCompleted: (timeline) => {
+      finishGatewayTrace(`${gatewayProcessInstanceId}:${timeline.requestId}`, timeline);
       const row = gatewayRequestOutcomeRecord(gatewayProcessInstanceId, timeline);
       const write = deps.requestOutcomeStore
         ? deps.requestOutcomeStore.record(row)
@@ -2666,6 +2668,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       transport,
     });
     const state: RequestTelemetryState = { span, finished: false, shed: false, gatewayError: false };
+    const traceparent = req.headers.traceparent;
+    beginGatewayTrace(`${gatewayProcessInstanceId}:${span.requestId}`, provider,
+      typeof traceparent === 'string' ? { traceparent } : {});
     requestTelemetryByRequest.set(req, state);
     const finish = (closedBeforeFinish: boolean) => {
       if (state.finished) return;

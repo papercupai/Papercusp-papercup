@@ -34,6 +34,90 @@ import type { ScopedLogDisclosure } from './scope-disclosure';
 const SCOPE_A: ScopeId = { kind: 'fleet', ownerGithubUserId: 42, slug: 'widgets' };
 const SCOPE_B: ScopeId = { kind: 'fleet', ownerGithubUserId: 77, slug: 'gadgets' };
 
+describe('P-531 scoped progress inventory and repair', () => {
+  function fixture() {
+    const sessions: Array<FakeSession & { length: number; contiguousLength: number; closed: boolean }> = [];
+    let nextReady = async () => {};
+    const registry = new ScopeCoreRegistry({
+      get: opts => {
+        const s = Object.assign(new FakeSession(opts.key ?? Buffer.alloc(32, 1), !!opts.name), {
+          length: 0, contiguousLength: 0, closed: false,
+          ready: nextReady,
+          async close() { this.closed = true; },
+        });
+        nextReady = async () => {};
+        sessions.push(s);
+        return s;
+      },
+    });
+    return { registry, sessions, delayNext: (fn: () => Promise<void>) => { nextReady = fn; } };
+  }
+
+  const disclosure = { scope: SCOPE_A, logCoreKeyHex: 'ab'.repeat(32), scopeEpoch: 2, logLength: 20 };
+
+  it('keeps signed high-water across stale views and rejects regressed epoch inventory', async () => {
+    const f = fixture();
+    await f.registry.admitRemoteScopedCore(disclosure);
+    await f.registry.admitRemoteScopedCore({ ...disclosure, logLength: 2 });
+    expect(f.registry.replicationProgress()[0]).toMatchObject({ knownLength: 20, position: 0 });
+    expect(await f.registry.admitRemoteScopedCore({ ...disclosure, scopeEpoch: 1, logLength: 200 })).toMatchObject({ ok: false });
+    f.sessions[0]!.contiguousLength = 4;
+    expect(f.registry.replicationProgress()[0]).toMatchObject({ knownLength: 20, position: 4 });
+  });
+
+  it('enumerates relay inventory and excludes a reflected own core from remote repair', async () => {
+    const f = fixture();
+    const own = await f.registry.ensureOwnScopeCore(SCOPE_A);
+    f.sessions[0]!.length = 7;
+    await f.registry.admitRemoteScopedCore({ ...disclosure, logCoreKeyHex: own.keyHex, logLength: 999 });
+    expect(f.registry.replicationProgress()).toEqual([]);
+    await f.registry.admitRemoteScopedCore(disclosure);
+    expect(f.registry.scopeInventory('fleet:42/widgets')).toEqual([
+      { keyHex: own.keyHex, length: 7 }, { keyHex: disclosure.logCoreKeyHex, length: 20 },
+    ]);
+  });
+
+  it('reopens under fresh roster checks and never reattaches a now-revoked peer', async () => {
+    const f = fixture();
+    await f.registry.admitRemoteScopedCore(disclosure);
+    const old = f.sessions[0]!;
+    const allowed = {}, revoked = {};
+    await f.registry.serveScopeOnConnection(allowed, SCOPE_A, 7, () => true);
+    await f.registry.serveScopeOnConnection(revoked, SCOPE_A, 8, () => true);
+    expect(await f.registry.reopenRemoteCore(disclosure.logCoreKeyHex, old, 42,
+      (_scope, uid) => uid !== 8, new AbortController().signal)).toBe(true);
+    expect(old.closed).toBe(true);
+    expect(old.attachedMuxes.size).toBe(0);
+    expect(f.sessions[1]!.attachedMuxes.has(allowed)).toBe(true);
+    expect(f.sessions[1]!.attachedMuxes.has(revoked)).toBe(false);
+    expect(f.registry.replicationProgress()[0]).toMatchObject({ knownLength: 20, position: 0 });
+  });
+
+  it('refuses reopening when this device has left the scope', async () => {
+    const f = fixture();
+    await f.registry.admitRemoteScopedCore(disclosure);
+    expect(await f.registry.reopenRemoteCore(disclosure.logCoreKeyHex, f.sessions[0]!, 42,
+      () => false, new AbortController().signal)).toBe(false);
+    expect(f.sessions).toHaveLength(1);
+  });
+
+  it('closes a late timed-out open without replacing the current session', async () => {
+    const f = fixture();
+    await f.registry.admitRemoteScopedCore(disclosure);
+    let resolve!: () => void;
+    f.delayNext(() => new Promise<void>(r => { resolve = r; }));
+    const controller = new AbortController();
+    const pending = f.registry.reopenRemoteCore(disclosure.logCoreKeyHex, f.sessions[0]!, 42,
+      () => true, controller.signal);
+    await Promise.resolve();
+    controller.abort();
+    resolve();
+    expect(await pending).toBe(false);
+    expect(f.registry.replicationProgress()[0]!.session).toBe(f.sessions[0]);
+    expect(f.sessions[1]!.closed).toBe(true);
+  });
+});
+
 describe('private scoped-core transport isolation', () => {
   it('a known key cannot read a non-member scope or new blocks after revocation on a working connection', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'scope-read-isolation-'));

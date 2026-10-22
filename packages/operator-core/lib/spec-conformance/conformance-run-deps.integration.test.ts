@@ -88,6 +88,35 @@ describe('conformance test-ledger evidence population', () => {
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'fail', value: 0 });
   });
 
+  it.each(['pass', 'fail'])('keeps current-build evidence after a newer foreign-build %s', async status => {
+    await record('local', 'pass', 1);
+    await record('local', status, 2, input.workspaceId, { commitSha: 'b'.repeat(40) });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'pass', value: 1 });
+  });
+
+  it('keeps a current-build failure after a newer foreign-build pass', async () => {
+    await record('local', 'fail', 1);
+    await record('local', 'pass', 2, input.workspaceId, { commitSha: 'b'.repeat(40) });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'fail', value: 0 });
+  });
+
+  it('still refuses foreign-build evidence when no matching run exists', async () => {
+    await record('local', 'pass', 1, input.workspaceId, { commitSha: 'b'.repeat(40) });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({
+      verdict: 'error', detail: expect.stringContaining('does not match current build'),
+    });
+  });
+
+  it('matches short build identities without ignoring a newer unpinned error', async () => {
+    await record('local', 'pass', 1);
+    await record('local', 'fail', 2, input.workspaceId, { commitSha: 'b'.repeat(40) });
+    expect(await judgeTestsFromLedger({ ...input, currentBuildSha: 'aaaaaaa' }, db.sql))
+      .toMatchObject({ verdict: 'pass', value: 1 });
+    await record('local', 'error', 3, input.workspaceId, { commitSha: null });
+    expect(await judgeTestsFromLedger({ ...input, currentBuildSha: 'aaaaaaa' }, db.sql))
+      .toMatchObject({ verdict: 'error', detail: expect.stringContaining('test run status is error') });
+  });
+
   it('rejects a newer name-filtered pass instead of falling back to an older full-file run', async () => {
     await record('local', 'pass', 1);
     await record('local', 'pass', 2, input.workspaceId, {

@@ -98,6 +98,17 @@ const SOURCE_HEAD_VALUE_PREFIX =
   /(?:\b(?:current|local|root|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?|\b(?:working\s+tree|worktree)\b[^\n]{0,40}\b(?:git\s+)?head(?:\s+(?:sha|commit))?|\blocally\s+at\s+(?:git\s+)?head(?:\s+(?:sha|commit))?)\s*(?:is|=|:)?\s*$/i;
 
 /**
+ * A current/source commit is an artifact reference unless its own following words
+ * explicitly identify it as a gate candidate or live pipeline position. Nearby
+ * mentions of staging cleanup or a green-checkpoint operation describe other work
+ * in the same coord sentence and must not reclassify this commit.
+ */
+const SOURCE_COMMIT_VALUE_PREFIX =
+  /(?:\b(?:current(?:[- ]build)?|local|root|staging|working(?:\s+tree)?)\s+(?:build\s+)?(?:source\s+)?commit|\bsource\s+commit)(?:\s+(?:sha|hash))?\s*(?:is|=|:)?\s*$/i;
+const EXPLICIT_GATE_CANDIDATE_AFTER_SOURCE_COMMIT =
+  /^\s*(?:(?:is|was|now|currently)\s+)?(?:(?:the|a)\s+)?(?:green[- ]?checkpoint|gate)\s+candidate\b|^\s*(?:(?:is|was|now|currently)\s+)?(?:the\s+)?candidate\b/i;
+
+/**
  * If a source HEAD value is explicitly described as deployed/serving/live, it is
  * still a real pipeline claim and must remain detectable. A bare source HEAD next
  * to separate pipeline prose is only a citation and should stay quiet.
@@ -270,6 +281,22 @@ function isUnlinkedSourceHeadCitation(haystack: string, valueStart: number, valu
   return !EXPLICIT_PIPELINE_STATE_AFTER_SOURCE_HEAD.test(after);
 }
 
+function isUnlinkedSourceCommitCitation(
+  haystack: string,
+  valueStart: number,
+  valueLength: number,
+  target: 'candidate' | 'pipeline-position',
+): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  if (!SOURCE_COMMIT_VALUE_PREFIX.test(before)) return false;
+
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  return target === 'candidate'
+    ? !EXPLICIT_GATE_CANDIDATE_AFTER_SOURCE_COMMIT.test(after)
+    : !EXPLICIT_PIPELINE_STATE_AFTER_VALUE.test(after);
+}
+
 function isUnlinkedReferenceCommitCitation(haystack: string, valueStart: number, valueLength: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   if (!REFERENCE_COMMIT_PREFIX.test(before)) return false;
@@ -418,6 +445,11 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
       if (
         isExplicitLockOrLeaseIdentifier(haystack, m.index, m[0].length) ||
         isExplicitMemoryIdentifier(haystack, m.index) ||
+        (p.commitSha &&
+          ((p.cell === 'gate.greenCheckpoint.candidate' &&
+            isUnlinkedSourceCommitCitation(haystack, m.index, m[0].length, 'candidate')) ||
+            (p.cell === 'git.pipelinePosition' &&
+              isUnlinkedSourceCommitCitation(haystack, m.index, m[0].length, 'pipeline-position')))) ||
         (p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
           (isExplicitSessionIdentifier(haystack, m.index) ||
             isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||

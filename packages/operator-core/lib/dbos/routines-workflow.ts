@@ -25,6 +25,7 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, DBOSClient, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { runSweepStepWithOverrunBudget, ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS } from './routines-sweep-step-overrun';
 import { observeFallback } from '../degradation/fallback-observations';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
@@ -98,6 +99,27 @@ const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * 
 // WI-10000846: the sweep tick has its own schedule, offset 15s from dispatch so the two passes
 // do not open their PG work at the same instant.
 const SWEEP_TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_SWEEP_CRONTAB || '15,45 * * * * *';
+
+// Observe slow individual sweep steps without cancelling or changing their DBOS results.
+const timedSweepDbos = new Proxy(DBOS, {
+  get(target, property) {
+    const value = Reflect.get(target, property, target);
+    if (property !== 'runStep' || typeof value !== 'function') return value;
+    return ((...args: Parameters<typeof DBOS.runStep>) => {
+      const [operation, ...stepArgs] = args;
+      const config = stepArgs[0] as { name?: string } | undefined;
+      const wrappedOperation = () => runSweepStepWithOverrunBudget(
+        config?.name ?? 'unnamed',
+        () => Promise.resolve(Reflect.apply(operation, target, [])),
+        {
+          budgetMs: ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS,
+          workflowId: target.workflowID ?? null,
+        },
+      );
+      return Reflect.apply(value, target, [wrappedOperation, ...stepArgs]) as ReturnType<typeof DBOS.runStep>;
+    }) as typeof DBOS.runStep;
+  },
+}) as typeof DBOS;
 const operatorBase = operatorApiBase;
 const ROUTINE_FIRE_WORKFLOW_NAME = 'routineFire';
 let routineFireDbosClient: Promise<DBOSClient> | null = null;
@@ -1083,8 +1105,11 @@ async function recordRunnerLastError(
      WHERE id = ${routineId}`.catch(() => {});
 }
 
-async function runLoopRebaseSweep(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
-  await DBOS.runStep(
+async function runLoopRebaseSweep(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  dbos: typeof DBOS = DBOS,
+): Promise<void> {
+  await dbos.runStep(
     async () => {
       try {
         const { reconcileLoopRoutines } = await import('../harness/routines/reconcile-loop-routines');
@@ -1367,13 +1392,13 @@ async function routinesSweepTickImpl(): Promise<void> {
     return;
   }
   try {
-    await routinesSweepPassImpl();
+    await routinesSweepPassImpl(timedSweepDbos);
   } finally {
     exitInProcessPass(sweepPassRegistry, passId);
   }
 }
 
-async function routinesSweepPassImpl(): Promise<void> {
+async function routinesSweepPassImpl(DBOS: typeof timedSweepDbos = timedSweepDbos): Promise<void> {
   if (shouldShedSchedulerTickUnderLoopPressure()) {
     console.warn(`[routines-sweep-tick] SKIPPED — event loop pressure, shedding sweep tick`);
     return;
@@ -1396,7 +1421,7 @@ async function routinesSweepPassImpl(): Promise<void> {
   // is liveness-critical and MUST still run. Otherwise pure loops remain parked at infinity
   // until a non-shed tick, producing the 20–70 minute cadence gaps in EI-21859486764076047.
   if (poolCritical) {
-    await runLoopRebaseSweep(sql);
+    await runLoopRebaseSweep(sql, DBOS);
     return;
   }
 
@@ -1409,7 +1434,7 @@ async function routinesSweepPassImpl(): Promise<void> {
   // between 60s wakes while fires for other routines kept flowing. Placing it
   // here bounds its delay to the fire loop only. Fail-soft: a rebase failure
   // must never block the watchdog sweeps below.
-  await runLoopRebaseSweep(sql);
+  await runLoopRebaseSweep(sql, DBOS);
 
   // An accepted program receipt is durable launch intent. The normal submit
   // path returns after admission; this bounded scan starts roots whose DBOS

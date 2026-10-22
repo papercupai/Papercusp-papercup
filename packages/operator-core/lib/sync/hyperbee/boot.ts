@@ -159,7 +159,7 @@ import {
 // ── P-006 §5.1–§5.3 scoped-log federation (P-108) ── scoped cores live in a
 // SEPARATE never-`replicate()`d corestore and are served per-connection through
 // the fail-closed roster gate; the coordinator hangs off the announce exchange.
-import { ScopeCoreRegistry, type ScopedStoreLike } from './scope-cores';
+import { ScopeCoreRegistry, type ScopedStoreLike, type ScopedSessionLike } from './scope-cores';
 import { ScopeFederation } from './scope-federation';
 import { getScopeRoster } from '../../p2p/scope-roster';
 import { PgFleetDirectory } from '../../p2p/fleet-directory';
@@ -2662,7 +2662,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const admissionQueue: QueuedAdmission[] = [];
 
   // P-531: one owner issues repairs. Liveness episodes remain diagnostics.
-  const repairQueue: Array<{ repair: ReplicationProgressRepair; log: AdmittedLog }> = [];
+  const repairQueue: Array<{ repair: ReplicationProgressRepair; log?: AdmittedLog; scopedSession?: ScopedSessionLike }> = [];
   let lastProgressRejoinAtMs = -Infinity;
 
   function sampleReplicationProgress(log: AdmittedLog): void {
@@ -2681,10 +2681,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   /** Session mutations run under the existing serialized merge gate. */
   async function drainRepairQueue(): Promise<void> {
     while (!stopped && repairQueue.length > 0) {
-      const { repair, log } = repairQueue.shift()!;
+      const { repair, log, scopedSession } = repairQueue.shift()!;
       const { keyHex } = repair;
       const current = admitted.get(keyHex);
-      if (!current || current !== log || keyHex === ownLog.keyHex) {
+      if (!scopedSession && (!current || current !== log || keyHex === ownLog.keyHex)) {
         replicationProgressOwner.complete(repair, Date.now());
         continue;
       }
@@ -2702,8 +2702,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               e instanceof Error ? e.message : String(e));
           }
         }
+        if (scopedSession) {
+          const controller = new AbortController();
+          try {
+            const reopened = await raceWithTimeout(
+              scopeFederation?.reopenRemoteCore(keyHex, scopedSession, controller.signal) ?? Promise.resolve(false),
+              UPDATE_TIMEOUT_MS,
+            );
+            if (reopened) recordBootEvent(opts.workspaceId, opts.harnessSlug, 'replication_repair',
+              're-attached scoped replica session ' + keyHex + ' generation=' + repair.generation);
+          } finally {
+            controller.abort();
+          }
+          continue;
+        }
         try {
-          if (current.close) await raceWithTimeout(current.close(), UPDATE_TIMEOUT_MS);
+          if (current?.close) await raceWithTimeout(current.close(), UPDATE_TIMEOUT_MS);
         } catch {
           // A stale close must not prevent opening the replacement session.
         }
@@ -4543,6 +4557,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // Diagnostic/repair sampling must never interrupt the booted handle.
       }
     }
+    for (const sample of scopeFederation?.replicationProgress() ?? []) {
+      const repair = replicationProgressOwner.sample({
+        keyHex: sample.keyHex, knownLength: sample.knownLength, position: sample.position, nowMs: Date.now(),
+      });
+      if (repair) repairQueue.push({ repair, scopedSession: sample.session });
+    }
     if (repairQueue.length > 0) void mergeNow();
   };
   // Poll-driven merge cadence. The revocation refresh now runs INSIDE mergeNow
@@ -4935,6 +4955,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // poke, not an admission — answer it without PG, boot history, or a merge.
       // WI-10002600: unless it carries a supersession this node has not applied yet.
       if (sigValid && isSameIdentityReannounce(frame) && !carriesUnappliedSupersession(frame)) {
+        // Presence suppression must retain the authenticated progress witness:
+        // an initially empty replica otherwise stays "caught up" forever.
+        if (frame.log_length !== undefined) {
+          advertisedLogHighWater.set(frame.log_core_key,
+            Math.max(advertisedLogHighWater.get(frame.log_core_key) ?? 0, frame.log_length));
+        }
+        sampleReplicationProgress(admitted.get(frame.log_core_key)!);
         noteSuppressedReannounce(frame);
         return { admit: true };
       }

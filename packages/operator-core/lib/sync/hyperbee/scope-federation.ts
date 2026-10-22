@@ -29,7 +29,7 @@
 
 import { formatScopeId, type ScopeId } from '../pot-git/scope-repo';
 import type { SignedAnnounce } from './announce';
-import { ScopeCoreRegistry, type ScopeCoreRefusal } from './scope-cores';
+import { ScopeCoreRegistry, type ScopeCoreRefusal, type ScopedSessionLike } from './scope-cores';
 import type { ScopeRoster } from '../../p2p/scope-roster';
 import {
   admitScopedAnnounce,
@@ -102,10 +102,11 @@ export class ScopeFederation {
   private async ownDisclosures(): Promise<ScopedLogDisclosure[]> {
     const out: ScopedLogDisclosure[] = [];
     for (const [id, scope] of this.scopes) {
-      const keyHex = this.registry.ownCoreKeyHex(id);
-      if (!keyHex) continue;
       const scopeEpoch = await this.roster.currentEpoch(scope);
-      out.push({ scope, logCoreKeyHex: keyHex, scopeEpoch });
+      for (const core of this.registry.scopeInventory(id)) {
+        out.push({ scope, logCoreKeyHex: core.keyHex, scopeEpoch,
+          ...(core.length === undefined ? {} : { logLength: core.length }) });
+      }
     }
     return out;
   }
@@ -192,10 +193,10 @@ export class ScopeFederation {
     for (const [muxer, rec] of this.conns) {
       const visible = await this.visibleTo(rec.peerGithubUserId);
       const next = visible.map(packScopedLog);
-      const nextSet = new Set(next);
+      const nextSet = new Set(next.map(entry => entry.split('|')[0]));
       // Stop serving any scope we USED to disclose but no longer do (immediate).
       for (const prev of rec.lastDisclosed) {
-        if (!nextSet.has(prev)) {
+        if (!nextSet.has(prev.split('|')[0])) {
           // lastDisclosed came from packScopedLog(our own scope) — recover the id.
           const scopeId = prev.split('|')[0];
           this.registry.stopServingScope(muxer, scopeId);
@@ -231,6 +232,14 @@ export class ScopeFederation {
       const stream = (muxer as { stream?: { destroyed?: boolean } }).stream;
       if (stream?.destroyed === true) this.dropConnection(muxer);
     }
+  }
+
+  replicationProgress(): ReturnType<ScopeCoreRegistry['replicationProgress']> {
+    return this.registry.replicationProgress();
+  }
+
+  reopenRemoteCore(keyHex: string, expected: ScopedSessionLike, signal: AbortSignal): Promise<boolean> {
+    return this.registry.reopenRemoteCore(keyHex, expected, this.selfUid, this.roster.predicate, signal);
   }
 
   /** Live connection count (diagnostics/tests). */

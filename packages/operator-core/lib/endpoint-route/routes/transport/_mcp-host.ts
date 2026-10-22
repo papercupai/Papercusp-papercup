@@ -458,6 +458,9 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
     const value = (headers.get(key) ?? '').trim();
     if (value) headerMeta[key] = value;
   }
+  // W3C correlation only; never copy baggage or arbitrary transport headers.
+  const traceparent = (headers.get('traceparent') ?? '').trim();
+  if (/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/.test(traceparent)) headerMeta.traceparent = traceparent;
   return {
     transport: 'mcp',
     connection: 'http',

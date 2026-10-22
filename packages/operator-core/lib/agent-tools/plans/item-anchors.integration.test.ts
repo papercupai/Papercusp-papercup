@@ -4,18 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { harnessRoot } from '@papercusp/harness/paths';
-import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
-import type { PushSnapshot, SnapshotSymbol } from '../../../code-intelligence/push-snapshot';
-import * as anchorStore from '../../../plan-items/anchor-store';
-import { setupPlanPgFixture, seedPlan, cleanupPlans, type PlanPgFixture } from './_pg-tool-fixture';
-import addTool from '../add-item';
-import editTool from '../edit';
-import getTool from '../get';
+import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import type { PushSnapshot, SnapshotSymbol } from '../../code-intelligence/push-snapshot';
+import * as anchorStore from '../../plan-items/anchor-store';
+import { setupPlanPgFixture, seedPlan, cleanupPlans, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
+import addTool from './add-item';
+import editTool from './edit';
+import getTool from './get';
 
 const fixture = vi.hoisted(() => ({ root: '', snapshot: null as PushSnapshot | null }));
-vi.mock('../../../plan-items/anchors', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../../plan-items/anchors')>();
-  return { ...actual, resolveHarnessAnchors: async (_workspace: string, _harness: string, inputs: import('../../../plan-items/anchors').AnchorInput[]) =>
+vi.mock('../../plan-items/anchors', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../plan-items/anchors')>();
+  return { ...actual, resolveHarnessAnchors: async (_workspace: string, _harness: string, inputs: import('../../plan-items/anchors').AnchorInput[]) =>
     actual.resolvePlanItemAnchors(inputs, { root: fixture.root, snapshot: fixture.snapshot, budgetMs: 5000 }) };
 });
 
@@ -25,6 +25,7 @@ const WS = DEFAULT_WORKSPACE_ID;
 let fx: PlanPgFixture;
 const source = 'export function linked() { return 1; }\n';
 const digest = createHash('sha256').update(source).digest('hex');
+const declarationDigest = createHash('sha256').update('export function linked() { return 1; }').digest('hex');
 const ctx = () => ({ signal: new AbortController().signal, role: 'su', workspaceId: WS,
   log: () => {}, progress: () => {}, metadata: () => {},
   principal: { kind: 'agent', slug: 'agent-anchor-test', workspaceId: WS } }) as never;
@@ -72,13 +73,17 @@ afterAll(async () => {
   if (fixture.root) await rm(fixture.root, { recursive: true, force: true });
 });
 
-describe('code anchors through the real plan tools', () => {
+describe('plan item anchors through the real plan tools', () => {
   it('add and item-edit store equivalent resolved links that survive plan-index rewrites and read back', async () => {
     const result = data(await add({ anchors: [{ symbol: 'linked' }] }));
     expect(result.ok, JSON.stringify(result)).toBe(true);
     const added = result.results[0];
     expect(added.ok).toBe(true);
-    expect(added.anchors[0]).toMatchObject({ symbolId: 'fixture:linked', path: 'code.ts', resolution: 'resolved', tests: ['flow.test.ts'] });
+    expect(added.anchors[0]).toMatchObject({
+      symbolId: 'fixture:linked', symbolName: 'linked', path: 'code.ts',
+      signature: 'linked()', contentHash: declarationDigest, resolution: 'resolved',
+      consumers: [{ path: 'flow.test.ts', line: 2 }], consumersTotal: 1, tests: ['flow.test.ts'],
+    });
     const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS, itemId: 'P-001', anchors: [{ symbol: 'linked' }] } as never, ctx()));
     expect(edited.anchors).toEqual(added.anchors);
     await add({ text: 'Unrelated index rewrite' });

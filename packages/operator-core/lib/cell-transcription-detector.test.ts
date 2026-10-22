@@ -172,6 +172,34 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(hits[0]!.value).toBe('2b95ba4eb7');
   });
 
+  it('does not classify a generated chunk id or current-build source commit as a gate candidate', () => {
+    const text =
+      `${chunkHeaderText(1, 2, 'baf855b1', false)}\n` +
+      'Current build source commit bd0781033d0b after staging GC; no live green-checkpoint operation was performed.';
+
+    expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);
+  });
+
+  it('keeps an explicit source-commit gate-candidate claim', () => {
+    const hits = detectCellTranscriptions(
+      'Current build source commit 60bb6f3c33 is the green-checkpoint candidate.',
+      { resolvesToCommit: () => true },
+    );
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.cell).toBe('gate.greenCheckpoint.candidate');
+  });
+
+  it('keeps an explicit deployed claim on a source commit', () => {
+    const hits = detectCellTranscriptions(
+      'Current build source commit 2b95ba4eb7 is deployed to :3070.',
+      { resolvesToCommit: () => true },
+    );
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.cell).toBe('git.pipelinePosition');
+  });
+
   it('DOES fire when a root HEAD is explicitly described as deployed', () => {
     const hits = detectCellTranscriptions('Root HEAD cd9b060 is deployed to :3070');
     expect(hits).toHaveLength(1);

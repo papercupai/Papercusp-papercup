@@ -37,7 +37,7 @@
  * recorded high-water is refused (replayed pre-revocation disclosure).
  */
 
-import { formatScopeId, type ScopeId } from '../pot-git/scope-repo';
+import { formatScopeId, parseScopeId, type ScopeId } from '../pot-git/scope-repo';
 import type { ScopedLogDisclosure } from './scope-disclosure';
 import type { IsScopeMember } from './scope-disclosure';
 
@@ -59,6 +59,9 @@ export interface ScopedSessionLike {
   replicate(mux: object): unknown;
   readonly key: Buffer;
   readonly writable: boolean;
+  readonly length?: number;
+  readonly contiguousLength?: number;
+  close?(): Promise<void>;
   /** Hypercore's live peers. Unpairing alone does not close their channels. */
   readonly peers?: ReadonlyArray<{ protomux: object; channel: { close(): void } }>;
   /** hypercore session replicator accessor — used for detach + attached(). */
@@ -90,6 +93,7 @@ interface RemoteEntry {
   keyHex: string;
   /** X6 high-water of the disclosures we admitted this core at. */
   epoch: number;
+  knownLength: number;
 }
 
 interface ServedConn {
@@ -149,6 +153,64 @@ export class ScopeCoreRegistry {
     return this.own.get(scopeId)?.keyHex ?? null;
   }
 
+  ownCoreLength(scopeId: string): number | undefined {
+    return this.own.get(scopeId)?.session.length;
+  }
+
+  /** Owned and admitted relay cores of a scope; the caller still gates disclosure. */
+  scopeInventory(scopeId: string): Array<{ keyHex: string; length?: number }> {
+    const own = this.own.get(scopeId);
+    return [
+      ...(own ? [{ keyHex: own.keyHex, length: own.session.length }] : []),
+      ...[...(this.remotes.get(scopeId)?.values() ?? [])].map(entry => ({
+        keyHex: entry.keyHex, length: Math.max(entry.knownLength, entry.session.length ?? 0),
+      })),
+    ];
+  }
+
+  /** Already-admitted inventory only; never discloses keys to a new peer. */
+  replicationProgress(): Array<{ keyHex: string; knownLength: number; position: number; session: ScopedSessionLike }> {
+    return [...this.remotes.values()].flatMap(byKey => [...byKey.values()].map(entry => ({
+      keyHex: entry.keyHex,
+      knownLength: Math.max(entry.knownLength, entry.session.length ?? 0),
+      position: entry.session.contiguousLength ?? 0,
+      session: entry.session,
+    })));
+  }
+
+  /** Called only by boot's single progress owner, with current roster reads. */
+  async reopenRemoteCore(
+    keyHex: string, expected: ScopedSessionLike,
+    selfGithubUserId: number, isMember: IsScopeMember, signal: AbortSignal,
+  ): Promise<boolean> {
+    for (const [scopeId, byKey] of this.remotes) {
+      const entry = byKey.get(keyHex);
+      if (!entry || entry.session !== expected || signal.aborted) continue;
+      const scope = parseScopeId(scopeId);
+      if (!scope || !(await isMember(scope, selfGithubUserId)) || signal.aborted) return false;
+      const fresh = this.store.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' });
+      try {
+        await fresh.ready();
+        const selfAllowed = await isMember(scope, selfGithubUserId);
+        if (signal.aborted || byKey.get(keyHex) !== entry || entry.session !== expected ||
+            !selfAllowed) return false;
+        for (const mux of this.served.keys()) this.detachSafely(expected, mux);
+        entry.session = fresh;
+        void expected.close?.().catch(() => {});
+        for (const [mux, conn] of this.served) {
+          const peerUid = conn.scopes.get(scopeId);
+          if (peerUid === undefined || signal.aborted) continue;
+          await this.serveScopeOnConnection(mux, scope, peerUid, async (s, uid) =>
+            !signal.aborted && await isMember(s, uid) && !signal.aborted);
+        }
+        return true;
+      } finally {
+        if (entry.session !== fresh) void fresh.close?.().catch(() => {});
+      }
+    }
+    return false;
+  }
+
   /**
    * Admit a peer's disclosed scoped core (AFTER admitScopedAnnounce membership
    * validation — this layer only handles cores/attach + the X6 epoch fence).
@@ -159,6 +221,8 @@ export class ScopeCoreRegistry {
     d: ScopedLogDisclosure,
   ): Promise<{ ok: true; newlyAdmitted: boolean } | { ok: false; refusal: ScopeCoreRefusal }> {
     const id = formatScopeId(d.scope);
+    // Relayed inventories can reflect our own key; never repair it as a remote.
+    if (this.own.get(id)?.keyHex === d.logCoreKeyHex) return { ok: true, newlyAdmitted: false };
     let byKey = this.remotes.get(id);
     if (!byKey) {
       byKey = new Map();
@@ -181,6 +245,7 @@ export class ScopeCoreRegistry {
         };
       }
       existing.epoch = d.scopeEpoch;
+      existing.knownLength = Math.max(existing.knownLength, d.logLength ?? 0);
       return { ok: true, newlyAdmitted: false };
     }
     const session = this.store.get({
@@ -188,7 +253,7 @@ export class ScopeCoreRegistry {
       valueEncoding: 'json',
     });
     await session.ready();
-    byKey.set(d.logCoreKeyHex, { session, keyHex: d.logCoreKeyHex, epoch: d.scopeEpoch });
+    byKey.set(d.logCoreKeyHex, { session, keyHex: d.logCoreKeyHex, epoch: d.scopeEpoch, knownLength: d.logLength ?? 0 });
     // Late-admit mesh: attach to every muxer already serving this scope.
     for (const [mux, conn] of this.served) {
       if (conn.scopes.has(id)) this.attachSafely(session, mux);

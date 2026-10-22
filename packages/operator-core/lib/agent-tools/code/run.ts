@@ -19,6 +19,7 @@ import {
 import {
   CODE_RUN_REPLAY_PROOF_META_KEY,
   DEFAULT_SCRIPT_TIMEOUT_MS,
+  trackPhase,
   type OrchestrationInputs,
   type AbortCompletionContext,
   type AbortCompletionReceipt,
@@ -418,11 +419,14 @@ export default defineTool({
     const effectiveTimeoutMs =
       requestedTimeoutMs !== undefined ? clampForegroundTimeoutMs(requestedTimeoutMs) : undefined;
 
-    const all = listAllProjectedTools();
-    // Scope the facade to tools this agent's role may call (mirrors the dispatcher role-allowlist);
-    // exclude code:run itself so a script cannot recursively nest code-mode.
-    const allowed = roleScopedToolNames(all, ctx.role, ORCHESTRATION_RECURSION_EXCLUSIONS);
-    const contract = codeRunContract(ctx);
+    // Reuse the dispatcher's per-invocation phase ledger. A client timeout after tools/list
+    // must distinguish catalog/preflight cost, worker execution and optional capture work.
+    const { all, allowed, contract } = await trackPhase(ctx.phases, 'code:run:setup', () => {
+      const all = listAllProjectedTools();
+      // Mirror the dispatcher role allowlist and exclude recursive orchestration.
+      const allowed = roleScopedToolNames(all, ctx.role, ORCHESTRATION_RECURSION_EXCLUSIONS);
+      return { all, allowed, contract: codeRunContract(ctx) };
+    });
 
     // EI-19449316000499177: PRE-VALIDATE statically-known tool args BEFORE anything dispatches.
     //
@@ -454,9 +458,11 @@ export default defineTool({
     // argument object behaves exactly as it did before this check existed.
     // Preflight is part of the same foreground request. A slow catalog read must not
     // spend the entire transport window before the worker's own clock even starts.
-    const preflight = await withCodeRunResponseBudget(
-      () => validateRecipeScriptAgainstCatalog(script, all, allowed),
-      { deadlineAtMs: responseDeadlineAtMs - 1_000, fallback: null, label: 'argument preflight' },
+    const preflight = await trackPhase(ctx.phases, 'code:run:preflight', () =>
+      withCodeRunResponseBudget(
+        () => validateRecipeScriptAgainstCatalog(script, all, allowed),
+        { deadlineAtMs: responseDeadlineAtMs - 1_000, fallback: null, label: 'argument preflight' },
+      ),
     );
     if (preflight.degraded || !preflight.value) {
       return {
@@ -549,7 +555,7 @@ export default defineTool({
         };
       } catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
     }
-    const result = await runToolOrchestration(script, {
+    const result = await trackPhase(ctx.phases, 'code:run:worker', () => runToolOrchestration(script, {
       ...(kernelHandle ? { kernel: kernelHandle } : {}),
       ...(kernelHandle ? { executeScript: runManagedKernelScript } : {}),
       ctx: withNestedWorkItemId(ctx, args.work_item_id),
@@ -577,7 +583,7 @@ export default defineTool({
         : args.inputs
           ? { inputs: args.inputs as OrchestrationInputs }
           : {}),
-    });
+    }));
 
     // EI-21570021207351896 / EI-21569537333182760: DISCLOSE the clamp on the envelope the caller
     // actually reads. Both items were filed because `timeoutSec: 120` produced a bare
@@ -610,11 +616,13 @@ export default defineTool({
     let executionTrace: NormalizedExecutionTrace | null = null;
     const postprocessingDeadlineAtMs = codeRunPostprocessingDeadlineAtMs(responseDeadlineAtMs);
     const runPostprocessing = <T>(label: string, work: () => Promise<T>, fallback: T) =>
-      withCodeRunResponseBudget(work, {
-        deadlineAtMs: postprocessingDeadlineAtMs,
-        fallback,
-        label: `code:run ${label}`,
-      });
+      trackPhase(ctx.phases, `code:run:postprocessing:${label}`, () =>
+        withCodeRunResponseBudget(work, {
+          deadlineAtMs: postprocessingDeadlineAtMs,
+          fallback,
+          label: `code:run ${label}`,
+        }),
+      );
     const traceNormalization = await runPostprocessing(
       'trace normalization',
       () =>

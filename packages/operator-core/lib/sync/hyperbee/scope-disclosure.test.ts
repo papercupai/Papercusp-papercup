@@ -29,6 +29,15 @@ const isMember = (scope: ScopeId, uid: number): boolean =>
   (uid === 1 && scope.slug === 'alpha') || uid === 2;
 
 describe('packScopedLog / parseScopedLog', () => {
+  it('round-trips authenticated writer lengths while retaining legacy three-field entries', () => {
+    const current = { ...D_A, logLength: 123 };
+    expect(parseScopedLog(packScopedLog(current))).toEqual(current);
+    expect(parseScopedLog(packScopedLog(D_A))).toEqual(D_A);
+    for (const length of ['-1', '01', 'NaN', '9007199254740992', '1|2']) {
+      expect(parseScopedLog(`fleet:42/alpha|${KEY_A}|3|${length}`)).toBeNull();
+    }
+    expect(() => packScopedLog({ ...D_A, logLength: -1 })).toThrow(/length/);
+  });
   it('round-trips', () => {
     const wire = packScopedLog(D_A);
     expect(wire).toBe(`fleet:42/alpha|${KEY_A}|3`);

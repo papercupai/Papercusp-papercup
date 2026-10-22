@@ -60,6 +60,40 @@ const CROSS_SURFACE_PROBE_LIMIT = 5;
 // the query or adding a timeout that changes search behavior.
 const DOCS_SEARCH_PHASE_WARN_MS = 20_000;
 
+const DOCS_LEXICAL_TIMING_PHASES = ['listPages', 'getContent', 'ranking'] as const;
+
+/** Query-free summary of the docs-engine's internal lexical phase metadata. */
+function summarizeDocsLexicalTiming(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const timing = value as Record<string, unknown>;
+  const completed = timing.completedMs && typeof timing.completedMs === 'object' && !Array.isArray(timing.completedMs)
+    ? timing.completedMs as Record<string, unknown>
+    : {};
+  const phases = DOCS_LEXICAL_TIMING_PHASES.flatMap((phase) => {
+    const duration = completed[phase];
+    return typeof duration === 'number' && Number.isFinite(duration)
+      ? [`${phase}=${Math.max(0, Math.round(duration))}ms`]
+      : [];
+  });
+  const pages = timing.pages && typeof timing.pages === 'object' && !Array.isArray(timing.pages)
+    ? timing.pages as Record<string, unknown>
+    : {};
+  const pageCounts = ['listed', 'searchable', 'loaded'].flatMap((key) => {
+    const count = pages[key];
+    return typeof count === 'number' && Number.isFinite(count) ? [Math.max(0, Math.trunc(count))] : [];
+  });
+  const fields: string[] = [];
+  if (typeof timing.totalElapsedMs === 'number' && Number.isFinite(timing.totalElapsedMs)) {
+    fields.push(`total=${Math.max(0, Math.round(timing.totalElapsedMs))}ms`);
+  }
+  if (timing.outcome === 'complete' || timing.outcome === 'cancelled' || timing.outcome === 'failed') {
+    fields.push(`outcome=${timing.outcome}`);
+  }
+  if (phases.length > 0) fields.push(`phases=${phases.join(',')}`);
+  if (pageCounts.length === 3) fields.push(`pages=${pageCounts.join('/')}`);
+  return fields.length > 0 ? `docsLexicalTiming ${fields.join(' ')}` : undefined;
+}
+
 export const RETIREMENT_AUTHORITY_SLUG = 'agent-insights/mug-kettle-cup-tier-is-retired';
 
 type CurrentnessFields = {
@@ -406,7 +440,15 @@ export default defineTool({
         docsSearchActivePhases.delete(phase);
         const durationMs = Math.max(0, Date.now() - startedAtMs);
         docsSearchCompletedMs[phase] = durationMs;
-        if (warned) ctxAny.log?.('[docs:search timing] ' + phase + ' completed in ' + durationMs + 'ms');
+        if (warned) {
+          const lexicalDetails = phase === 'lexicalSearch'
+            ? summarizeDocsLexicalTiming(innerMeta.docsLexicalTiming)
+            : undefined;
+          ctxAny.log?.(
+            '[docs:search timing] ' + phase + ' completed in ' + durationMs + 'ms' +
+            (lexicalDetails ? '; ' + lexicalDetails : ''),
+          );
+        }
         publishDocsSearchTiming();
       }
     };

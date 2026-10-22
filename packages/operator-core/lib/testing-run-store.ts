@@ -221,19 +221,45 @@ async function snapshotSql(sqlOverride?: SqlLike): Promise<SqlLike | null> {
   }
 }
 
-async function boundedSnapshotQuery<T>(query: PromiseLike<unknown>): Promise<T | null> {
+type SnapshotQueryFailure = {
+  phase: 'construction' | 'query' | 'deadline';
+  errorName: string;
+  errorCode?: string;
+  timeoutMs?: number;
+};
+
+function snapshotQueryFailure(error: unknown, phase: SnapshotQueryFailure['phase']): SnapshotQueryFailure {
+  // Keep classifications, not raw database messages that can contain query values.
+  const field = (value: unknown): string | undefined =>
+    typeof value === 'string' && /^[A-Za-z0-9_:-]{1,100}$/.test(value) ? value : undefined;
+  const info = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const errorCode = field(info.code);
+  return { phase, errorName: field(info.name) ?? 'UnknownError', ...(errorCode ? { errorCode } : {}) };
+}
+
+async function boundedSnapshotQuery<T>(
+  query: PromiseLike<unknown>,
+  onFailure?: (failure: SnapshotQueryFailure) => void,
+): Promise<T | null> {
+  const deadlineError = new Error('testing_run_snapshot_query_timeout');
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
       Promise.resolve(query),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('testing_run_snapshot_query_timeout')), SNAPSHOT_PERSIST_TIMEOUT_MS),
-      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(deadlineError), SNAPSHOT_PERSIST_TIMEOUT_MS);
+      }),
     ]);
     return result as T;
-  } catch {
+  } catch (error) {
+    onFailure?.(error === deadlineError
+      ? { phase: 'deadline', errorName: 'TestingRunSnapshotQueryTimeout', timeoutMs: SNAPSHOT_PERSIST_TIMEOUT_MS }
+      : snapshotQueryFailure(error, 'query'));
     // D-007: snapshot persistence/readback is observability, never a reason
     // to fail or delay the test process/foreground response.
     return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -747,7 +773,11 @@ function taskAllowsDetachedLedgerRecovery(
   return true;
 }
 
-async function readPersistedTestRunLedgerRows(runId: string, sql: SqlLike): Promise<PersistedTestRunRow[] | null> {
+async function readPersistedTestRunLedgerRows(
+  runId: string,
+  sql: SqlLike,
+  onFailure?: (failure: SnapshotQueryFailure) => void,
+): Promise<PersistedTestRunRow[] | null> {
   let query: PromiseLike<unknown>;
   try {
     query = sql`
@@ -757,10 +787,11 @@ async function readPersistedTestRunLedgerRows(runId: string, sql: SqlLike): Prom
        ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
        LIMIT ${MAX_DETACHED_RUN_LEDGER_FILES + 1}
     `;
-  } catch {
+  } catch (error) {
+    onFailure?.(snapshotQueryFailure(error, 'construction'));
     return null;
   }
-  return boundedSnapshotQuery<PersistedTestRunRow[]>(query);
+  return boundedSnapshotQuery<PersistedTestRunRow[]>(query, onFailure);
 }
 
 function deriveDetachedRunLedgerRecovery(
@@ -1906,8 +1937,9 @@ async function withholdUnverifiedVitestPass(
     ? 'snapshot-store-unavailable' : 'requested-files-unavailable';
   let ledgerRowCount: number | null = null;
   let ledgerStatus: DetachedRunLedgerRecovery['status'] | null = null;
+  let ledgerReadFailure: SnapshotQueryFailure | undefined;
   if (requestedFiles && sql) {
-    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
+    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql, failure => { ledgerReadFailure = failure; });
     const recovery = rows ? deriveDetachedRunLedgerRecovery(snapshot.runId, rows) : null;
     ledgerRowCount = rows?.length ?? null;
     ledgerStatus = recovery?.status ?? null;
@@ -1942,6 +1974,7 @@ async function withholdUnverifiedVitestPass(
   if (!withheldPass) appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
   appendSnapshotOutput(unverified, '\n[coverage-gate:verification] ' + JSON.stringify({
     reason, requestedFileCount: requestedFiles?.length ?? null, ledgerRowCount, ledgerStatus,
+    ...(ledgerReadFailure ? { ledgerReadFailure } : {}),
   }) + '\n');
   if (withheldPass && unverified.output === snapshot.output) return snapshot;
   if (sql) await persistReconciledSnapshot(snapshot, unverified, sql);

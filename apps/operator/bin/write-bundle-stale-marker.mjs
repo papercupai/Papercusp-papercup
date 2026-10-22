@@ -37,7 +37,7 @@ function tail(text, n) {
 }
 
 /**
- * Pull `path:line:col` out of esbuild's error block. This is the single most
+ * Pull `path:line:col` out of esbuild errors and the free-reference guard. This is the single most
  * useful field for whoever reads the marker: it names the file to go fix,
  * without them having to reconstruct it from the journal.
  *
@@ -56,9 +56,23 @@ function tail(text, n) {
  */
 function failingFiles(log) {
   const out = [];
+  let needsErrorLocation = false;
   for (const line of log.split('\n')) {
-    const m = /^\s*(\S+\.(?:ts|tsx|mts|cts|js|mjs|cjs|jsx|json|css):\d+:\d+):?\s*$/.exec(line);
-    if (m && !out.includes(m[1])) out.push(m[1]);
+    const header = /^\s*(?:[✘▲]\s*)?\[(ERROR|WARNING)\]/.exec(line);
+    if (header) {
+      needsErrorLocation = header[1] === 'ERROR';
+      continue;
+    }
+    // The compiler may succeed with warnings before this separate guard refuses
+    // publication. Its inline locations are the failures, not the warning sites.
+    const freeRef = /^\s*🚨 free reference `[^`]+` at (.+\.(?:ts|tsx|mts|cts|js|mjs|cjs|jsx|json|css):\d+:\d+) — /.exec(line);
+    const compiler = needsErrorLocation
+      ? /^\s*(\S+\.(?:ts|tsx|mts|cts|js|mjs|cjs|jsx|json|css):\d+:\d+):?\s*$/.exec(line)
+      : null;
+    const location = freeRef?.[1] ?? compiler?.[1];
+    if (location && !out.includes(location)) out.push(location);
+    // Later locations in an esbuild diagnostic can belong to explanatory notes.
+    if (compiler || freeRef) needsErrorLocation = false;
   }
   return out.slice(0, 20);
 }
@@ -88,7 +102,7 @@ const marker = {
   /** When the code actually being served was built — the age of the lie. */
   servingBundleMtime: bundleMtime,
   servingBundleAgeSecAtFailure: bundleAgeSec,
-  /** The files to go fix. Empty means the failure was not a parse error. */
+  /** Error/guard sites to fix; warnings and related-note locations are excluded. */
   failingFiles: failingFiles(log),
   error: tail(log.trimEnd(), 40),
 };

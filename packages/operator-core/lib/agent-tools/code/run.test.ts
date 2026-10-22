@@ -139,7 +139,7 @@ import codeRunTool, {
   withCodeRunCaptureMode,
   withCodeRunResponseBudget,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
-import type { FieldMiss } from '@papercusp/tooldef';
+import { createPhaseTracker, type FieldMiss } from '@papercusp/tooldef';
 
 beforeEach(() => {
   recordRecipeRunMock.mockClear();
@@ -1692,6 +1692,68 @@ describe('code:run → timeoutSec foreground contract (EI-21636457492876715)', (
 });
 
 describe('code:run → response-safe postprocessing budget', () => {
+  it('attributes a pending capture and its elapsed time separately from worker and trace work', async () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run')!;
+    let clock = 0;
+    const phases = createPhaseTracker({ now: () => clock });
+    let releaseCapture!: () => void;
+    let captureStarted!: () => void;
+    const heldCapture = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    const started = new Promise<void>((resolve) => { captureStarted = resolve; });
+    normalizeExecutionTraceMock.mockImplementationOnce(async () => {
+      clock += 37;
+      return normalizedTrace;
+    });
+    captureRecipeMock.mockImplementationOnce(async () => {
+      captureStarted();
+      await heldCapture;
+      clock += 61;
+      return null;
+    });
+    const pending = tool.fn({ script: 'return "private-phase-test-payload";' }, {
+      log: () => {}, workspaceId: 'ws-test', harnessSlug: 'alpha', role: 'su',
+      isSuperuser: true, uiClientId: 'su-test', phases,
+    } as never);
+    try {
+      await started;
+      expect(phases.snapshot().activePhase).toBe('code:run:postprocessing:recipe capture');
+      expect(phases.intervals()).toContainEqual({
+        phase: 'code:run:postprocessing:trace normalization', startMs: 0, durationMs: 37,
+      });
+    } finally {
+      releaseCapture();
+      await pending;
+    }
+    const metadata = phases.toMetadata()!;
+    expect(metadata.phases).toContainEqual({
+      phase: 'code:run:postprocessing:recipe capture', startMs: 37, durationMs: 61,
+    });
+    expect(metadata.phases.map(({ phase }) => phase)).toEqual(expect.arrayContaining([
+      'code:run:setup', 'code:run:preflight', 'code:run:worker',
+      'code:run:postprocessing:trace-only recording',
+    ]));
+    expect(metadata.pending).toEqual([]);
+    expect(JSON.stringify(metadata)).not.toContain('private-phase-test-payload');
+  });
+
+  it('retains worker attribution for a failed script without reporting recipe capture', async () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run')!;
+    const phases = createPhaseTracker();
+    const result = await tool.fn({ script: 'throw new Error("phase-test-failure");' }, {
+      log: () => {}, workspaceId: 'ws-test', harnessSlug: 'alpha', role: 'su',
+      isSuperuser: true, uiClientId: 'su-test', phases,
+    } as never);
+    const payload = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain('phase-test-failure');
+    const metadata = phases.toMetadata()!;
+    expect(metadata.phases.map(({ phase }) => phase)).toEqual(expect.arrayContaining([
+      'code:run:preflight', 'code:run:worker', 'code:run:postprocessing:trace-only recording',
+    ]));
+    expect(metadata.phases.some(({ phase }) => phase === 'code:run:postprocessing:recipe capture')).toBe(false);
+    expect(metadata.pending).toEqual([]);
+  });
+
   it('caps optional postprocessing at five seconds and still respects the outer response deadline', () => {
     const nowMs = 1_000;
     expect(codeRunPostprocessingDeadlineAtMs(nowMs + 45_000, nowMs)).toBe(

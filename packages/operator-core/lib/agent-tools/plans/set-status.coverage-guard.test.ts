@@ -46,6 +46,14 @@ vi.mock('./draft-item-start-gate', () => ({ checkDraftItemStartGateLive: vi.fn(a
 vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
 }));
+const planDrainMocks = vi.hoisted(() => ({
+  planDrainTransitionMutationGated: vi.fn<
+    typeof import('./plan-drain-transition').planDrainTransitionMutationGated
+  >(async () => ({ newBody: null, value: { applied: false } })),
+}));
+vi.mock('./plan-drain-transition', () => ({
+  planDrainTransitionMutationGated: planDrainMocks.planDrainTransitionMutationGated,
+}));
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => reconcileMocks.resolveAgentIdentity(),
@@ -88,7 +96,13 @@ function lockReturnsMutatorValue(knownItems: Set<string>, currentStatus = 'wip')
     const intent = (opts as { intent: string }).intent;
     const itemId = /P-\d{3,}/.exec(intent)?.[0] ?? '';
     const fakeBody = knownItems.has(itemId) ? `- **${itemId}** \`${currentStatus}\` x` : '';
-    const { value } = await (mutate as (b: string | null) => Promise<{ value: unknown }>)(fakeBody);
+    const { value } = await (
+      mutate as (
+        body: string | null,
+        meta: unknown,
+        scope: { workspaceId: string; harnessSlug: string },
+      ) => Promise<{ value: unknown }>
+    )(fakeBody, undefined, { workspaceId: 'default', harnessSlug: 'papercup' });
     return { kind: 'ok', value, filePath: 'plan.md' } as never;
   });
 }

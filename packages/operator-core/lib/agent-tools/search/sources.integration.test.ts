@@ -27,6 +27,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { SEARCH_SOURCES as DEFAULT_SEARCH_SOURCES, compactLiteralToken } from './sources';
 import type { SearchSource, SearchSourceParams } from '@papercusp/search';
@@ -902,7 +903,10 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
     await blocker.unsafe('LOCK TABLE harness_shared.coord_event_log IN ACCESS EXCLUSIVE MODE');
     const startedAt = Date.now();
     try {
-      await expect(byName('coord_message').lexical(params())).rejects.toThrow(/statement timeout/i);
+      await expect(byName('coord_message').lexical(params())).rejects.toMatchObject({
+        pgCode: '57014',
+        timeoutSource: 'pg',
+      });
       const elapsedMs = Date.now() - startedAt;
       expect(elapsedMs).toBeGreaterThanOrEqual(7_000);
       expect(elapsedMs).toBeLessThan(20_000);

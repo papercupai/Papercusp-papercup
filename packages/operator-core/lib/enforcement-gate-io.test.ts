@@ -269,6 +269,39 @@ function coldLoopBrief(over: Partial<NonNullable<CarryBrief['loop']>> = {}): Car
 }
 
 describe('runFlushGate — cold-successor-no-progress wiring', () => {
+  it('logs the active and completed phases when the bounded compaction gate times out', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    process.env.PAPERCUSP_FLUSH_GATE_BUDGET_MS = '4000';
+    let resolveCount!: (value: number | null) => void;
+    const pendingCount = new Promise<number | null>((resolve) => { resolveCount = resolve; });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pendingGate = runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold-timeout',
+      workspaceId: '*',
+      sessionId: 'su-cold-timeout',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief(),
+      nowMs: NOW,
+      countAgentToolCallsFn: async () => pendingCount,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(4000);
+      await expect(pendingGate).resolves.toMatchObject({ verdict: 'clear', tripwires: [] });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        'elapsedMs=4000 activePhase=count-agent-tool-calls-since-note activePhaseElapsedMs=4000 completedPhases=none',
+      ));
+    } finally {
+      // Finish the observed in-flight read so the unit test leaves no dangling work.
+      resolveCount(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await wasRecentlyRefused('compaction', 'su-cold-timeout', NOW)).toBe(false);
+      warn.mockRestore();
+    }
+  });
+
   it('refuses, naming the next action, when the seam confirms zero tool calls since the note', async () => {
     const countFn = vi.fn(async () => 0);
     const out = await runFlushGate({

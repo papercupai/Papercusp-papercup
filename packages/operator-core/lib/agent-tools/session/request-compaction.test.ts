@@ -1684,7 +1684,7 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
  */
 describe('session:request-compaction — native bg task warning (WI-5936)', () => {
   let bgHome = '';
-  const origHome = process.env.HOME;
+  const origPapercuspHome = process.env.PAPERCUSP_HOME;
 
   beforeEach(() => {
     findLiveHost.mockReturnValue(carryHost);
@@ -1692,11 +1692,14 @@ describe('session:request-compaction — native bg task warning (WI-5936)', () =
     buildCarryBrief.mockResolvedValue(emptyBrief);
     bgHome = mkdtempSync(join(tmpdir(), 'reqcompact-bg-'));
     mkdirSync(join(bgHome, '.papercusp', 'tracking'), { recursive: true });
-    process.env.HOME = bgHome; // os.homedir() reads $HOME on POSIX
+    // The ledger honors this isolation pin before the user's home. Changing
+    // HOME alone leaves a workspace-scoped runner reading its real ledger.
+    process.env.PAPERCUSP_HOME = join(bgHome, '.papercusp');
   });
 
   afterEach(() => {
-    process.env.HOME = origHome;
+    if (origPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+    else process.env.PAPERCUSP_HOME = origPapercuspHome;
     rmSync(bgHome, { recursive: true, force: true });
   });
 

@@ -494,7 +494,7 @@ function emitPtoolConnectionTrace(trace, event, extra = {}) {
   })}`);
 }
 
-async function withPtoolConnectionPhaseTrace(trace, phase, route, operation) {
+export async function withPtoolConnectionPhaseTrace(trace, phase, route, operation) {
   const startedAtMs = Date.now();
   const phaseStartedAt = new Date(startedAtMs).toISOString();
   let pending = false;
@@ -4482,6 +4482,22 @@ async function main() {
   const ptoolLauncherSource = ptoolOperatorUrlSource(args, process.env);
   const launcherScriptPath = ptoolLauncherScriptPath();
   let operatorConnectSequence = 0;
+  let activeConnectionTrace;
+  // An outer caller can stop ptool after connection succeeds. Keep the same
+  // bounded trace alive through discovery, execution and output so that such a
+  // stop identifies the phase still pending without exposing arguments/results.
+  const withInvocationPhase = (phase, operation) => withPtoolConnectionPhaseTrace(
+    activeConnectionTrace,
+    phase,
+    describePtoolOperatorRoute(operatorUrl),
+    operation,
+  );
+  const tracedToolCall = (callClient, params, options) => withInvocationPhase(
+    'tools-call', () => callToolWithReplayRecovery(callClient, params, options),
+  );
+  const tracedPrintResult = (result, options) => withInvocationPhase(
+    'result-output', () => printResult(result, options),
+  );
   const connectOperator = async ({
     preferredIndex = 0, onlyCandidate = false, tokenFile = activeTokenFile, nativeSessionOverride,
   } = {}) => {
@@ -4516,6 +4532,7 @@ async function main() {
       fallbackCandidateMaxAttempts: retryOptions.maxAttempts ?? PTOOL_CONNECT_MAX_ATTEMPTS,
       attemptedRoutes,
     };
+    activeConnectionTrace = trace;
     const operatorConnectStartedAtMs = Date.now();
     const operatorConnectStartedAt = new Date(operatorConnectStartedAtMs).toISOString();
     let activeStage = 'sdk-bootstrap';
@@ -4652,7 +4669,7 @@ async function main() {
 
     let tools;
     try {
-      const discovery = await listToolsWithNativeSessionFallback(client, {
+      const discovery = await withInvocationPhase('tools-list', () => listToolsWithNativeSessionFallback(client, {
         client: process.env.PAPERCUSP_SID,
         explicitNativeSession: (() => {
           try { return new URL(args.url || operatorUrl).searchParams.has('native_session'); }
@@ -4666,7 +4683,7 @@ async function main() {
           (listedClient) => listAllTools(listedClient, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) }),
         ),
         reconnectWithoutNativeSession: () => connectOperator({ nativeSessionOverride: null }),
-      });
+      }));
       client = discovery.client;
       if (discovery.nativeSessionRetried) {
         console.error(
@@ -4707,9 +4724,9 @@ async function main() {
           let fallbackClient = null;
           try {
             fallbackClient = await connectOperator({ preferredIndex: recoveryIndex, onlyCandidate: true });
-            const fallbackTools = await listAllTools(fallbackClient, {
+            const fallbackTools = await withInvocationPhase('tools-list', () => listAllTools(fallbackClient, {
               retryLocalErrors: isLocalOperatorUrl(operatorUrl),
-            });
+            }));
             const fallbackTool = fallbackTools.find((entry) => entry?.name === args.tool);
             const fallbackGeneration = fallbackTool?._meta?.['papercusp/servingGeneration'];
             if (
@@ -4749,7 +4766,7 @@ async function main() {
         const idempotencyKey = args.idempotencyKey || randomUUID();
         console.error(formatToolCatalogBypass(args.tool, error));
         try {
-          const recovered = await dispatchScriptedToolWithoutCatalogWithTokenFallback(
+          const recovered = await withInvocationPhase('tools-call', () => dispatchScriptedToolWithoutCatalogWithTokenFallback(
             client,
             args.tool,
             callArgs,
@@ -4759,9 +4776,9 @@ async function main() {
               initialTokenPath: ptoolTokenPathByClient.get(client),
               reconnectWithTokenPath: (tokenFile) => connectOperator({ tokenFile }),
             },
-          );
+          ));
           client = recovered.client;
-          const code = await printResult(recovered.result, {
+          const code = await tracedPrintResult(recovered.result, {
             raw: shouldPrintRawResult(inputKind, args.raw),
           });
           if (code !== 0) process.exitCode = code;
@@ -4813,7 +4830,7 @@ async function main() {
         const idempotencyKey = args.idempotencyKey || randomUUID();
         console.error(formatToolCatalogBypass(toolName, error));
         try {
-          const recovered = await dispatchScriptedToolWithoutCatalogWithTokenFallback(
+          const recovered = await withInvocationPhase('tools-call', () => dispatchScriptedToolWithoutCatalogWithTokenFallback(
             client,
             toolName,
             callArgs,
@@ -4823,9 +4840,9 @@ async function main() {
               initialTokenPath: ptoolTokenPathByClient.get(client),
               reconnectWithTokenPath: (tokenFile) => connectOperator({ tokenFile }),
             },
-          );
+          ));
           client = recovered.client;
-          const code = await printResult(recovered.result, {
+          const code = await tracedPrintResult(recovered.result, {
             raw: shouldPrintRawResult(inputKind, args.raw),
           });
           if (code !== 0) process.exitCode = code;
@@ -4890,9 +4907,9 @@ async function main() {
         callArgs,
         idempotencyKey,
         error,
-        listTools: (targetClient) => listAllTools(targetClient, {
+        listTools: (targetClient) => withInvocationPhase('tools-list', () => listAllTools(targetClient, {
           retryLocalErrors: isLocalOperatorUrl(operatorUrl),
-        }),
+        })),
       });
       currentTool = refreshed.tool;
       return refreshed.params;
@@ -4903,7 +4920,7 @@ async function main() {
       idempotencyKey,
     });
     try {
-      let recovered = await callToolWithReplayRecovery(
+      let recovered = await tracedToolCall(
         client,
         currentCallParams(),
         {
@@ -4918,7 +4935,7 @@ async function main() {
             'retrying the same call on the canonical operator candidate.',
         );
         await closeClientQuietly(recovered.client);
-        recovered = await callToolWithReplayRecovery(
+        recovered = await tracedToolCall(
           await connectOperator({ preferredIndex: 1 }),
           currentCallParams(),
           {
@@ -4940,7 +4957,7 @@ async function main() {
             'retrying once with the same client identity and no native-session claim.',
         );
         await closeClientQuietly(recovered.client);
-        recovered = await callToolWithReplayRecovery(
+        recovered = await tracedToolCall(
           await connectOperator({ nativeSessionOverride: null }),
           currentCallParams(),
           {
@@ -4957,7 +4974,7 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    const code = await printResult(result, { raw: shouldPrintRawResult(inputKind, args.raw) });
+    const code = await tracedPrintResult(result, { raw: shouldPrintRawResult(inputKind, args.raw) });
     if (code !== 0) process.exitCode = code;
   } finally {
     await client.close().catch(() => {});
