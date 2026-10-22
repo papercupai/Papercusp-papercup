@@ -13,6 +13,7 @@ import {
 import { compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } from '../role-launch-spec';
 import * as recallStats from '../memory/recall-stats';
 import * as corpusRecallIo from '../memory/corpus-recall-io';
+import * as recallStaleness from '../memory/recall-staleness';
 import { buildMemoryContextBlock } from '../memory/injection';
 import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
 import { _resetForTests as resetSurfacedForTests } from '../memory/bump-last-surfaced';
@@ -151,6 +152,9 @@ describe('identity-declared recall bounds at turn start (P-012)', () => {
   let corpusInputs: corpusRecallIo.CorpusRecallInput[] = [];
 
   beforeEach(() => {
+    // These synthetic notes have no anchor history. Keep unrelated advisory
+    // staleness I/O out of the recall parity and identity-bound assertions.
+    vi.stubEnv('PAPERCUSP_FLAG_PAPERCUSP_MEMORY_STALENESS_IN_RECALL', '0');
     root = mkdtempSync(join(tmpdir(), 'identity-recall-launch-'));
     setSessionConfinementResolver(() => null);
     vi.spyOn(recallStats, 'recordRecallStats').mockImplementation(async () => {});
@@ -169,6 +173,7 @@ describe('identity-declared recall bounds at turn start (P-012)', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     setSessionConfinementResolver(undefined);
     rmSync(root, { recursive: true, force: true });
   });
@@ -228,6 +233,22 @@ describe('identity-declared recall bounds at turn start (P-012)', () => {
     expect(scopedPools.every((pool) => pool === 'hive')).toBe(true);
     expect(scopedBlock).not.toMatch(/Recall (user|harness) note/);
     expect(corpusInputs.at(-1)?.corpora).toEqual(['doc']);
+  });
+
+  it('keeps recall fixtures independent of unavailable advisory staleness storage', async () => {
+    const lookup = vi.spyOn(recallStaleness, 'loadMemoryStaleness')
+      .mockRejectedValue(new Error('staleness storage unavailable'));
+    writeIdentity('recall-fixture');
+    const open = await appliedRecall('recall-fixture');
+
+    expect(await turnStartRecall(open)).toContain('Recall user note');
+    expect(lookup).not.toHaveBeenCalled();
+
+    // Positive control: the same production path reaches the unavailable
+    // storage when the unrelated advisory is explicitly enabled.
+    vi.stubEnv('PAPERCUSP_FLAG_PAPERCUSP_MEMORY_STALENESS_IN_RECALL', '1');
+    expect(await turnStartRecall(open)).toContain('Recall user note');
+    expect(lookup).toHaveBeenCalled();
   });
 
   it('R-18: an undeclared corpus is never selected, and the declarable set is exactly the corpus sources', () => {

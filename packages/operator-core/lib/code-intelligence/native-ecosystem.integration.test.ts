@@ -46,6 +46,87 @@ import { createHash } from 'node:crypto';
 import { defineTool, lookupByMcpName, projectedToolCallContract } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 
+describe('native P027 R24 recorded consumer disposition coverage', () => {
+  const inventory = JSON.parse(readFileSync(new URL(
+    '../../../../docs/evidence/native-p042-gitnexus-consumers-2026-10-15.json', import.meta.url), 'utf8')) as {
+      consumers: { id: string }[];
+      sourceClassificationContinuation20261016: { families: { id: string }[] };
+    };
+  const decision = JSON.parse(readFileSync(new URL(
+    '../../../../docs/evidence/native-p042-consumer-dispositions-2026-10-17.json', import.meta.url), 'utf8')) as {
+      consumers: { id: string; disposition: string; ruling: string; evidence: string[]; licenceRoute: string }[];
+      outcomeDecisionBoundary: { interpretation: string };
+    };
+  // Independent correspondence between the source census and D023's grouped
+  // rulings. A newly inventoried family must acquire an explicit mapping too.
+  const correspondence: Record<string, string[]> = {
+    'hourly-maintenance': ['hourly-maintenance'],
+    'test-selection': ['test-selection-and-snapshot-health'],
+    'curated-native-tools': ['curated-native-tools-and-client-admission'],
+    'raw-plugin': ['raw-plugin-and-generic-discovery'],
+    'dream-neighbors': ['dream-neighbor-discovery'],
+    'selective-assist-and-bench': ['selective-assist-and-controlled-comparison'],
+    'docs-and-routing': ['instructions-documents-and-blueprint-references'],
+    'plugin-discovery-and-host-lifecycle': ['raw-plugin-and-generic-discovery'],
+    'project-history-generation': ['project-history'],
+    'snapshot-health-and-index-retention': ['test-selection-and-snapshot-health'],
+    'native-client-routing-and-instructions': [
+      'curated-native-tools-and-client-admission', 'instructions-documents-and-blueprint-references',
+    ],
+    's37-w01-behaviour-catalogue': ['s37-w01-and-historical-behavior-measures'],
+    'process-admission-and-packaging-guards': ['process-admission-vendor-support-and-distribution'],
+  };
+  function verify(census: typeof inventory, recorded: typeof decision): string[] {
+    const families = census.sourceClassificationContinuation20261016.families;
+    if (!census.consumers.length || !families.length) throw new Error('Empty consumer census');
+    const rows = new Map(recorded.consumers.map(row => [row.id, row]));
+    if (rows.size !== recorded.consumers.length) throw new Error('Duplicate consumer disposition');
+    const covered = new Set<string>();
+    for (const entry of [...census.consumers, ...families]) {
+      const targets = correspondence[entry.id];
+      if (!targets?.length) throw new Error(`Unmapped consumer ${entry.id}`);
+      for (const id of targets) {
+        const row = rows.get(id);
+        if (!row) throw new Error(`Missing disposition for ${id}`);
+        if (!['keep', 'narrow', 'retire'].includes(row.disposition) || !row.ruling.trim() ||
+          !row.licenceRoute.trim() || !row.evidence.length || row.evidence.some(ref => !ref.trim()))
+          throw new Error(`Incomplete disposition for ${id}`);
+        covered.add(id);
+      }
+    }
+    if (covered.size !== rows.size) throw new Error('Disposition has no inventoried source');
+    return [...covered].sort();
+  }
+
+  it('accounts for each recorded consumer and source family with an evidence-linked ruling', () => {
+    expect(verify(inventory, decision)).toEqual(decision.consumers.map(row => row.id).sort());
+    // The recorded decision explicitly separates routing from measured benefit.
+    // This record check cannot substitute for the final deployed backend witness.
+    expect(decision.outcomeDecisionBoundary.interpretation).toContain('Unknown outcomes are neither zero');
+  });
+
+  it.each(decision.consumers.map(row => row.id))('detects a removed disposition for %s', id => {
+    const missing = structuredClone(decision);
+    missing.consumers = missing.consumers.filter(row => row.id !== id);
+    expect(() => verify(inventory, missing)).toThrow(`Missing disposition for ${id}`);
+  });
+
+  it('refuses an empty or newly unmapped census instead of passing vacuously', () => {
+    expect(() => verify({ ...inventory, consumers: [] }, decision)).toThrow('Empty consumer census');
+    expect(() => verify({ ...inventory, consumers: [...inventory.consumers, { id: 'new-retained-backend' }] }, decision))
+      .toThrow('Unmapped consumer new-retained-backend');
+  });
+
+  it('detects a blank ruling and a duplicated consumer while the complete positive control still works', () => {
+    const blank = structuredClone(decision);
+    blank.consumers[0]!.ruling = '';
+    expect(() => verify(inventory, blank)).toThrow('Incomplete disposition');
+    expect(() => verify(inventory, { ...decision, consumers: [...decision.consumers, decision.consumers[0]!] }))
+      .toThrow('Duplicate consumer disposition');
+    expect(verify(inventory, decision).length).toBeGreaterThan(0);
+  });
+});
+
 describe('native P021 required BAR bounded source pack expansion', () => {
   it('joins real compiler paths to exact source excerpts and expands omitted consumers after a source edit', async () => {
     const project = mkdtempSync(join(tmpdir(), 'native-path-source-bundle-'));

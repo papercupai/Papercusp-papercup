@@ -53,7 +53,7 @@ describe('Claude dialog answer provenance', () => {
     expect(verified[0].verdict).toBe(expected);
   });
 
-  it('treats untracked, mixed and stale-session receipts as unknown', () => {
+  it('unproven-source-receipt: treats untracked, mixed and stale-session receipts as unknown', () => {
     const f = fixture();
     expect(finishClaudeDialog(OWNER, SESSION, TOOL, ANSWER, f.env)).toContain('"source":"unknown"');
     openClaudeDialog(OWNER, SESSION, TOOL, f.env);
@@ -64,7 +64,7 @@ describe('Claude dialog answer provenance', () => {
     expect(finishClaudeDialog(OWNER, SESSION, TOOL, ANSWER, f.env)).toContain('"source":"automatic"');
   });
 
-  it('does not count a failed write, or a headless stdin write, as a human answer', () => {
+  it('unproven-input-receipt: does not count a failed write, or a headless stdin write, as a human answer', () => {
     const f = fixture();
     openClaudeDialog(OWNER, SESSION, TOOL, f.env);
     const child = { write: () => { throw new Error('closed'); } };
@@ -76,7 +76,7 @@ describe('Claude dialog answer provenance', () => {
     expect(finishClaudeDialog(OWNER, SESSION, TOOL, ANSWER, f.env)).toContain('"source":"unknown"');
   });
 
-  it('never upgrades the original answer wording or a legacy indexed row to owner authority', async () => {
+  it('unproven-owner-authority: never upgrades the original answer wording or a legacy indexed row to owner authority', async () => {
     const line = JSON.stringify({ type: 'user', timestamp: TS, message: { role: 'user',
       content: [{ type: 'tool_result', tool_use_id: TOOL, content: ANSWER }] } });
     expect(classifyRecordedTurn(parseClaudeLine(line)!.text).verdict).toBe('unknown');
@@ -89,7 +89,7 @@ describe('Claude dialog answer provenance', () => {
     expect(OWNER_CANDIDATE_TURN_VERDICTS).toContain(row.turn_origin_verdict);
   });
 
-  it('accepts source receipts only as matching-session PostToolUse hook attachments', () => {
+  it('receipt-envelope-validation: accepts source receipts only as matching-session PostToolUse hook attachments', () => {
     const f = fixture(); openClaudeDialog(OWNER, SESSION, TOOL, f.env); f.humanWrite('\r');
     const context = finishClaudeDialog(OWNER, SESSION, TOOL, ANSWER, f.env);
     expect(claudeDialogProvenanceAttachment(attachment(context, 'other-session'))).toBeNull();
@@ -98,7 +98,7 @@ describe('Claude dialog answer provenance', () => {
     expect(claudeDialogProvenanceAttachment(wrongHook)).toBeNull();
   });
 
-  it('the installed combined hook emits the source notice even when its operator mirror is unreachable', () => {
+  it('automatic-hook-notice: the installed combined hook emits the source notice even when its operator mirror is unreachable', () => {
     const f = fixture();
     mkdirSync(join(f.home, '.papercusp'), { recursive: true });
     writeFileSync(join(f.home, '.papercusp', 'superuser-token'), 'test-token');

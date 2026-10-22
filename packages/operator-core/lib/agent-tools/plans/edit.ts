@@ -34,6 +34,12 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { planItemTextDriftForWrite } from '../../plan-items/text-drift-report';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { anchorsInputSchema, resolveHarnessAnchors } from '../../plan-items/anchors';
+import { writePlanItemAnchors } from '../../plan-items/anchor-store';
+import { resolvePlanScope } from './source';
+import { parsePlan } from './parser';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { notifySyncInvalidate } from '../../sync-sse';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { domainFailureMessage } from './plan-activation-gate';
@@ -46,10 +52,12 @@ const argsSchema = z.object({
   old_string: z
     .string()
     .min(1)
-    .describe('The exact substring to replace (must occur once, unless replace_all). Include enough surrounding context to be unique — same rules as the file Edit tool.'),
+    .describe('The exact substring to replace (must occur once, unless replace_all). Include enough surrounding context to be unique — same rules as the file Edit tool.').optional(),
   new_string: z
     .string()
-    .describe('The replacement text (may be empty to delete `old_string`). Must differ from old_string.'),
+    .describe('The replacement text (may be empty to delete `old_string`). Must differ from old_string.').optional(),
+  itemId: z.string().regex(/^P-\d{3,}$/).optional(),
+  anchors: anchorsInputSchema.optional(),
   replace_all: z
     .boolean()
     .optional()
@@ -62,10 +70,17 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe('Optional — the why behind this edit. Stored on the plan revision (D-009).'),
+}).superRefine((args, ctx) => {
+  if (args.anchors !== undefined && !args.itemId) ctx.addIssue({ code: 'custom', path: ['itemId'], message: 'Required when editing anchors.' });
+  if ((args.old_string === undefined) !== (args.new_string === undefined)
+    || (args.old_string === undefined && args.anchors === undefined)) {
+    ctx.addIssue({ code: 'custom', path: ['old_string'], message: 'Pass old_string and new_string, or itemId and anchors.' });
+  }
 });
 
 export type PlanEditValue =
   | SetContentValue
+  | { ok: false; code: 'anchor_item_not_found'; itemId: string }
   | { ok: false; code: 'string_not_found' }
   | { ok: false; code: 'string_not_unique'; count: number }
   | { ok: false; code: 'no_change' };
@@ -153,6 +168,10 @@ export default defineTool({
       args.rationale,
       harnessSlug ? { harnessSlug } : {},
     );
+    const anchorScope = args.anchors === undefined ? null : await resolvePlanScope({ harnessSlug,
+      workspaceId: (ctx as { workspaceId?: string }).workspaceId });
+    const anchors = anchorScope ? await resolveHarnessAnchors(anchorScope.workspaceId,
+      harnessSlug ?? anchorScope.harnessSlug, args.anchors!) : undefined;
     const result = await withPlanLock<PlanEditValue>(
       ctx as never,
       {
@@ -160,11 +179,21 @@ export default defineTool({
         intent: 'plans:edit',
         ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
+        inTransaction: async (tx, _body, scope, value) => {
+          if (value.ok && anchors !== undefined) await writePlanItemAnchors(tx,
+            { ...scope, planSlug: args.slug }, { itemId: args.itemId!, anchors }, resolveAgentIdentity(ctx).ownerId);
+        },
       },
-      (current, meta) =>
-        evaluatePlanEdit(current, args.old_string, args.new_string, args.replace_all ?? false, args.slug, args.expectedHash, {
-          meta,
-        }),
+      async (current, meta) => {
+        const evaluated = args.old_string !== undefined
+          ? await evaluatePlanEdit(current, args.old_string, args.new_string!, args.replace_all ?? false, args.slug, args.expectedHash, { meta })
+          : await evaluateSetContent(current, current ?? '', args.slug, args.expectedHash, { meta });
+        if (anchors !== undefined && evaluated.value.ok && evaluated.newBody !== null
+          && !parsePlan(evaluated.newBody).items.some(item => item.id === args.itemId)) {
+          return { newBody: null, value: { ok: false as const, code: 'anchor_item_not_found' as const, itemId: args.itemId! } };
+        }
+        return evaluated;
+      },
     );
 
     if (result.kind === 'refused') {
@@ -191,6 +220,9 @@ export default defineTool({
     }
 
     const v = result.value;
+    if (!v.ok && v.code === 'anchor_item_not_found') return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: v.code, itemId: v.itemId }) }], isError: true,
+    };
     if (!v.ok) {
       const payload: Record<string, unknown> = { error: v.code, slug: args.slug };
       const domainMessage = domainFailureMessage(v);
@@ -229,6 +261,7 @@ export default defineTool({
     // open work-items minted from any item this edit rewrote, and ping their
     // holders — their title/summary/brief are mint-time snapshots nothing else
     // refreshes. Post-commit + fully fail-soft.
+    if (anchors !== undefined) await notifySyncInvalidate('planItems.byPlan', { planSlug: args.slug });
     const planItemDrift = await planItemTextDriftForWrite(
       ctx as ResolveIdentityCtx,
       args.slug,
@@ -244,6 +277,7 @@ export default defineTool({
             ok: true,
             slug: v.slug,
             contentHash: v.contentHash,
+            ...(anchors !== undefined ? { itemId: args.itemId, anchors } : {}),
             ...(v.planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
             version: result.version,
             filePath: result.filePath,

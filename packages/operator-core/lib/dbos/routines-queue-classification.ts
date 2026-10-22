@@ -92,11 +92,18 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
  * Other bounded trigger/import handlers use the same latency-isolated lane as
  * source polls: trigger dispatch processes a bounded outbox batch, and personal
  * vault import advances one bounded, checkpointed batch per fire.
+ *
+ * Scheduled blueprint operations only submit an occurrence and return its handle;
+ * their workers execute separately. WI-6554700010020357 measured a due daily
+ * operation withheld behind a long interactive-usage fire on the ordinary lane,
+ * including healthy pool epochs with window=1/inFlight=1. Its bounded submission
+ * belongs with trigger dispatch so background work cannot consume its admission.
  */
 export const TRIGGERS_QUEUE_ACTIONS = new Set<string>([
   ...TRIGGER_POLL_ACTIONS,
   'external-trigger-dispatch',
   'personal-vault-import',
+  'blueprint-operation',
 ]);
 
 /**

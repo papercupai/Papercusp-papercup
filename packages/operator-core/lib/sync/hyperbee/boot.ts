@@ -59,10 +59,10 @@ import {
   dropReplicationLogState,
   dropReplicationLiveness,
   setDhtUniverseAssertion,
-  setReplicationRepairHandler,
+  ReplicationProgressOwner,
+  type ReplicationProgressRepair,
   // EI-20453145044075727: intra-pass heartbeat — see onCursorAdvance below.
   touchReplicationLivenessSamples,
-  type ReplicationStallEpisode,
 } from './replication-liveness';
 import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
@@ -245,7 +245,6 @@ const loadHiveMembershipStoreModule = memoizeDynamicImport(() => import('../../h
 const loadHarnessRegistryModule = memoizeDynamicImport(() => import('../../harness-registry'));
 const loadHiveMemberIdentitySetModule = memoizeDynamicImport(() => import('./hive-member-identity-set'));
 const loadHiveIdentityModule = memoizeDynamicImport(() => import('../../hive-identity'));
-const loadReplicationStallEiModule = memoizeDynamicImport(() => import('./replication-stall-ei'));
 const loadHiveMembershipAdmissionModule = memoizeDynamicImport(() => import('../../hive-membership-admission'));
 const loadPotCanonicalSlugReconcileModule = memoizeDynamicImport(() => import('../../pot-canonical-slug-reconcile'));
 // `./boot-all` imports THIS module back — a static import would cycle, so this
@@ -283,14 +282,6 @@ const WRITER_PROGRESS_ANNOUNCE_DEBOUNCE_MS = 25;
  * both.
  */
 const DEFAULT_REPLICATION_STALL_GRACE_MS = 3 * 60 * 1000;
-/**
- * EI-18723690188615364: default deferral budget for the post-repair
- * confirmation window's zero-live-peers branch. 5 × the 180s default grace
- * ≈ 15 minutes — far longer than the few-seconds mid-reconnect WI-5481's
- * re-arm exists to ride out, but finite, so a log that never regains a
- * replicator peer stops deferring silently forever.
- */
-const DEFAULT_REPAIR_CONFIRMATION_MAX_DEFERRALS = 5;
 /** Default pending-retry interval (ms). A pending peer is re-checked on this
  *  cadence until it becomes verified, conclusively fails, or exceeds the grace
  *  window. D-006. */
@@ -507,17 +498,8 @@ export interface BootHarnessOpts {
    * arriving" could never fire before that scenario gave up.
    */
   frozenGraceMs?: number;
-  /**
-   * EI-18723690188615364: how many times the post-repair confirmation window
-   * may defer judgment because the sample it landed on showed ZERO live
-   * replicator peers (the WI-5481 mid-reconnect case) before it gives up and
-   * records a `replication_repair_confirmation_abandoned` verdict instead of
-   * re-arming forever in silence. Tests shrink this to exercise the bound
-   * without burning a pass per deferral.
-   * Default `DEFAULT_REPAIR_CONFIRMATION_MAX_DEFERRALS` (5) — ≈15 minutes at
-   * the default 180s grace.
-   */
-  repairConfirmationMaxDeferrals?: number;
+  /** P-531: one actual-progress deadline per remote core (default 30 seconds). */
+  replicationProgressDeadlineMs?: number;
   /**
    * Test seam — override the read-admission binding check. Production leaves
    * this undefined and the real `buildVerifyBindingAdapter` (verifyAttestation
@@ -1720,6 +1702,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // structurally an AdmittedLog). Remote logs are added on admit (4b).
   const admitted = new Map<string, AdmittedLog>();
   admitted.set(ownLog.keyHex, ownLog);
+  const replicationProgressOwner = new ReplicationProgressOwner(opts.replicationProgressDeadlineMs);
 
   // WI-38376: maximum VERIFIED writer-side length advertised for each admitted
   // remote log. A remote replica's local `length` advances only after blocks
@@ -1727,7 +1710,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // ahead but this replica is frozen." Signed announce re-flushes carry that
   // missing high-water. This map is deliberately separate from `AdmittedLog`:
   // merge reads/cursors continue to use the actual local `log.length`, while
-  // only replication liveness + repair confirmation use the maximum below.
+  // replication diagnostics and the progress owner use the maximum below.
   const advertisedLogHighWater = new Map<string, number>();
   const livenessKnownLength = (log: AdmittedLog): number =>
     Math.max(log.length, advertisedLogHighWater.get(log.keyHex) ?? 0);
@@ -1848,6 +1831,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const droppedLog = admitted.get(logKey);
     admitted.delete(logKey);
     replicationStallState.delete(logKey);
+    replicationProgressOwner.forget(logKey);
+    canonicallySampledLivenessKeys.delete(logKey);
     void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey);
     admittedIdentities.delete(logKey);
     advertisedLogHighWater.delete(logKey);
@@ -2676,506 +2661,81 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // always covers that admission.
   const admissionQueue: QueuedAdmission[] = [];
 
-  // ── WI-3684 repair-on-detect: replication-liveness episode → ACTIVE repair ──
-  // The liveness registry DETECTS a connected-but-dead log (the ef7a8160 class:
-  // swarm holds live connections, the core never attaches a replicator this
-  // process lifetime) but nothing REPAIRED it — every fire was a dead end that
-  // ended in a blind bg-host restart, and each restart-under-load re-rolled the
-  // dice on a differently part-wired plane. The repair for the zombie class is
-  // a SESSION RE-ATTACH: close the stale Corestore session and re-open it,
-  // which re-registers the core with the replication muxer on every live swarm
-  // stream. Episodes fire INSIDE a merge pass (the sampler rides it), and a
-  // re-attach mutates `admitted` — so the handler only ENQUEUES, and
-  // `drainRepairQueue()` applies the swap UNDER the merge gate at the top of
-  // the next pass (the admissionQueue / reverifyDropQueue pattern).
-  //
-  // WI-4241: widened to also cover 'frozen' (replicator attached, writer ahead,
-  // zero ingest progress past grace). Originally scoped to ONLY
-  // 'connected_never_replicated' on the assumption that a re-attach "does not
-  // address" the frozen/blocks-stuck case — but code-tracing the WI-4070/WI-183
-  // stall (mergedPosition stuck at 0 despite a genuine peersCount>0 replicator
-  // peer, tens of thousands of known ops, 21h+) found the opposite: the actual
-  // hang is `read-merge.ts`'s per-op `log.get(pos)` never resolving (timing out
-  // every ~1Hz pass, retry-next-pass forever) — a STALE in-memory Hypercore
-  // replicator-peer object whose block-request channel silently died, which is
-  // exactly the zombie-session state a re-attach exists to fix. 'no_replicator'
-  // (peersCount back to 0) still stays OUT of scope — that already has the
-  // WI-752/WI-1534 swarm self-heal re-peer loop, which operates a level below
-  // (re-establishing the swarm connection itself) and a session re-attach can't
-  // help a peer that isn't connected at all. The attempt cap is per process
-  // lifetime (episodes are edge-latched, so a failed repair cannot storm; the
-  // cap guards the recover→re-stall flap case), shared across both kinds per
-  // log so a log flapping between the two classes can't double the budget.
-  const repairQueue: string[] = [];
-  const repairAttempts = new Map<string, number>();
-  // WI-5340: the episode `kind` that most recently drove a repair enqueue for
-  // this log — read back by drainRepairQueue to label the post-repair
-  // confirmation record (informational only; the confirmation JUDGES success
-  // generically via mergedPosition/peersCount, not by re-checking the kind).
-  const repairEpisodeKind = new Map<string, string>();
-  const REPAIR_MAX_ATTEMPTS_PER_LOG = 3;
-  const REPAIRABLE_EPISODE_KINDS = new Set(['connected_never_replicated', 'frozen']);
-  // WI-5340 (WI-5332 Direction #1): replication-liveness.ts's alarm latches
-  // (alarmedConnectedNever / alarmedFrozen) are EDGE-triggered — dispatchRepair
-  // fires once per false→true transition and the latch clears ONLY on a
-  // genuine observed recovery. If a re-attach does NOT actually fix the
-  // zombie, the latch stays set forever within this process's lifetime, so
-  // dispatchRepair — and therefore `enqueueRepairAttempt` below — never fires
-  // again for that log: `repairAttempts` gets stuck at 1 and the 3-attempt
-  // ladder is structurally unreachable via genuine in-process escalation.
-  //
-  // Fix: track a bounded "did the repair actually work" confirmation window
-  // per logKeyHex, stamped by `drainRepairQueue` right after it applies a
-  // re-attach. `checkRepairConfirmation` (called from the SAME per-log sample
-  // mergeOnePass already takes for `sampleReplicationLiveness`) judges it once
-  // the window elapses and, on failure, calls `enqueueRepairAttempt` DIRECTLY —
-  // bypassing replication-liveness.ts's edge-latch entirely, so a genuinely
-  // ineffective repair reaches attempt 2/3 within a single process lifetime
-  // instead of only via WI-5332's cross-restart durable-EI shortcut.
-  interface RepairConfirmation {
-    /**
-     * Start of the CURRENT judgment window. Note this is RE-STAMPED by the
-     * zero-peers deferral branch (WI-5481) — so it is the window clock, NOT
-     * the incident clock. For "how long has this log actually been broken",
-     * read `repairAppliedAtMs` instead (EI-18723690188615364).
-     */
-    appliedAtMs: number;
-    /**
-     * EI-18723690188615364: when the re-attach this confirmation judges was
-     * APPLIED — set once at stamp time and never re-stamped. The elapsed time
-     * from here to the outcome IS the true incident duration, and nothing else
-     * in the system records it: the repair-applied line reads as a 3-second
-     * incident while the real user-visible outage ran ~8.5 minutes.
-     */
-    repairAppliedAtMs: number;
-    /** mergedPosition observed at that moment — "did it advance since" is the test. */
-    baselinePosition: number;
-    kind: string;
-    /**
-     * EI-18723690188615364: how many times the zero-peers branch has deferred
-     * judgment and re-armed. Bounded by REPAIR_CONFIRMATION_MAX_DEFERRALS so a
-     * log cannot sit in silent, self-perpetuating deferral forever.
-     */
-    deferrals: number;
-  }
-  const repairConfirmations = new Map<string, RepairConfirmation>();
-  /**
-   * EI-18723690188615364: the deferral budget for the zero-peers branch of
-   * `checkRepairConfirmation`. WI-5481 made that branch RE-ARM instead of
-   * discard (correct — a `connected_never_replicated` repair forces a topic
-   * rejoin, so the judged session is usually mid-reconnect with zero peers for
-   * a few seconds right when grace elapses), but it re-armed UNBOUNDEDLY and
-   * silently: a log that never regains a replicator peer defers forever and
-   * emits nothing, indistinguishable from a healthy recovery.
-   *
-   * 5 deferrals × REPLICATION_STALL_GRACE_MS (180s default) ≈ 15 minutes —
-   * orders of magnitude more than the few-seconds reconnect WI-5481 exists to
-   * ride out, so the fix it landed is fully preserved. Past that budget the
-   * confirmation is ABANDONED (recorded, not silently dropped) rather than
-   * escalated: a log with a permanently-zero replicator count is the
-   * `no_replicator` axis, owned by WI-752/WI-1534's swarm self-heal re-peer
-   * loop — synthesizing more session re-attaches at it would be a retry storm
-   * against a subsystem that is already handling it.
-   */
-  const REPAIR_CONFIRMATION_MAX_DEFERRALS =
-    opts.repairConfirmationMaxDeferrals ?? DEFAULT_REPAIR_CONFIRMATION_MAX_DEFERRALS;
-  // EI-13317 rung (b): harness-level cooldown for the repair-exhaustion →
-  // forced-rejoin escalation below (NOT per-log — several admitted logs on
-  // the same topic can stall together, and a topic-level rejoin already
-  // covers all of them at once, so only ONE rejoin should fire per cooldown
-  // window regardless of how many logs are involved). Deliberately SHORTER than
-  // swarm.ts's 300s severed-link cadence: replication_soak (WI-5481) kills/
-  // restarts a peer roughly every 90s and a connected_never_replicated
-  // (zombie-socket) stall must recover WITHIN that 90s SLA every cycle — a 300s
-  // cooldown gates every rejoin but the first, failing cycles 2..N. forceRejoin
-  // is edge-latched (fires off a stall episode, not a timer) and only evicts idle
-  // sockets + re-announces, so a 30s floor is safe from a rejoin storm.
-  const REJOIN_ESCALATION_COOLDOWN_MS = 30_000;
-  let lastRejoinEscalationMs = 0;
-  // Escalate to the heavier topic-level forced rejoin (swarm.ts's
-  // SwarmHandle.forceRejoin — the same lever rung (a)'s severed-link
-  // escalation uses, triggered here off REPLICATION liveness instead of
-  // zero-live-peers, which this failure shape never trips). Rate-limited
-  // HARNESS-WIDE (not per-log — several admitted logs on the same topic can
-  // stall together, and a topic-level rejoin already covers all of them at
-  // once). `swarmHandle` is declared later in this function scope (assigned
-  // once the join resolves) but by the time an episode can fire — mid a
-  // merge pass, which requires the join to have already happened — it is
-  // always set; same forward-reference pattern already used for
-  // `swarmHandle?.liveConnectionCount` in the replication-liveness sampler
-  // below. Shared by two callers (WI-5332): the in-process budget-exhausted
-  // path below, and the cross-restart chronic-zombie path.
-  function escalateToForcedRejoin(logKeyHex: string, kind: string, eventMessage: string): void {
-    const now = Date.now();
-    if (now - lastRejoinEscalationMs < REJOIN_ESCALATION_COOLDOWN_MS) {
-      // WI-5639 (bug-drain-200k): this early-return used to be completely
-      // silent — a genuinely NEW stall that arrives within the harness-wide
-      // cooldown window of an EARLIER, unrelated rejoin gets no forced-rejoin
-      // (by design: the cooldown assumes the earlier rejoin already covers
-      // it), but nothing recorded that the skip happened. That left a
-      // structurally unanswerable question during soak-SLA-miss triage:
-      // "did this stall's prompt escalation actually get skipped by the
-      // cooldown, or did it never reach here at all?" console.info (not
-      // .warn/.error) for the same reason the success log below is
-      // unguarded — meant to be always-on/grep-able, not test-suppressed.
-      console.info(
-        `[replication-liveness] repair-exhausted: forced-rejoin SKIPPED (cooldown ` +
-          `${Math.round((REJOIN_ESCALATION_COOLDOWN_MS - (now - lastRejoinEscalationMs)) / 1000)}s ` +
-          `remaining) log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${kind} — ` +
-          `assuming the earlier rejoin within this window already covers this stall`,
-      );
-      return;
-    }
-    lastRejoinEscalationMs = now;
-    recordBootEvent(opts.workspaceId, opts.harnessSlug, 'replication_repair_exhausted', eventMessage);
-    // console.info (not .error/.warn) — matches the repair-on-detect success
-    // log just below (drainRepairQueue) which is also unguarded: this file's
-    // vitest suite runs under vitest-fail-on-console (shouldFailOnError/Warn),
-    // and this diagnostic is meant to be always-on/grep-able in production
-    // logs (same rationale as that line), not a test-suppressed console.error.
-    // WI-6324: report whether the swarm handle is actually ATTACHED. `void
-    // swarmHandle?.forceRejoin()` swallows an unset handle silently — no promise is
-    // created, so the `.catch` below never runs — which made "rejoin dispatched" and
-    // "rejoin never attempted" produce byte-identical logs. The comment above claims
-    // the handle is always set by the time an episode can fire; this makes that
-    // claim OBSERVABLE instead of assumed, in production as well as under test.
-    console.info(
-      `[replication-liveness] repair-exhausted: forcing topic rejoin ` +
-        `log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${kind} ` +
-        `swarm=${swarmHandle ? 'attached' : 'UNSET (rejoin NOT dispatched)'}`,
-    );
-    void swarmHandle?.forceRejoin().catch((e) => {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'replication_repair_rejoin_failed',
-        `${e instanceof Error ? e.message : String(e)}`,
-      );
+  // P-531: one owner issues repairs. Liveness episodes remain diagnostics.
+  const repairQueue: Array<{ repair: ReplicationProgressRepair; log: AdmittedLog }> = [];
+  let lastProgressRejoinAtMs = -Infinity;
+
+  function sampleReplicationProgress(log: AdmittedLog): void {
+    const received = (log as Partial<RemoteLog>).contiguousLength ?? 0;
+    const repair = replicationProgressOwner.sample({
+      keyHex: log.keyHex,
+      knownLength: livenessKnownLength(log),
+      // Sparse snapshot cores can have a zero contiguous prefix. Only actual
+      // receive/apply progress renews the deadline, never announce traffic.
+      position: Math.max(received, mergeCursor.positions.get(log.keyHex) ?? 0),
+      nowMs: Date.now(),
     });
-  }
-  /**
-   * WI-5340: the shared "enqueue a session-repair attempt for this log" path —
-   * extracted from the replication-liveness episode handler so
-   * `checkRepairConfirmation` (a SECOND caller, driven by the post-repair
-   * confirmation window rather than a fresh liveness episode) shares the
-   * exact same cap/exhaustion/chronic-zombie ladder instead of duplicating it.
-   */
-  function enqueueRepairAttempt(logKeyHex: string, kind: string): void {
-    const attempts = repairAttempts.get(logKeyHex) ?? 0;
-    if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) {
-      // Session-level re-attach is exhausted for this log and it has STILL
-      // re-stalled (the gate-run-050615 shape: swarm re-pairs repeatedly,
-      // content replication never re-attaches — a per-log Corestore session
-      // swap alone didn't fix it).
-      escalateToForcedRejoin(
-        logKeyHex,
-        kind,
-        `${peerLabel(logKeyHex)} repair budget exhausted ` +
-          `(${REPAIR_MAX_ATTEMPTS_PER_LOG}/${REPAIR_MAX_ATTEMPTS_PER_LOG}) and re-stalled ` +
-          `(${kind}) — forcing topic rejoin`,
-      );
-      return;
-    }
-    // WI-5332: this process's FIRST episode for this log — check whether a
-    // durable EI is ALREADY open for this exact (harness, log, kind). Open
-    // means a PRIOR process instance already stalled on this same zombie and
-    // no recovery has been observed since (an EI only clears on genuine
-    // ingest/replicator recovery — see replication-liveness.ts) — i.e. this
-    // is not a fresh stall, it is the SAME chronic zombie surviving a process
-    // restart. `repairAttempts` is a per-process-lifetime Map (mechanism (a)
-    // in the item body): under restart-cadence disruption (a real sidecar
-    // restart, or the live-fed-gate rig's restart_durability /
-    // reconnect_catchup scenarios) it resets to 0 before ever reaching
-    // REPAIR_MAX_ATTEMPTS_PER_LOG, so without this check the forced-rejoin
-    // escalation above is structurally unreachable exactly when the
-    // condition is chronic (every restart amnesties the budget). Best-effort
-    // and fire-and-forget — never blocks the ordinary in-budget repair
-    // enqueued below; a check failure/timing miss just falls back to the
-    // ordinary per-process ladder for this cycle.
-    if (attempts === 0) {
-      void (async () => {
-        let alreadyChronic = false;
-        try {
-          const m = await loadReplicationStallEiModule();
-          alreadyChronic = await m.hasOpenReplicationStallEi({
-            harnessSlug: opts.harnessSlug,
-            logKeyHex,
-            kind: kind as ReplicationStallEpisode['kind'],
-          });
-        } catch {
-          /* best-effort — falls back to the ordinary per-process ladder */
-        }
-        if (!alreadyChronic) return;
-        // The local budget is moot for a proven-chronic zombie — mark it
-        // exhausted too so a same-process re-stall after this also escalates
-        // immediately instead of waiting through another 3-attempt cycle.
-        repairAttempts.set(logKeyHex, REPAIR_MAX_ATTEMPTS_PER_LOG);
-        escalateToForcedRejoin(
-          logKeyHex,
-          kind,
-          `${peerLabel(logKeyHex)} chronic zombie (${kind}): a durable EI for ` +
-            `this exact log is already open from a PRIOR process instance — restart-cadence ` +
-            `disruption would otherwise amnesty the session-repair budget every restart ` +
-            `(WI-5332) — forcing topic rejoin without re-running it`,
-        );
-      })();
-    }
-    repairEpisodeKind.set(logKeyHex, kind);
-    repairAttempts.set(logKeyHex, attempts + 1);
-    if (!repairQueue.includes(logKeyHex)) repairQueue.push(logKeyHex);
+    if (repair) repairQueue.push({ repair, log });
   }
 
-  /**
-   * WI-5340: judge a completed repair once its confirmation window elapses.
-   * Called from mergeOnePass's per-log sample (the SAME data
-   * `sampleReplicationLiveness` already reads) — never on its own timer, so
-   * it can only ever run at most once per merge pass per log, and only while
-   * a confirmation is outstanding (the common case is a no-op Map lookup).
-   *
-   * Genuine recovery (ingest resumed OR caught up) clears the confirmation
-   * and does nothing further — replication-liveness.ts's own recovery branch
-   * independently clears ITS latch off the same sample, so the two are
-   * consistent without coordinating directly. Otherwise: the repair did NOT
-   * work — synthesize the next attempt via `enqueueRepairAttempt` directly,
-   * which is precisely the call replication-liveness.ts's edge-latch cannot
-   * make again on its own while still alarmed.
-   *
-   * WI-5481 (live-fed gate stamp=171739): a log with ZERO live peers right at
-   * this exact judgment moment used to be treated as a permanent bail-out —
-   * `repairConfirmations.delete()` ran unconditionally before the peers-count
-   * check, so a zero-peer sample threw the confirmation away for good and no
-   * later pass ever re-judged this log, even once a peer reconnected. That
-   * is precisely the shape a `connected_never_replicated` repair produces: it
-   * escalates straight to `escalateToForcedRejoin` (evicts the zombie socket
-   * + fresh DHT join), so the very session this confirmation is judging is
-   * almost always mid-reconnect — zero peers for a few seconds — right when
-   * the grace window elapses. Evidence: serve.log showed "repair-on-detect:
-   * re-attached replica session ... (attempt 1/3)" fire promptly after a
-   * forced rejoin, then NO attempt 2/3 and NO exhaustion event for the rest
-   * of the process — yet "recovered ... after 1105s/1080s swarm-connected-
-   * but-dead" eventually fired, meaning the log truly was still stuck long
-   * after grace elapsed; the confirmation had simply already been discarded.
-   * Fix: a zero-peers sample RE-ARMS the confirmation (fresh `appliedAtMs`,
-   * same baseline/kind) instead of deleting it, deferring judgment to a LATER
-   * pass that actually observes a live peer — genuinely permanent
-   * zero-replicator cases (the `no_replicator` axis — WI-752/WI-1534's swarm
-   * self-heal loop, not this ladder) just leave the confirmation re-arming
-   * forever, a harmless no-op Map entry, never retry-storming.
-   */
-  function checkRepairConfirmation(
-    logKeyHex: string,
-    mergedPosition: number,
-    knownLength: number,
-    peersCount: number | undefined,
-  ): void {
-    const confirmation = repairConfirmations.get(logKeyHex);
-    if (!confirmation) return;
-    if (Date.now() - confirmation.appliedAtMs < REPLICATION_STALL_GRACE_MS) return;
-    const advanced = mergedPosition > confirmation.baselinePosition;
-    // WI-6324: `knownLength` is the writer's length AS KNOWN TO OUR REPLICA, so it
-    // only advances when replication is actually DELIVERING. On a zombie connection
-    // that has delivered nothing it stays 0 — and a bare `knownLength <= mergedPosition`
-    // then reads 0 <= 0 as "caught up", i.e. it treats "we know NOTHING about this
-    // peer's log" as "we have EVERYTHING from it". That false confirmation deletes
-    // the confirmation record and disarms the escalation ladder, so the connection
-    // can never recover — in exactly the case the ladder exists for. Observed as a
-    // deterministic red in the connected_never_replicated repro: the trace shows
-    // `repair-confirmed: ingest recovered ... mergedPosition=0` two seconds after
-    // the forced rejoin, and nothing ever lands afterwards.
-    //
-    // Catch-up therefore requires POSITIVE knowledge of the writer. With
-    // knownLength === 0 there is no evidence of recovery, so we fall through to the
-    // still-stalled branches below and the ladder keeps working. This costs nothing
-    // for a genuinely empty log: there is no stall to confirm until something is
-    // written, and the first delivered entry makes knownLength positive.
-    //
-    // NOTE this hazard is why every pre-existing test of this ladder hands it a
-    // writer "well ahead" (length 1000) — the zero case was never exercised.
-    const caughtUp = knownLength > 0 && knownLength <= mergedPosition;
-    // EI-18723690188615364: elapsed since the repair was APPLIED (not since the
-    // current window opened) — the true incident duration, reported on EVERY
-    // outcome below so no branch is silent.
-    const incidentS = Math.round((Date.now() - confirmation.repairAppliedAtMs) / 1000);
-    const deferredNote = confirmation.deferrals > 0 ? ` after ${confirmation.deferrals} zero-peer deferral(s)` : '';
-    if (advanced || caughtUp) {
-      repairConfirmations.delete(logKeyHex);
-      // EI-18723690188615364: genuine recovery used to `return` here having
-      // logged NOTHING. That made the ~6min window between "repair applied" and
-      // real recovery completely unreadable: an operator saw only the
-      // repair-APPLIED line and concluded a 3-second incident, while the real
-      // outage ran ~8.5 minutes. Success and indefinite deferral were both
-      // silent and therefore indistinguishable from each other — the exact
-      // reason WI-5673 stayed misdiagnosed for days. This is the ONLY place the
-      // incident duration is knowable, so it is recorded here.
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'replication_repair_confirmed',
-        `${peerLabel(logKeyHex)} (${confirmation.kind}): repair CONFIRMED ${incidentS}s after it ` +
-          `was applied${deferredNote} — ${
-            advanced
-              ? `ingest resumed (mergedPosition ${confirmation.baselinePosition} → ${mergedPosition})`
-              : `caught up (mergedPosition ${mergedPosition} >= knownLength ${knownLength})`
-          }. That ${incidentS}s IS the real incident duration (the repair-applied line alone reads ` +
-          `as an instant fix) (EI-18723690188615364)`,
-      );
-      // console.info (not .warn/.error) for the same reason as every other
-      // diagnostic in this file: meant to be always-on/grep-able in a banked
-      // serve.log, not suppressed by vitest-fail-on-console.
-      console.info(
-        `[replication-liveness] repair-confirmed: ingest recovered ${incidentS}s after repair` +
-          `${deferredNote} log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} ` +
-          `kind=${confirmation.kind} mergedPosition=${mergedPosition}`,
-      );
-      return;
-    }
-    if ((peersCount ?? 0) <= 0) {
-      // Still no live replicator peer — likely mid-reconnect after the
-      // forced rejoin that applied this repair. Defer judgment instead of
-      // discarding it: re-arm with a fresh window so the NEXT pass that
-      // observes a live peer (or genuine progress) gets the real verdict.
-      //
-      // EI-18723690188615364: this branch was ALSO silent, and self-perpetuating
-      // by design (it re-arms its own window every pass), so a log could sit in
-      // deferral forever emitting nothing. Now bounded AND recorded.
-      confirmation.deferrals += 1;
-      if (confirmation.deferrals > REPAIR_CONFIRMATION_MAX_DEFERRALS) {
-        repairConfirmations.delete(logKeyHex);
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'replication_repair_confirmation_abandoned',
-          `${peerLabel(logKeyHex)} (${confirmation.kind}): ABANDONING repair confirmation ` +
-            `${incidentS}s after the repair was applied — ${REPAIR_CONFIRMATION_MAX_DEFERRALS} ` +
-            `deferral(s) elapsed and this log has NEVER observed a live replicator peer at a ` +
-            `judgment moment, so the re-attach ladder can never judge it. Permanently-zero peers ` +
-            `is the no_replicator axis (WI-752/WI-1534 swarm self-heal re-peer loop), not this ` +
-            `ladder — deliberately NOT synthesizing another attempt (EI-18723690188615364)`,
-        );
-        console.info(
-          `[replication-liveness] repair-confirmation ABANDONED after ` +
-            `${REPAIR_CONFIRMATION_MAX_DEFERRALS} zero-peer deferrals (${incidentS}s since repair) ` +
-            `log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${confirmation.kind} ` +
-            `— no live replicator peer; the no_replicator self-heal loop owns this`,
-        );
-        return;
-      }
-      confirmation.appliedAtMs = Date.now();
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'replication_repair_confirmation_deferred',
-        `${peerLabel(logKeyHex)} (${confirmation.kind}): repair applied ${incidentS}s ago but ZERO ` +
-          `live replicator peers at this judgment moment (likely mid-reconnect after the forced ` +
-          `rejoin) — deferring judgment and re-arming the window ` +
-          `(${confirmation.deferrals}/${REPAIR_CONFIRMATION_MAX_DEFERRALS}) (WI-5481)`,
-      );
-      console.info(
-        `[replication-liveness] repair-confirmation DEFERRED ` +
-          `(${confirmation.deferrals}/${REPAIR_CONFIRMATION_MAX_DEFERRALS}, ${incidentS}s since ` +
-          `repair): zero live peers log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} ` +
-          `kind=${confirmation.kind} — still BROKEN, not recovered`,
-      );
-      return;
-    }
-    repairConfirmations.delete(logKeyHex); // one judgment per applied repair
-    recordBootEvent(
-      opts.workspaceId,
-      opts.harnessSlug,
-      'replication_repair_confirmation_failed',
-      // EI-18723690188615364: this used to read `Date.now() - appliedAtMs`, which
-      // the deferral branch above RE-STAMPS — so after any deferral it under-
-      // reported "repair applied Ns ago" as the time since the last deferral
-      // rather than since the repair. `repairAppliedAtMs` is never re-stamped.
-      `${peerLabel(logKeyHex)} (${confirmation.kind}): repair applied ` +
-        `${incidentS}s ago${deferredNote} but mergedPosition ` +
-        `is still ${mergedPosition} (was ${confirmation.baselinePosition}) with a live replicator ` +
-        `peer — ineffective repair, synthesizing the next attempt directly (WI-5340)`,
-    );
-    enqueueRepairAttempt(logKeyHex, confirmation.kind);
-  }
-
-  setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
-    if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
-    // EI-13317 / WI-5481: connected_never_replicated is the zombie-socket class
-    // (swarm shows live connections but this log has no replicator peer entry —
-    // EI-18726252562537043: that can be EITHER side, our attach or the remote
-    // never serving the core; do not assume it's our attach). A
-    // per-log Corestore session re-attach CANNOT heal a dead socket — only a
-    // forced rejoin (evict the zombie socket + fresh join, so corestore.replicate
-    // re-attaches every log on the new connection) does. The ordinary ladder only
-    // reaches that rejoin after REPAIR_MAX_ATTEMPTS_PER_LOG re-attaches, each
-    // judged after REPLICATION_STALL_GRACE_MS (180s) — ~540s, far past the 90s
-    // replication_soak SLA. So for THIS kind escalate PROMPTLY on the first
-    // episode (deduped harness-wide by escalateToForcedRejoin's own cooldown, so
-    // a later exhaustion/chronic escalation within the window won't double-fire).
-    // Still enqueue the session re-attach below: it is the retry/confirmation
-    // driver AND the heal for the broken-session-over-good-socket sub-case, and
-    // it is the PRIMARY path for `frozen`, which a re-attach DOES heal (WI-4241).
-    if (episode.kind === 'connected_never_replicated') {
-      escalateToForcedRejoin(
-        episode.logKeyHex,
-        episode.kind,
-        `${peerLabel(episode.logKeyHex)} connected_never_replicated (zombie-socket ` +
-          `class) — prompt forced rejoin on first episode, bypassing the session-` +
-          `re-attach ladder that cannot heal a dead socket within the ` +
-          `replication_soak SLA (EI-13317/WI-5481)`,
-      );
-    }
-    enqueueRepairAttempt(episode.logKeyHex, episode.kind);
-  });
-
-  /** Re-attach queued zombie logs. MUST run under the merge gate (mergeOnePass). */
+  /** Session mutations run under the existing serialized merge gate. */
   async function drainRepairQueue(): Promise<void> {
-    while (repairQueue.length > 0) {
-      const keyHex = repairQueue.shift()!;
+    while (!stopped && repairQueue.length > 0) {
+      const { repair, log } = repairQueue.shift()!;
+      const { keyHex } = repair;
       const current = admitted.get(keyHex);
-      // Dropped/revoked between enqueue and drain — the drop IS the resolution
-      // (EI-7788 semantics); and the own log is never repair material.
-      if (!current || keyHex === ownLog.keyHex) continue;
-      const attempt = repairAttempts.get(keyHex) ?? 1;
+      if (!current || current !== log || keyHex === ownLog.keyHex) {
+        replicationProgressOwner.complete(repair, Date.now());
+        continue;
+      }
       try {
-        try {
-          await current.close?.();
-        } catch {
-          // stale-session close is best-effort — the fresh session IS the repair
+        // A dead socket needs a rejoin too. It is one step of this same repair,
+        // shared across the topic's cores, without another retry clock.
+        if (swarmHandle && Date.now() - lastProgressRejoinAtMs >= replicationProgressOwner.deadlineMs) {
+          lastProgressRejoinAtMs = Date.now();
+          console.info('[replication-liveness] progress deadline: forcing topic rejoin ' +
+            'log=' + keyHex.slice(0, 12) + ' harness=' + opts.harnessSlug);
+          try {
+            await raceWithTimeout(swarmHandle.forceRejoin(), UPDATE_TIMEOUT_MS);
+          } catch (e) {
+            recordBootEvent(opts.workspaceId, opts.harnessSlug, 'replication_repair_rejoin_failed',
+              e instanceof Error ? e.message : String(e));
+          }
         }
-        const fresh = await (opts.openRemoteLogOverride ?? openRemoteLog)(store, keyHex);
+        try {
+          if (current.close) await raceWithTimeout(current.close(), UPDATE_TIMEOUT_MS);
+        } catch {
+          // A stale close must not prevent opening the replacement session.
+        }
+        if (stopped || admitted.get(keyHex) !== current) continue;
+        const opening = (opts.openRemoteLogOverride ?? openRemoteLog)(store, keyHex);
+        let expired = false;
+        // A timed-out open may resolve later. Close that orphan, never install it.
+        void opening.then((fresh) => {
+          if (expired) void fresh.close?.().catch(() => {});
+        }, () => {});
+        let fresh: RemoteLog;
+        try {
+          fresh = await raceWithTimeout(opening, UPDATE_TIMEOUT_MS);
+        } catch (e) {
+          expired = true;
+          throw e;
+        }
+        if (stopped || admitted.get(keyHex) !== current) {
+          void fresh.close?.().catch(() => {});
+          continue;
+        }
         admitted.set(keyHex, fresh);
-        // WI-5340: stamp a post-repair confirmation baseline — judged by
-        // `checkRepairConfirmation` once REPLICATION_STALL_GRACE_MS has
-        // elapsed (mergeOnePass's per-log sample). Overwrites any PRIOR
-        // outstanding confirmation for this log (this repair supersedes it).
-        const appliedNowMs = Date.now();
-        repairConfirmations.set(keyHex, {
-          appliedAtMs: appliedNowMs,
-          // EI-18723690188615364: the immutable incident clock — `appliedAtMs`
-          // is re-stamped by the zero-peers deferral branch, this is not.
-          repairAppliedAtMs: appliedNowMs,
-          baselinePosition: mergeCursor.positions.get(keyHex) ?? 0,
-          kind: repairEpisodeKind.get(keyHex) ?? 'frozen',
-          deferrals: 0,
-        });
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'replication_repair',
-          `re-attached replica session ${peerLabel(keyHex)} after connected_never_replicated ` +
-            `(attempt ${attempt}/${REPAIR_MAX_ATTEMPTS_PER_LOG})`,
-        );
-        console.info(
-          `[replication-liveness] repair-on-detect: re-attached replica session ` +
-            `log=${keyHex.slice(0, 12)}… harness=${opts.harnessSlug} ` +
-            `(attempt ${attempt}/${REPAIR_MAX_ATTEMPTS_PER_LOG})`,
-        );
+        recordBootEvent(opts.workspaceId, opts.harnessSlug, 'replication_repair',
+          're-attached replica session ' + peerLabel(keyHex) +
+          ' after ' + repair.stalledForMs + 'ms without progress; generation=' + repair.generation +
+          ' position=' + repair.position + ' writer=' + repair.knownLength);
       } catch (e) {
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'replication_repair_failed',
-          `${peerLabel(keyHex)} (attempt ${attempt}/${REPAIR_MAX_ATTEMPTS_PER_LOG}): ` +
-            `${e instanceof Error ? e.message : String(e)}`,
-        );
+        recordBootEvent(opts.workspaceId, opts.harnessSlug, 'replication_repair_failed',
+          peerLabel(keyHex) + ': ' + (e instanceof Error ? e.message : String(e)));
+      } finally {
+        // Failed opens retry on the same bound; revocation fences late completion.
+        replicationProgressOwner.complete(repair, Date.now());
       }
     }
   }
@@ -3266,6 +2826,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             advertisedLogHighWater.set(frame.log_core_key, frame.log_length);
           }
         }
+        sampleReplicationProgress(admitted.get(frame.log_core_key)!);
         // WI-10002600: the replacement log is admitted; now retire the log(s) its device
         // re-keyed away from. Merge-gated (we are inside drainAdmissionQueue).
         await applyLogSupersession(frame);
@@ -4134,12 +3695,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // merge lock; this only applies its conclusive-fail results under the gate.
       drainReverifyDropQueue();
 
-      // WI-3684 repair-on-detect: apply queued zombie-log session re-attaches
-      // under the same gate (see drainRepairQueue above) — the liveness episode
-      // that enqueued them fired inside a PRIOR pass.
-      markMergeStage('drain-repairs');
-      await drainRepairQueue();
-
       // ── Revocation refresh BEFORE collecting the merge set (G7 fix) ──
       // A published revocation that has propagated to this peer's loader (e.g.
       // A's revoked_pubkeys row federated to B's PG) must drop the revoked
@@ -4165,6 +3720,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           `revocation-refresh: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
+
+      // Revocations win over queued repairs, before any session is reopened.
+      markMergeStage('drain-repairs');
+      await drainRepairQueue();
 
       const logs: AdmittedLog[] = [];
       const rawLogsByKey = new Map<string, AdmittedLog>();
@@ -4448,7 +4007,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             },
           );
           canonicallySampledLivenessKeys.add(log.keyHex);
-          checkRepairConfirmation(log.keyHex, livenessMergedPosition, knownWriterLength, livenessPeersCount);
+          sampleReplicationProgress(log);
         } catch {
           // diagnostic-only — swallow
         }
@@ -4958,6 +4517,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (stopped) return;
     for (const log of admitted.values()) {
       if (log.keyHex === ownLog.keyHex) continue;
+      sampleReplicationProgress(log);
       if (!canonicallySampledLivenessKeys.has(log.keyHex)) continue;
       try {
         const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
@@ -4983,6 +4543,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // Diagnostic/repair sampling must never interrupt the booted handle.
       }
     }
+    if (repairQueue.length > 0) void mergeNow();
   };
   // Poll-driven merge cadence. The revocation refresh now runs INSIDE mergeNow
   // under the merging lock (see above), so the poll-timer callback only needs
@@ -6753,6 +6314,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     },
     async close() {
       stopped = true;
+      replicationProgressOwner.clear();
+      repairQueue.length = 0;
       // WI-10002836: a compaction still QUEUED for a fold slot must not hold close() hostage.
       ownCompactionAbort.abort();
       if (writerProgressAnnounceTimer) {

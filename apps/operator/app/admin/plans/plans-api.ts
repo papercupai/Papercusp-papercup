@@ -257,6 +257,7 @@ export interface PlanListRow {
 
 export interface PlanItem {
   id: string;
+  anchors?: import('../../../../../packages/operator-core/lib/plan-items/anchors').PlanItemAnchor[];
   storedStatus: ItemStatus;
   effectiveStatus: ItemStatus;
   text: string;

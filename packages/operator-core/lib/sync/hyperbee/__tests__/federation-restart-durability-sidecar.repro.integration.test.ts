@@ -1242,7 +1242,7 @@ describe('MEMBER→OWNER content guard (WI-5481 scope-extension) — member-auth
  * grace from `replicationStallGraceMs`, so shortening the latter no longer
  * affects this detector (and must not make the other liveness axes false-fire).
  */
-describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — a live swarm connection that genuinely never replicates, detected + evicted + recovered via the REAL repair ladder (no manual intervention)', () => {
+describe('connected_never_replicated ZOMBIE-SOCKET repro (P-531) — a live swarm connection that never replicates, recovered by the progress owner (no manual intervention)', () => {
   it(
     "member's FIRST connection never replicates (sidecarOffloadOverride) — content does not land while zombied, then the real connected_never_replicated -> forceRejoin path recovers it on the very next (fresh) connection",
     async () => {
@@ -1259,7 +1259,7 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       cleanups.push(() => errorSpy.mockRestore());
 
-      // boot.ts's escalateToForcedRejoin logs this EXACT line (console.info)
+      // boot.ts's progress owner logs this EXACT line (console.info)
       // the moment it actually calls swarmHandle.forceRejoin() — spying on it
       // gives the zombie override a precise, non-racy signal for "has the
       // REAL production escalation fired yet", instead of guessing off a
@@ -1286,7 +1286,7 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
           infoTrace.push(line);
           if (infoTrace.length > 40) infoTrace.shift();
         }
-        if (line.includes('repair-exhausted: forcing topic rejoin')) {
+        if (line.includes('progress deadline: forcing topic rejoin')) {
           forceRejoinFired = true;
         }
       });
@@ -1423,6 +1423,7 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
           announceIdentityOverride: idMember.override,
           mergePollMs: MERGE_POLL_MS,
           connectedNeverReplicatedGraceMs: GRACE_MS,
+          replicationProgressDeadlineMs: GRACE_MS,
           allowReplicationLivenessTimerInTest: true,
           sidecarOffloadOverride,
         },
@@ -1494,7 +1495,7 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
       // member actually opened — so it stays at 1 exactly when no fresh connection
       // followed the escalation. ATTRIBUTION ONLY: this changes no pass/fail verdict.
       const stalledStage = !forceRejoinFired
-        ? 'DETECT — the connected_never_replicated escalation never fired at all (no "repair-exhausted: forcing topic rejoin" log). Suspect the replication-liveness/ladder half, NOT the swarm.'
+        ? 'DETECT — the progress deadline never fired (no "progress deadline: forcing topic rejoin" log). Inspect signed inventory and the progress owner.'
         : memberConnAttempts <= 1
           ? 'REJOIN — the escalation fired and logged, but the member never opened a second connection (memberConnAttempts is still 1). boot.ts logs that line immediately BEFORE `void swarmHandle?.forceRejoin()`, so this is what it looks like when forceRejoin is never actually invoked (an unset swarmHandle is swallowed by the `?.`) or resolves without dialing. Suspect swarm.ts forceRejoinNow / its eviction sweep, NOT the detector.'
           : 'REPLICATE — a fresh connection DID open after the escalation (memberConnAttempts > 1) yet content still never landed: the reconnect is not resuming core replication (core likely still bound to the dead muxer). Suspect the admit -> addRemoteCore -> session.replicate(muxer) re-attach path.';

@@ -337,7 +337,16 @@ interface ResumeReadDiagnostics {
   startedAtMs: number;
   phaseMs: Record<string, number>;
   phaseOutcomes: Record<string, string>;
+  phaseErrors?: Record<string, string>;
   label?: string;
+}
+
+function summarizeResumePhaseError(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  const code = error !== null && typeof error === 'object' && 'code' in error
+    && typeof error.code === 'string' ? error.code.slice(0, 32) : '';
+  const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 160);
+  return [name, code ? `[${code}]` : '', message].filter(Boolean).join(': ');
 }
 
 async function timeResumeReadPhase<T>(diagnostics: ResumeReadDiagnostics | undefined, phase: string,
@@ -349,7 +358,11 @@ async function timeResumeReadPhase<T>(diagnostics: ResumeReadDiagnostics | undef
     if (diagnostics) diagnostics.phaseOutcomes[phase] = 'completed';
     return value;
   } catch (error) {
-    if (diagnostics) diagnostics.phaseOutcomes[phase] = 'error';
+    if (diagnostics) {
+      diagnostics.phaseOutcomes[phase] = 'error';
+      diagnostics.phaseErrors ??= {};
+      diagnostics.phaseErrors[phase] = summarizeResumePhaseError(error);
+    }
     throw error;
   } finally {
     if (diagnostics) diagnostics.phaseMs[phase] = Date.now() - startedAt;
@@ -516,6 +529,7 @@ function logResumeContextDiagnostic(level: 'info' | 'warn', event: string, diagn
   const line = '[' + (diagnostics.label ?? 'code-intel-resume-context') + '] '
     + JSON.stringify({ event, readId: diagnostics.readId, elapsedMs, timeoutMs,
     phaseMs: { ...diagnostics.phaseMs }, phaseOutcomes: { ...diagnostics.phaseOutcomes },
+    ...(Object.keys(diagnostics.phaseErrors ?? {}).length ? { phaseErrors: { ...diagnostics.phaseErrors } } : {}),
     ...(errorMessage ? { errorMessage: errorMessage.slice(0, 200) } : {}) });
   if (level === 'warn') console.warn(line);
   else console.info(line);

@@ -2,6 +2,7 @@ import { papercuspPath } from '@papercusp/host-platform/home';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { ticketFilingIntegrationInstrument } from './capability-verbs/ticket-filing-instrument';
+import { liveForkserverInstrument } from './fleet/forkserver/live-instrument';
 /**
  * Rubric instrument registry (test-rubric-unification-2026-10-12 P-005 / R-5, plan D-006).
  *
@@ -791,6 +792,8 @@ export function platformComputedInstrumentKeys(): string[] {
 export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> {
   const registry = new Map<string, RegisteredInstrument>();
   for (const instrument of COMMAND_INSTRUMENTS) registry.set(instrument.key, instrument);
+  const liveForkserver = liveForkserverInstrument(resolveAgentWorkspaceRoot({}));
+  registry.set(liveForkserver.key, liveForkserver);
   registry.set(BM25_LATENCY_INSTRUMENT_KEY, {
     key: BM25_LATENCY_INSTRUMENT_KEY, evaluator: 'artifact',
     description: 'Validate the original R-1 operational bakeoff bytes and derive separate R-2 p95 / R-3 p50 outcomes. Retained artifact provenance stays self-reported.',

@@ -62,7 +62,6 @@ import {
   MemoryTimeoutError,
   isMemoryDegraded,
   noteMemoryFailure,
-  withMemoryTimeout,
   createMemoryWorkDeadline,
   type MemoryWorkDeadline,
   type MemoryTimeoutTelemetry,
@@ -280,22 +279,25 @@ type InjectionMemoryEntry = MemoryEntry & { injectionText?: string };
 async function applyStoredMemoryStaleness(
   entries: MemoryEntry[],
   workspaceId: string,
+  deadline: MemoryWorkDeadline,
 ): Promise<InjectionMemoryEntry[]> {
   if (entries.length === 0) return entries;
+  // Advisory hygiene gets one short child lifetime, including flag resolution
+  // and module loading. Its expiry must not abort the parent's useful recall;
+  // reserve most of the remaining lifetime for filtering and rendering.
+  const advisory = createMemoryWorkDeadline(Math.min(100, deadline.remainingMs() / 4), deadline.signal);
   try {
-    const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
-    if (!(await getFlag(FLAGS.MEMORY_STALENESS_IN_RECALL, systemDistinctId()))) return entries;
+    const [{ FLAGS }, { getFlag }] = await advisory.run(
+      () => Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]), 'staleness',
+    );
+    if (!(await advisory.run(() => getFlag(FLAGS.MEMORY_STALENESS_IN_RECALL, systemDistinctId()), 'staleness'))) return entries;
 
     const ids = entries.map((entry) => entry.id).filter((id): id is string => typeof id === 'string' && id.length > 0);
     if (ids.length === 0) return entries;
 
-    const { loadMemoryStaleness, applyMemoryStaleness } = await import('./recall-staleness');
+    const { loadMemoryStaleness, applyMemoryStaleness } = await advisory.run(() => import('./recall-staleness'), 'staleness');
     const { sql } = getOrgPg();
-    const verdicts = await withMemoryTimeout(
-      loadMemoryStaleness(sql, ids),
-      'memory staleness',
-      MEMORY_INJECT_TIMEOUT_MS,
-    );
+    const verdicts = await advisory.run(() => loadMemoryStaleness(sql, ids), 'staleness');
     const rows = applyMemoryStaleness(
       entries.map((entry) => ({ ...entry, memory: entry.text })),
       verdicts,
@@ -309,6 +311,8 @@ async function applyStoredMemoryStaleness(
     // Anchor verdicts are advisory hygiene. A flag, table, PG, or timeout
     // failure must never suppress an otherwise healthy memory injection.
     return entries;
+  } finally {
+    advisory.close();
   }
 }
 
@@ -1327,7 +1331,7 @@ async function buildBlockInner(
     ranked = shapeIdentityPackageHits(ranked, pinnedPackResources);
     const tStaleness = Date.now();
     try {
-      ranked = await deadline.run(() => applyStoredMemoryStaleness(ranked, input.workspaceId), 'staleness');
+      ranked = await applyStoredMemoryStaleness(ranked, input.workspaceId, deadline);
     } finally {
       mark('stalenessMs', Date.now() - tStaleness);
     }

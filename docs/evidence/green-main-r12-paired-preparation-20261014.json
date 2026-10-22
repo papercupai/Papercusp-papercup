@@ -3683,6 +3683,116 @@
     "recurrenceGuard": "Run both existing maintained identity guards after future evidence appends; do not add exceptions."
   },
   "currentNativeNpmLifecycleDiagnostics20261022": {
+    "configuredShellFixtureOracle20261022": {
+      "workItemId": "WI-6554700010020339",
+      "relatedProofWorkItemId": "WI-6554700010020304",
+      "status": "configured-shell-independent-oracle-verified-current-local-clean-proof-pending",
+      "finding": "Canonical mutant row21766148 passes the configured-Bash case while the four sh cases fail the coordinated script/argv relabelling. That branch only checked command identities.",
+      "fix": "Snapshot the configured-Bash and original sh fixture manifests before invoking either receipt writer; compare each returned lifecycle population, script, argv and cwd with its independent fixture/native input. The sixteen selected cases and eleven rejection controls remain unchanged.",
+      "test": {
+        "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "beforeSha256": "ecf7688160eed7838abfd1e5a1159e0167fd943b42034a8073d5438f541d8a91",
+        "afterSha256": "4305843c2ee260e0f17cf938ce770c980581ff90db7ac7f5d2d84f44923cc547"
+      },
+      "subject": {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "canonicalBeforeAndAfterSha256": "65d6f63a2aba55475c498c35920b8d48ea653ad4098e41cf27b3f72d900489e7",
+        "priorMeasuredSameExpressionMutantSha256": "8fa4ef558233ba6e9c13194f50d2f215c63f42af25fd9509d8728a35a9f3e9d2"
+      },
+      "before": {
+        "ledgerRowId": 21766148,
+        "configuredBashCase": "pass",
+        "totalPassed": 12,
+        "totalFailed": 4,
+        "canonicalCaseReadback": true
+      },
+      "after": {
+        "probeInvocationId": "79bbf4a1-354c-443d-ad06-2e10535564df",
+        "sourceHead": "f82dd44cc42fa5690b64eec05a1f0ac6ef7ff693",
+        "log": {
+          "ref": "~/.papercusp/scratch/c0523-lifecycle-bash-oracle-20261022-v1.log",
+          "sha256": "7f6910f297fb8be58caff701faf151fd8a0d315e8cb6ae3d38702d4a70061c8c",
+          "byteLength": 369541
+        },
+        "runner": {
+          "path": "scripts/mutation-probe.sh",
+          "sha256": "ffb64b6dad3f3481546b77179b1c05ddc08e44726a69e5d4e45ddb60016f3e1e",
+          "exitCode": 0
+        },
+        "nativePhases": [
+          {
+            "phase": "baseline",
+            "ledgerRowId": 21769419,
+            "passed": 16,
+            "failed": 0,
+            "explicitUnselected": 287,
+            "nativeExitCode": 0
+          },
+          {
+            "phase": "copy-baseline",
+            "ledgerRowId": 21770180,
+            "passed": 16,
+            "failed": 0,
+            "explicitUnselected": 287,
+            "nativeExitCode": 0
+          },
+          {
+            "phase": "mutant",
+            "ledgerRowId": 21770431,
+            "passed": 11,
+            "failed": 5,
+            "explicitUnselected": 287,
+            "nativeExitCode": 1
+          }
+        ],
+        "result": {
+          "verdict": "caught",
+          "expected": "caught",
+          "guardExit": 1,
+          "mutantParse": "ok",
+          "assertionEvidence": "test-file-assertion-failure",
+          "relocation": "overlay"
+        },
+        "changedCase": "native npm lifecycle diagnostics > native-npm-shell-identity: preserves an actually configured bash shell without relabelling the original sh capture",
+        "failedAssertion": "Expected the independent fixture pretest script; actual emitted script was unobserved command. Native assertion location is maintained test line140.",
+        "ledgerReadback": "The three exact canonical rows retain pass/pass/fail, common sourceHead, worktreeDirty=true and isScratchConfig=false. Native logs supply per-leg counts and exact1/1/substitution0. No acceptance binding was written.",
+        "containment": {
+          "status": "partial",
+          "overlays": 58,
+          "uncovered": 2080,
+          "failedOverlays": 0,
+          "changedUncoveredPaths": [
+            {
+              "phase": "copy-baseline",
+              "path": ".mcp.json"
+            },
+            {
+              "phase": "mutant",
+              "path": ".mcp.json"
+            }
+          ],
+          "writerAttribution": "unknown; the marker does not distinguish the guard from a concurrent platform writer",
+          "followup": "EI-26690578802975885"
+        }
+      },
+      "typecheck": {
+        "command": "node scripts/lint-tsc.mjs --files=packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "exitCode": 0,
+        "namedFiles": 1,
+        "errors": 0,
+        "log": {
+          "ref": "~/.papercusp/scratch/c0523-lifecycle-bash-oracle-tsc-20261022-v1.log",
+          "sha256": "c41b57fd5bfc3e2fc322814ab98650f3ea518a054500fa41274522c282de91ff",
+          "byteLength": 1562
+        }
+      },
+      "limits": [
+        "Dirty current-local test proof only; no clean committed clause@2 binding, complete containment, runtime/import/dependency/environment closure or shipment claim.",
+        "Previously saved independentFixtureOracle20261022 and clause@1/label-only runs retain their original test bodies and pins. Current guard uses afterSha256 above.",
+        "287 cases remain unselected per principal leg. Original twelve fixture skips, authentic per-step streams/reports and ordered-reader compatibility remain unqualified.",
+        "EI-26674110593853508, engine review, D020/P006, six forms, P018, P028, P031/D045 and final shipment remain open obligations."
+      ]
+    },
     "independentFixtureOracle20261022": {
       "workItemId": "WI-6554700010020339",
       "parentWorkItemId": "WI-6554700010010682",

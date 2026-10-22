@@ -2307,7 +2307,10 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   run_snapshot_command() {
     local phase="$1" label="$2" snapshot="$3" template="$4" output="$5" target cmd rc
     SNAPSHOT_RUN=$((SNAPSHOT_RUN + 1))
-    target="$SCRATCH/snapshot-run-$SNAPSHOT_RUN$SNAPSHOT_EXT"
+    # Keep the basename as well as its language extension: test routers require
+    # compound suffixes such as .test.ts/.spec.ts/.node-test.mts before loading.
+    # A plain snapshot-run-N.ts is rejected before any assertion can execute.
+    target="$SCRATCH/snapshot-run-$SNAPSHOT_RUN-${FILE##*/}"
     cp -p "$snapshot" "$target" || die "could not stage $phase snapshot copy"
     cmd="${template//\{\}/$target}"
     run_guard "$phase" "$label" "$cmd" "$output"

@@ -23,6 +23,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, w
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ACCOUNT_ROUTING_MODE_ENV,
@@ -372,15 +373,56 @@ describe('psu Claude launch native-compaction switches (R-6, D-004)', () => {
     for (const src of ungated) expect(addendumGatedSuccessorSites(src)).toEqual([]);
   });
 
-  // Critique 2 R-6(b) / D-004: the switches psu sets must be names the installed
-  // Claude Code binary actually reads, or a CLI update could silently turn them
-  // into no-ops. Skipped where no Claude CLI is installed.
-  it.skipIf(!INSTALLED_CLAUDE)('the installed Claude CLI reads idleCompaction, DISABLE_COMPACT and DISABLE_AUTO_COMPACT', () => {
-    const binary = readFileSync(INSTALLED_CLAUDE!);
-    for (const name of ['idleCompaction', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT']) {
-      expect(binary.includes(name), `${name} in ${INSTALLED_CLAUDE}`).toBe(true);
-    }
-    // Positive control: a name the binary does not contain is reported absent.
-    expect(binary.includes('papercusp-r6-absent-switch-name')).toBe(false);
+  // Execute the installed gate bodies with controlled env/settings. Binary-name
+  // presence alone cannot catch a CLI update that leaves the names but ignores them.
+  // This exercises native decision semantics, not a running session or its timer.
+  it.skipIf(!INSTALLED_CLAUDE)('the installed Claude CLI honors the idle, automatic and manual compaction switches', () => {
+    const source = readFileSync(INSTALLED_CLAUDE!).toString('utf8');
+    const nativeFunction = (text: string, declaration: string, before = text.length) => {
+      const start = text.lastIndexOf(declaration, before);
+      expect(start, declaration).toBeGreaterThanOrEqual(0);
+      const body = text.indexOf('{', start);
+      let depth = 0;
+      for (let end = body; end < text.length; end++) {
+        if (text[end] === '{') depth++;
+        if (text[end] === '}' && --depth === 0) return text.slice(start, end + 1);
+      }
+      throw new Error(`Unterminated installed gate: ${declaration}`);
+    };
+    const idleMarker = source.indexOf('return"compaction_off"');
+    expect(idleMarker, 'installed idle-compaction decision is recoverable').toBeGreaterThan(0);
+    const idleStart = source.lastIndexOf('function ', idleMarker);
+    const idleDecision = nativeFunction(source.slice(idleStart), 'function ', 0);
+    const autoName = idleDecision.match(/if\(!([\w$]+)\(\)\)return"compaction_off"/)![1];
+    const idleName = idleDecision.match(/if\(!([\w$]+)\(\)\)return"idle_compaction_off"/)![1];
+    // Bun embeds several chunks with reused minified names. Resolve the nearby
+    // declarations in this gate's chunk rather than an earlier unrelated chunk.
+    const autoGate = nativeFunction(source, `function ${autoName}()`, idleStart);
+    const idleGate = nativeFunction(source, `function ${idleName}()`, idleStart);
+    const disabledName = autoGate.match(/if\(([\w$]+)\(\)\)return!1/)![1];
+    const disabledGate = nativeFunction(source, `function ${disabledName}()`, idleStart);
+    const truthName = disabledGate.match(/([\w$]+)\(process\.env\.DISABLE_COMPACT\)/)![1];
+    const truthCandidates = [...source.matchAll(new RegExp(`function ${truthName.replace(/\$/g, '\\$') }\\(e\\)`, 'g'))]
+      .map(match => nativeFunction(source, match[0], match.index))
+      .filter(body => body.includes('["1","true","yes","on"]'));
+    expect(truthCandidates).toHaveLength(1);
+    const truthGate = truthCandidates[0];
+    const envAlias = disabledGate.match(/\|\|([\w$]+)\.DISABLE_AUTO_COMPACT/)![1];
+    const settingsName = autoGate.match(/return ([\w$]+)\("autoCompactEnabled"/)![1];
+    const manual = source.match(/description:"Free up context by summarizing the conversation so far",isEnabled:(\(\)=>![\w$]+\(process\.env\.DISABLE_COMPACT\))/)![1];
+    const idleFunctionName = idleDecision.match(/^function ([\w$]+)/)![1];
+    const program = `${truthGate};${disabledGate};${autoGate};${idleGate};${idleDecision};` +
+      `({automatic:${autoName}(),manual:(${manual})(),idle:${idleFunctionName}({mode:'on'},null,0,0,0,()=>false)})`;
+    const decide = (env: Env, idleCompaction = true) => runInNewContext(program, {
+      process: { env },
+      [envAlias]: env,
+      [settingsName]: (key: string, fallback: boolean) => ({ value: key === 'idleCompaction' ? idleCompaction : fallback }),
+    }, { timeout: 1000 }) as { automatic: boolean; manual: boolean; idle: string };
+
+    expect(decide({})).toEqual({ automatic: true, manual: true, idle: 'prefix_changed' });
+    expect(decide({}, false)).toEqual({ automatic: true, manual: true, idle: 'idle_compaction_off' });
+    expect(decide({ DISABLE_AUTO_COMPACT: '1' })).toEqual({ automatic: false, manual: true, idle: 'compaction_off' });
+    expect(decide({ DISABLE_COMPACT: '1' })).toEqual({ automatic: false, manual: false, idle: 'compaction_off' });
+    expect(decide(nativeCompactionEnv('claude'), false)).toEqual({ automatic: false, manual: false, idle: 'compaction_off' });
   });
 });

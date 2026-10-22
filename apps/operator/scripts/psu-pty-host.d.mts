@@ -4798,6 +4798,18 @@ export function unreportedKickoffRefusalStrandsHost({ delivered, headless, recei
     headless: any;
     receipt: any;
 }): boolean;
+/** A provider quota wall is a terminal launch outcome, not an interactive
+ * session. The negative kickoff receipt tells the caller that no member was
+ * started; keeping the rejected PTY host alive after that receipt leaves its
+ * owner parked/wakeable even though every durable wake is deferred by the
+ * latched wall. Tear down that host on every provider-quota rejection,
+ * including visible launches and successfully published receipts. Other
+ * refusals retain their existing lifecycle (capacity can be transient, and a
+ * visible non-quota failure may still be actionable by its attached human). */
+export function terminalKickoffQuotaRefusalEndsHost({ delivered, kickoffReason }: {
+    delivered: any;
+    kickoffReason: any;
+}): boolean;
 /** Reuse the existing closed-loop /mcp walker, with one bounded second chance
  * for a server that was still connecting when the first dialog opened. */
 export function verifyHeadlessRoleMcp(connect: any, attempts?: number): Promise<{

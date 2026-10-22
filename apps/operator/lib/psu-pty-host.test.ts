@@ -592,6 +592,7 @@ const {
   headlessRoleMcpVerifyWorstCaseMs,
   headlessRoleMcpKickoffBudgetMs,
   unreportedKickoffRefusalStrandsHost,
+  terminalKickoffQuotaRefusalEndsHost,
 } = host;
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
@@ -6307,6 +6308,18 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       // A visible session may have a human attached; a delivered kickoff is fine.
       expect(unreportedKickoffRefusalStrandsHost({ delivered: false, headless: false, receipt: failed })).toBe(false);
       expect(unreportedKickoffRefusalStrandsHost({ delivered: true, headless: true, receipt: failed })).toBe(false);
+    });
+
+    it('ends every provider-quota-rejected kickoff host after the negative receipt', () => {
+      expect(terminalKickoffQuotaRefusalEndsHost({
+        delivered: false, kickoffReason: 'provider-quota-rejected',
+      })).toBe(true);
+      expect(terminalKickoffQuotaRefusalEndsHost({
+        delivered: false, kickoffReason: 'model-capacity',
+      })).toBe(false);
+      expect(terminalKickoffQuotaRefusalEndsHost({
+        delivered: true, kickoffReason: 'provider-quota-rejected',
+      })).toBe(false);
     });
   });
 

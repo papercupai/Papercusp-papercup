@@ -120,7 +120,8 @@ async function register(bindingId=freezeId,expectedRevision=0,decisionId?:string
 }
 async function close() {
   h.actor=BUILDER;
-  const response=await complete.handler(complete.args.parse({id:itemId,harness:HARNESS,state:'done',assumptions:'none',completion:{
+  const response=await complete.handler(complete.args.parse({id:itemId,harness:HARNESS,state:'done',assumptions:'none',
+    changeKinds:['no-code-change'],changeKindReason:'The fixture verifies a completion guard and changes no repository files.',completion:{
     summary:'Verified the pilot acceptance behavior.',testsRun:'the recorded acceptance suite',
     testResult:'Passing canonical test-run evidence was checked against current files.',verifiedHow:'unit',filesChanged:[],
   }}),{workspaceId:WS,isSuperuser:true} as never);

@@ -372,12 +372,20 @@ export const FAIR_WORKER_DRAIN_CAP_MS = 15 * 60_000;
 /** Slow graph backends may legitimately need more than four hours to build a frozen corpus. */
 export const FAIR_WORKER_RUNTIME_MAX_SEC = 8 * 3600;
 
+export interface FairWorkerRequestEvent {
+  event: 'send' | 'reply' | 'deadline' | 'drain-failed';
+  requestId: number;
+  method: string;
+  caseId: string | null;
+}
+
 interface FairWorkerChannelIo {
   send(line: string, sent: (error?: Error | null) => void): void;
   isLive(): boolean;
   deadlineMs(method: string): number;
   drainCapMs: number;
   now(): number;
+  observe?(event: FairWorkerRequestEvent): void;
 }
 
 /**
@@ -392,8 +400,9 @@ interface FairWorkerChannelIo {
  */
 export function createFairWorkerChannel(io: FairWorkerChannelIo) {
   let sequence = 0;
-  let late: Promise<void> | null = null;
-  const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+  type Request = Omit<FairWorkerRequestEvent, 'event'>;
+  let late: { request: Request; reply: Promise<void> } | null = null;
+  const pending = new Map<number, { request: Request; resolve(value: unknown): void; reject(error: Error): void }>();
   const failAll = (error: Error) => {
     const waiters = [...pending.values()]; pending.clear();
     for (const waiter of waiters) waiter.reject(error);
@@ -403,6 +412,7 @@ export function createFairWorkerChannel(io: FairWorkerChannelIo) {
     try {
       const reply = JSON.parse(line.slice('FAIR_WORKER_REPLY='.length)) as { id: number; result?: unknown; error?: string };
       const waiter = pending.get(reply.id); pending.delete(reply.id);
+      if (waiter) io.observe?.({ event: 'reply', ...waiter.request });
       if (reply.error) waiter?.reject(new Error(reply.error)); else waiter?.resolve(reply.result);
     } catch (error) { failAll(new Error(String(error))); }
   };
@@ -411,21 +421,30 @@ export function createFairWorkerChannel(io: FairWorkerChannelIo) {
     if (!waiting) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const freed = await Promise.race([waiting.then(() => true),
+      const freed = await Promise.race([waiting.reply.then(() => true),
         new Promise<boolean>(done => { timer = setTimeout(() => done(false), io.drainCapMs); })]);
-      if (!freed) throw new Error(`fresh worker still busy ${io.drainCapMs}ms after a request deadline`);
+      if (!freed) {
+        io.observe?.({ event: 'drain-failed', ...waiting.request });
+        const { requestId, method, caseId } = waiting.request;
+        throw new Error(`fresh worker still busy ${io.drainCapMs}ms after a request deadline (request=${requestId} method=${method} case=${caseId ?? 'none'})`);
+      }
     } finally { clearTimeout(timer); }
     if (late === waiting) late = null;
   };
   const send = <T>(method: string, kase?: FairCase): Promise<T> => new Promise((done, reject) => {
     if (!io.isLive()) { reject(new Error('fresh worker is no longer live')); return; }
     const requestId = ++sequence;
+    const request: Request = { requestId, method, caseId: kase?.id ?? null };
     const timer = setTimeout(() => {
       // Keep a sink for the eventual reply: its arrival is what frees the worker.
-      late = new Promise<void>(free => { pending.set(requestId, { resolve: () => free(), reject: () => free() }); });
+      late = { request, reply: new Promise<void>(free => {
+        pending.set(requestId, { request, resolve: () => free(), reject: () => free() });
+      }) };
+      io.observe?.({ event: 'deadline', ...request });
       reject(new Error(`fresh worker ${method} deadline`));
     }, io.deadlineMs(method));
-    pending.set(requestId, { resolve: value => { clearTimeout(timer); done(value as T); }, reject: error => { clearTimeout(timer); reject(error); } });
+    pending.set(requestId, { request, resolve: value => { clearTimeout(timer); done(value as T); }, reject: error => { clearTimeout(timer); reject(error); } });
+    io.observe?.({ event: 'send', ...request });
     io.send(`${JSON.stringify({ id: requestId, method, kase })}\n`, error => {
       if (error) { pending.delete(requestId); clearTimeout(timer); reject(error); }
     });
@@ -533,6 +552,7 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         deadlineMs: method => method === 'index' ? 4 * 3600_000 : FAIR_WORKER_REQUEST_DEADLINE_MS,
         drainCapMs: FAIR_WORKER_DRAIN_CAP_MS,
         now: () => performance.now(),
+        observe: event => process.stderr.write(`FAIR_WORKER_EVENT=${JSON.stringify({ arm: id, rep, taskId, ...event })}\n`),
       });
       child.stdout!.setEncoding('utf8');
       child.stdout!.on('data', (chunk: string) => {

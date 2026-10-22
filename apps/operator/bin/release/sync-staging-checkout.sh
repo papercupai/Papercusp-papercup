@@ -393,9 +393,60 @@ staging_generation_holder_evidence() {
 prune_staging_generations() {
   local current_root candidate_root resolved_root candidate_home refs_collected=0
   local audit_pin audit_expiry audit_mtime audit_now audit_pinned
+  local cleanup_budget="${1:-15}" cleanup_started="" cleanup_remaining cleanup_status
+  local pending_cleanup pending_home
+  # Pruning runs before candidate preparation while this tick holds the
+  # exclusive staging lock. Keep that startup path bounded; the optional
+  # argument only lets the focused regression exercise expiry quickly.
+  if [[ ! "$cleanup_budget" =~ ^[0-9]+$ ]] || ((cleanup_budget < 1)); then
+    cleanup_budget=15
+  elif ((cleanup_budget > 15)); then
+    cleanup_budget=15
+  fi
   [[ -d "$STAGING_GENERATIONS_ROOT" ]] || return 0
+  # Git has already detached these worktrees; finish their bounded directory
+  # cleanup on this or a later timer tick. Keep the marker outside the tree so
+  # an interrupted rm cannot erase its own retry record.
+  while IFS= read -r -d '' pending_cleanup; do
+    pending_home="${pending_cleanup%.prune-pending}"
+    if [[ ! -d "$pending_home" ]]; then
+      rm -f -- "$pending_cleanup"
+      continue
+    fi
+    [[ -n "$cleanup_started" ]] || cleanup_started="$SECONDS"
+    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
+    if ((cleanup_remaining <= 0)); then
+      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining deferred directory cleanup for next tick: $pending_home"
+      return 0
+    fi
+    if ! command -v timeout >/dev/null 2>&1; then
+      log "ALARM: timeout is unavailable; retaining deferred staging generation cleanup: $pending_home"
+      return 0
+    fi
+    if timeout --signal=KILL "${cleanup_remaining}s" rm -rf -- "$pending_home"; then
+      rm -f -- "$pending_cleanup"
+      log "completed deferred staging generation directory cleanup: $pending_home"
+    else
+      cleanup_status=$?
+      if ((cleanup_status == 124 || cleanup_status == 137)); then
+        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial directory cleanup for next tick: $pending_home"
+      else
+        log "staging generation directory cleanup failed (status=$cleanup_status); retaining cleanup marker for next tick: $pending_home"
+      fi
+      return 0
+    fi
+  done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 1 -maxdepth 1 -type f -name '.candidate-*.prune-pending' -print0 2>/dev/null)
   current_root="$(realpath -e "$STAGING_ROOT" 2>/dev/null || true)"
   while IFS= read -r -d '' candidate_root; do
+    if [[ -n "$cleanup_started" ]]; then
+      cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
+    else
+      cleanup_remaining="$cleanup_budget"
+    fi
+    if ((cleanup_remaining <= 0)); then
+      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining remaining generations for next tick"
+      break
+    fi
     resolved_root="$(realpath -e "$candidate_root" 2>/dev/null || true)"
     [[ -n "$resolved_root" && "$resolved_root" != "$current_root" ]] || continue
     # EI-25971079852455067: a process reference disappears at exactly the
@@ -444,9 +495,51 @@ prune_staging_generations() {
     candidate_home="$(dirname "$resolved_root")"
     [[ "$(dirname "$candidate_home")" == "$STAGING_GENERATIONS_ROOT" &&
        "$(basename "$candidate_home")" == .candidate-* ]] || continue
-    git -C "$INTEGRATION_ROOT" worktree remove --force "$resolved_root" >/dev/null 2>&1 || true
-    rm -rf -- "$candidate_home"
-    log "pruned unused staging generation $resolved_root"
+    [[ -n "$cleanup_started" ]] || cleanup_started="$SECONDS"
+    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
+    if ((cleanup_remaining <= 0)); then
+      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining generation for next tick: $resolved_root"
+      break
+    fi
+    if ! command -v timeout >/dev/null 2>&1; then
+      log "ALARM: timeout is unavailable; retaining staging generation for next tick: $resolved_root"
+      break
+    fi
+    if timeout --signal=KILL "${cleanup_remaining}s" \
+      git -C "$INTEGRATION_ROOT" worktree remove --force "$resolved_root" >/dev/null 2>&1; then
+      cleanup_status=0
+    else
+      cleanup_status=$?
+      if ((cleanup_status == 124 || cleanup_status == 137)); then
+        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial generation for next tick: $resolved_root"
+        break
+      fi
+      # Preserve the prior best-effort behavior for non-timeout Git errors;
+      # the bounded filesystem cleanup below still reclaims the retired tree.
+      log "staging generation worktree removal failed (status=$cleanup_status); continuing bounded directory cleanup: $resolved_root"
+    fi
+    pending_cleanup="${candidate_home}.prune-pending"
+    if ! : > "$pending_cleanup"; then
+      log "ALARM: could not create deferred-cleanup marker; retaining staging generation directory: $candidate_home"
+      break
+    fi
+    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
+    if ((cleanup_remaining <= 0)); then
+      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; deferred directory cleanup to next tick: $candidate_home"
+      break
+    fi
+    if timeout --signal=KILL "${cleanup_remaining}s" rm -rf -- "$candidate_home"; then
+      rm -f -- "$pending_cleanup"
+      log "pruned unused staging generation $resolved_root"
+    else
+      cleanup_status=$?
+      if ((cleanup_status == 124 || cleanup_status == 137)); then
+        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial directory cleanup for next tick: $candidate_home"
+      else
+        log "staging generation directory cleanup failed (status=$cleanup_status); retaining cleanup marker for next tick: $candidate_home"
+      fi
+      break
+    fi
   done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 2 -maxdepth 2 -type d -name checkout -print0 2>/dev/null)
 }
 

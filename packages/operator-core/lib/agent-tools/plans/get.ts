@@ -54,6 +54,8 @@ import { readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-att
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activationDeclarationReadiness, previewPlanStartConsult } from './get-activation-readiness';
 import { getBuildInfo } from '../../build-info';
+import { readPlanItemAnchors } from '../../plan-items/anchor-store';
+import { renderAnchorLine } from '../../plan-items/anchors';
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -1389,9 +1391,13 @@ export default defineTool({
               ).catch(() => ({})),
             );
             const stalePathRefsByItem = await stalePathsRead;
+            const anchorsByItem = await readPlanItemAnchors({ workspaceId: row.workspaceId,
+              harnessSlug: row.harnessSlug, planSlug: slug });
             stageStarted = performance.now();
-            const decorateStalePathRefs = <T extends { id: string }>(item: T) =>
-              decoratePlanItemStalePathRefs(item, stalePathRefsByItem);
+            const decorateStalePathRefs = <T extends { id: string }>(item: T) => ({
+              ...decoratePlanItemStalePathRefs(item, stalePathRefsByItem),
+              ...(anchorsByItem[item.id]?.length ? { anchors: anchorsByItem[item.id] } : {}),
+            });
             const structured = {
               ...base,
               ...(!includeEnrichments ? { enrichmentsDeferred: true as const } : {}),
@@ -1418,7 +1424,8 @@ export default defineTool({
               mode === 'full'
                 ? {
                     ...structured,
-                    prose: parsed.prose,
+                    prose: parsed.prose.replace(/^(-\s+\*\*(P-\d{3,})\*\*[^\n]*)$/gm,
+                      (line, _itemLine, id: string) => [line, ...(anchorsByItem[id] ?? []).map(renderAnchorLine)].join('\n')),
                     // Opt-in EXACT raw bytes (P-008 drops these by default to keep
                     // agent payloads slim). The plans admin UI sets includeRaw so its
                     // Edit mode round-trips the whole document through set-content,

@@ -1,0 +1,2922 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-acceptance-detector-trace",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010012117",
+  "recordedAt": "2026-10-22T14:58:02.078689+00:00",
+  "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+  "rubricRevision": 16,
+  "rubricCriteriaHash": "2365e8bdda3d82de2d5a7f1d50ce9cc1915af35ca78edbda4542ef67c14bac48",
+  "metaRubricRevision": 5,
+  "status": "INCOMPLETE - detector repair and independent review required",
+  "supersedesPassingClaim": false,
+  "failedAudit": "EI-26688378455662683",
+  "population": {
+    "criteria": [
+      "R-32",
+      "R-33",
+      "R-34",
+      "R-1",
+      "R-2",
+      "R-3",
+      "R-4",
+      "R-5",
+      "R-6",
+      "R-7",
+      "R-8",
+      "R-9",
+      "R-10",
+      "R-11",
+      "R-12",
+      "R-13",
+      "R-14",
+      "R-15",
+      "R-16",
+      "R-17",
+      "R-18",
+      "R-19",
+      "R-20",
+      "R-21",
+      "R-22",
+      "R-23",
+      "R-24",
+      "R-30",
+      "R-31"
+    ],
+    "decisions": [
+      "D-001",
+      "D-002",
+      "D-003",
+      "D-004",
+      "D-005",
+      "D-006",
+      "D-007",
+      "D-008",
+      "D-009",
+      "D-010",
+      "D-011",
+      "D-012",
+      "D-013",
+      "D-014",
+      "D-015",
+      "D-016",
+      "D-017",
+      "D-018",
+      "D-019",
+      "D-020",
+      "D-021",
+      "D-022",
+      "D-023",
+      "D-024",
+      "D-025",
+      "D-026",
+      "D-027",
+      "D-028",
+      "D-029",
+      "D-030"
+    ]
+  },
+  "criteria": [
+    {
+      "criterion": "R-32",
+      "title": "Per-leg push issuance is measured",
+      "barHash": "0db3cfcaaadae6e3dab2ab7b916e5ded79177daef778b327113968ce6efeabb3",
+      "model": "The registered native-push-issued-measured instrument reports per-leg server-issued push counts for an exact completed native workspace window.",
+      "falsifier": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness.",
+      "requiredScope": [
+        "P-041"
+      ],
+      "evidencePlane": "live",
+      "sourceRefs": [
+        "owner-directive:1925",
+        "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-016",
+        "D-021",
+        "D-026",
+        "D-028"
+      ],
+      "boundCheck": {
+        "kind": "instrument",
+        "instrumentKey": "code-intel:native-push-issued-measured"
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
+          "testTitle": "keeps each leg and each measured denominator separate",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 127,
+          "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+          "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.byLeg.grep).toEqual({ issued: 2, closedWindows: 2,\n      actedOn: { measured: 2, positive: 1, rate: 0.5 },\n      grepAfterPush: { measured: 1, positive: 1, rate: 1 } });",
+            "expect(result.byLeg.interface?.actedOn).toEqual({ measured: 0, positive: 0, rate: null });",
+            "expect(result.byLeg.interface?.grepAfterPush.rate).toBeNull();"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
+          "testTitle": "counts only exact workspace/[start,end) pushes and correlated completed native turns",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 191,
+          "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
+          "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(byOwner['push-hit']).toMatchObject({ windowComplete: true, actedOn: true, grepAfterPush: true });",
+            "expect(byOwner['push-miss']).toMatchObject({ windowComplete: true, actedOn: false, grepAfterPush: false });",
+            "expect(byOwner['push-at-start']).toMatchObject({ windowComplete: true, actedOn: true });",
+            "expect(byOwner['push-at-end']).toBeUndefined();",
+            "expect(rows).toHaveLength(13);",
+            "expect(byOwner[owner]).toMatchObject({ windowComplete: false, actedOn: null, grepAfterPush: null });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-33",
+      "title": "Per-leg push follow-through is measured",
+      "barHash": "fb34c0398568ed6c54786f5772bd6aed95d84b77229ff5b71c0c86f30d482e0d",
+      "model": "The registered native-push-acted-on-measured instrument reports per-observed-leg cited-action follow-through positive counts, measured denominators and rates for an exact completed native workspace window.",
+      "falsifier": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness.",
+      "requiredScope": [
+        "P-041"
+      ],
+      "evidencePlane": "live",
+      "sourceRefs": [
+        "owner-directive:1925",
+        "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-016",
+        "D-021",
+        "D-026",
+        "D-028"
+      ],
+      "boundCheck": {
+        "kind": "instrument",
+        "instrumentKey": "code-intel:native-push-acted-on-measured"
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
+          "testTitle": "scores a suggested-test push as not acted on only when the window rules the test out",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 99,
+          "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+          "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(nativePushFollowThrough(suggested).actedOn).toBe(false);",
+            "expect(nativePushFollowThrough({ ...suggested, testRequests: undefined }).actedOn).toBeNull();",
+            "expect(nativePushFollowThrough({ ...suggested, testRequests: 1 }).actedOn).toBeNull();",
+            "expect(nativePushFollowThrough({ ...suggested,\n        activities: [other, { tool, status: 'ok', detail: { command: 'npm run test:file -- src/foo.test.ts' } }] }).actedOn).toBeNull();",
+            "expect(nativePushFollowThrough({ ...suggested, suggestedCall: 'testing:run invalid' }).actedOn).toBeNull();",
+            "expect(nativePushFollowThrough({ ...suggested, activities: [{ tool: 'Read', status: 'ok', detail: { file: 'src/foo.ts' } }] }).actedOn).toBe(true);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
+          "testTitle": "scores a suggested-test push not acted on only when the window shows no test request and no shell",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 260,
+          "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
+          "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(outcome('suggest-none')).toMatchObject({ windowComplete: true, actedOn: false });",
+            "expect(outcome('suggest-foreign-request')).toMatchObject({ windowComplete: true, actedOn: false });",
+            "expect(outcome('suggest-request')).toMatchObject({ windowComplete: true, actedOn: null });",
+            "expect(outcome('suggest-shell')).toMatchObject({ windowComplete: true, actedOn: null });",
+            "expect(summary.byLeg['first-touch']?.actedOn).toEqual({ measured: 2, positive: 0, rate: 0 });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-34",
+      "title": "Same-symbol grep after push is measured",
+      "barHash": "0278d6011dbe841589fb46204143b699153c3caa1f62a72024b0d79b70154a68",
+      "model": "The registered native-push-grep-after-measured instrument reports same-symbol grep positive counts, measured denominator and rate for eligible grep-leg pushes in an exact completed native workspace window.",
+      "falsifier": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness.",
+      "requiredScope": [
+        "P-041"
+      ],
+      "evidencePlane": "live",
+      "sourceRefs": [
+        "owner-directive:1925",
+        "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-016"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-016",
+        "D-021",
+        "D-026",
+        "D-028"
+      ],
+      "boundCheck": {
+        "kind": "instrument",
+        "instrumentKey": "code-intel:native-push-grep-after-measured"
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
+          "testTitle": "keeps each leg and each measured denominator separate",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 127,
+          "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+          "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.byLeg.grep).toEqual({ issued: 2, closedWindows: 2,\n      actedOn: { measured: 2, positive: 1, rate: 0.5 },\n      grepAfterPush: { measured: 1, positive: 1, rate: 1 } });",
+            "expect(result.byLeg.interface?.actedOn).toEqual({ measured: 0, positive: 0, rate: null });",
+            "expect(result.byLeg.interface?.grepAfterPush.rate).toBeNull();"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
+          "testTitle": "keeps open windows, absent evidence and read errors unknown through the resolver seam",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 239,
+          "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
+          "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(reads).toBe(1);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-1",
+      "title": "Licence-safe dependencies",
+      "barHash": "7cfda6bda09921b164f2fcb31eaf2dda89960e93070b2109a56a757f023a9bf2",
+      "model": "Shipped distributions contain no GitNexus code or automatic GitNexus download dependency.",
+      "falsifier": "A public or installer build downloads or packages GitNexus without an admitted commercial licence.",
+      "requiredScope": [
+        "P-027"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:1",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-005",
+        "D-008",
+        "D-018",
+        "D-023"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "testTitle": "retains the recorded incumbent comparison while refusing its distribution",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 508,
+          "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+          "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(admitArm('gitnexus@1.6.9').admission.licence).toBe('noncommercial');",
+            "expect(() => admitArm('gitnexus@1.6.9', ARM_ADMISSIONS, 'distribution')).toThrow(/excluded from product distribution/);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "preserves the separate internal-comparison and distribution decisions",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 591,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(admitArm('gitnexus@1.6.9').admission.distribution?.decision).toBe('excluded');",
+            "expect(() => admitArm('gitnexus@1.6.9', undefined, 'distribution')).toThrow(/excluded from product distribution/);",
+            "expect(() => admitArm('no-third-party', undefined, 'distribution')).toThrow(/no explicit approved decision/);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [
+        "Admission refusal is detected, but no bound detector presently checks a final nonempty artifact manifest for packaged GitNexus or automatic-download routes. Final distribution witness remains required."
+      ],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-2",
+      "title": "Honest multilingual coverage",
+      "barHash": "245ae2ef6dabb8712316622d072702ef30487166f9bf496f149527401030f1f7",
+      "model": "An uncertified language-intent pair returns an explicit unsupported result.",
+      "falsifier": "An unsupported Python/Rust/Go/C++ operation reports a trustworthy empty result.",
+      "requiredScope": [
+        "P-004",
+        "P-005",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:12"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/first-party-callers.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-language-acceptance.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-language-acceptance.integration.test.ts",
+          "testTitle": "refuses a removed project config after a keyed answer, then recovers on the original bytes",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 195,
+          "fileSha256": "c3807a66a6ea231d4087465beda0f031a0cfc8ba83bffc1601060ff9b5cfe56d",
+          "gitBlob": "7d8119407a409d9c7eaaca61cebc3c9c27520d9a",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(before.error, JSON.stringify(before)).toBeNull();",
+            "expect(sites(before)).toEqual([...expected].sort());",
+            "expect(removed?.currentSourceHash).toBe(original?.currentSourceHash);",
+            "expect(removed?.configurationFiles.map(file => file.hash)).toEqual([null]);",
+            "expect(refusal.error).toMatch(/no tsconfig.json or jsconfig.json/);",
+            "expect(refusal.freshness.health).not.toBe('healthy');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-language-acceptance.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-language-acceptance.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [
+        "Selected detector covers config invalidation; complete language/intent positive and unsupported-cell assertions in native-language-acceptance still require explicit enumeration and assertion review."
+      ],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-3",
+      "title": "Attributable graph answers",
+      "barHash": "ad880873867470280fd9076546e02d949c54bc682c07441037b7a3921680337d",
+      "model": "Each graph answer identifies the source scope from which its sites were derived.",
+      "falsifier": "An answer contains an edge whose repository or content version cannot be determined.",
+      "requiredScope": [
+        "P-007",
+        "P-017"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:6",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-002",
+        "D-007"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "testTitle": "binds site identity to repository and captured bytes while leaving unmeasured graph versions explicit",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 358,
+          "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+          "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(identity).not.toBeNull();",
+            "expect(versionedSymbolIdentity('another-repository', site, source)).not.toBe(identity);",
+            "expect(versionedSymbolIdentity('captured-repository', site, { ...source,\n      contentHash: createHash('sha256').update('export function target() { return 2;",
+            "expect(versionedSymbolIdentity('captured-repository', site, { ...source, representation: 'reexport-stub' })).toBeNull();",
+            "expect(evidence.sourceScope).toMatchObject({ repositoryId: 'captured-repository', paths: ['src'],\n        sourceFingerprint: null, supportingFiles: [] });",
+            "expect(evidence.siteIdentities).toEqual(sites.map((entry, siteIndex) => ({ siteIndex,\n        sourcePath: entry.path, contentHash: null, versionedSymbolId: null })));"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "versions both ends of a compiler edge and re-resolves the target after an unchanged caller sees a dependency edit",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 277,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(answer.error).toBeNull();",
+            "expect(answer.evidence!.sourceScope).toMatchObject({ repositoryId, identityKind: 'local-root', paths: ['caller.ts'] });",
+            "expect(answer.evidence!.sourceScope.supportingFiles).toEqual(expect.arrayContaining([\n          expect.objectContaining({ path: 'caller.ts', contentHash: sha('caller.ts'), representation: 'full-source' }),\n          expect.objectContaining({ path: 'dependency.ts', contentHash: sha('dependency.ts'), representation: 'full-source' }),\n        ]));",
+            "expect(answer.evidence!.siteIdentities).toEqual([expect.objectContaining({ sourcePath: 'caller.ts',\n          contentHash: sha('caller.ts'), versionedSymbolId: expect.stringContaining(repositoryId) })]);",
+            "expect(edge).toMatchObject({ origin: 'compiler', runtimeExecution: 'unknown',\n          target: { contentHash: sha('dependency.ts'), versionedSymbolId: expect.stringContaining(repositoryId) } });",
+            "expect(after.evidence!.siteIdentities).toEqual(before.evidence!.siteIdentities);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-4",
+      "title": "Cache invalidation",
+      "barHash": "291817cb556827927c42efe5738c554ed0039c4d626236f88e06eae6dbe0f4ae",
+      "model": "A source change invalidates the affected cached graph evidence.",
+      "falsifier": "A query returns pre-edit dependencies as current after an edit or delete.",
+      "requiredScope": [
+        "P-006",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:12",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14"
+      ],
+      "planAuthority": [
+        "D-003"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "testTitle": "invalidates source generations and removes deleted relationships at an unchanged cursor",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 455,
+          "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+          "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect((await query()).sites[0]?.line1).toBe(1);",
+            "expect((await query()).daemonCache?.state).toBe('hit');",
+            "expect(edited.daemonCache?.state).toBe('miss');",
+            "expect(edited.sites).toEqual((await producer()).sites);",
+            "expect(edited.sites[0]?.line1).toBe(2);",
+            "expect(deleted.daemonCache?.state).toBe('miss');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "reconciles missed dependency edits and deletes without changing the query cursor",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 437,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect((await query()).sites[0]?.line1).toBe(1);",
+            "expect((await query()).daemonCache?.state).toBe('hit');",
+            "expect(edited.daemonCache?.state).toBe('miss');",
+            "expect(edited.sites).toEqual((await producer()).sites);",
+            "expect(edited.sites[0]?.line1).toBe(2);",
+            "expect(deleted.daemonCache?.state).toBe('miss');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-5",
+      "title": "Exposed graph parity",
+      "barHash": "12c17ceee702a778bc3826f6297ca536b89922a9ea21af9b8df40f1be72a5679",
+      "model": "Each admitted graph operation passes its preregistered source-site fixtures through the exposed tool handler.",
+      "falsifier": "The benchmark adapter passes while the actual graph:query handler returns a missing or incorrect site.",
+      "requiredScope": [
+        "P-007",
+        "P-008",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/first-party-traversal.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-language-acceptance.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "P007 exposed context returns the known outgoing call and measured compiler input versions",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 619,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.data.error).toBeNull();",
+            "expect(result.data.backend).toBe('typescript-service');",
+            "expect(result.data.sites).toEqual([\n      expect.objectContaining({ path: 'src/graph-context.ts', line1: 2 }),\n      expect.objectContaining({ path: 'src/graph-context.ts', line1: 3, name: 'nativeHelper' }),\n      expect.objectContaining({ path: 'src/graph-context.ts', line1: 1, name: 'nativeHelper' }),\n    ]);",
+            "expect(result.data.evidence!.relationships.map(r => r.kind)).toEqual(['definition', 'callees', 'imports']);",
+            "expect(result.data.evidence!.sourceScope.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);",
+            "expect(result.data.evidence!.siteIdentities.every(s => s.contentHash && s.versionedSymbolId)).toBe(true);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "matches the recorded route and an independently enumerated barrel consumer",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 560,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(answer.error).toBeNull();",
+            "expect(answer.backend).toBe(recorded?.backend);",
+            "expect(locations(answer)).toEqual(['src/consumer.ts:4']);",
+            "expect(answer.freshness.health).toBe('healthy');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-6",
+      "title": "Directed tracing",
+      "barHash": "bdb77fdc6436d1c37e0aef2f609a70917f2a8e56f8917660c87ea29001fe548d",
+      "model": "A trace query returns the expected bounded directed path on the reference fixture.",
+      "falsifier": "A reverse path or an extra unsubstantiated hop is presented as the requested path.",
+      "requiredScope": [
+        "P-008",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts",
+          "packages/operator-core/lib/code-intelligence/first-party-traversal.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts",
+          "testTitle": "returns the forward reference path across an alias and re-export without mixing homonyms",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 61,
+          "fileSha256": "6a232ba0f7140348150976fd160b89a43c3dec8518ce29fc0aa84a80a137ac1e",
+          "gitBlob": "db2c20e61eb8a26bef0113c9f6498a7050dcedf0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(answer.error).toBeNull();",
+            "expect(answer.intent).toBe('trace');",
+            "expect(answer.traversal!.outcome).toBe('found');",
+            "expect(hopNames(answer)).toEqual([['entry', 'bridge'], ['bridge', 'target']]);",
+            "expect(answer.traversal!.paths).toHaveLength(1);",
+            "expect(answer.sites.map(site => [site.path, site.line1])).toEqual([['src/entry.ts', 3], ['src/bridge.ts', 3]]);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts",
+          "testTitle": "does not report the reverse path as a forward trace",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 71,
+          "fileSha256": "6a232ba0f7140348150976fd160b89a43c3dec8518ce29fc0aa84a80a137ac1e",
+          "gitBlob": "db2c20e61eb8a26bef0113c9f6498a7050dcedf0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(answer.error).toBeNull();",
+            "expect(answer.traversal!.paths).toEqual([]);",
+            "expect(answer.traversal!.outcome).toBe('not-found-in-scope');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-7",
+      "title": "Fair comparison",
+      "barHash": "d4e1fb69272d1843b0224dc93f575ace5c614f18b1e93d471909a28423c0036b",
+      "model": "The backend verdict is reproducible from preregistered matched-operation evidence.",
+      "falsifier": "The verdict changes when reconstructed from the saved corpus and scoring rules.",
+      "requiredScope": [
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:6",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:12"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-006"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts",
+          "testTitle": "CALIBRATION: a candidate that clears every bar on one shared tree yields upgrade",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 52,
+          "fileSha256": "fa7ffbea8a16c66a5cce4b454821ccc59417a1ae35d2a5268efd36f08e8cf610",
+          "gitBlob": "d9df588ed7b54300ea0fdb2ffa0658549ecd5283",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(v.decision).toBe('upgrade');",
+            "expect(v.residue).toEqual([]);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts",
+          "testTitle": "an UNEXECUTED required arm is nonpassing residue and never lets a winner be declared",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 82,
+          "fileSha256": "fa7ffbea8a16c66a5cce4b454821ccc59417a1ae35d2a5268efd36f08e8cf610",
+          "gitBlob": "d9df588ed7b54300ea0fdb2ffa0658549ecd5283",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(v.decision).toBe('inconclusive');",
+            "expect(v.residue).toEqual(['gitnexus-candidate: unavailable or errored — nonpassing residue']);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts"
+          ]
+        }
+      ],
+      "gaps": [
+        "Legacy disposition controls are named, but the frozen 2026-10-09 fair-run detector requires additional direct scoring controls. Native backend artifact is absent and cgc original run is incomplete. No reproducible full verdict exists."
+      ],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-8",
+      "title": "Conservative test selection",
+      "barHash": "56cf322409e106f15e1445f943a79f0ed807faf8d76779042b81954affbd4d1d",
+      "model": "Graph-based test selection preserves the baseline selected set.",
+      "falsifier": "A graph-suggested run omits any test selected by the baseline.",
+      "requiredScope": [
+        "P-009",
+        "P-011",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-008",
+        "D-018"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "testTitle": "keeps the reference consumer and baseline, then rejects changed importer evidence",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 435,
+          "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+          "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(snapshot.index.backend).toBe('first-party-imports');",
+            "expect(suggest().suggestedFiles).toEqual(['consumer/use.ts']);",
+            "expect(unionSuperset(new Set(['baseline']), suggest().suggestedFiles).names).toEqual(['baseline', 'consumer/use.ts']);",
+            "expect(suggest()).toMatchObject({ suggestedFiles: [], rejected: [{ reason: 'stale-importer' }] });",
+            "expect(unionSuperset(new Set(['baseline']), suggest().suggestedFiles).names).toEqual(['baseline']);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "hands source-derived consumers to the selector and preserves baseline on source drift",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 403,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(deps?.backend).toBe('first-party-imports');",
+            "expect(result).toMatchObject({ ran: true, next: { status: 'fresh', edges: 1 } });",
+            "expect(select()).toMatchObject({ status: 'applied', workspaces: ['reference-consumer'], accepted: 1, rejected: 0 });",
+            "expect(unionSuperset(new Set(['baseline']), select().workspaces).names).toEqual(['baseline', 'reference-consumer']);",
+            "expect(select()).toMatchObject({ workspaces: [], accepted: 0, rejected: 1 });",
+            "expect(unionSuperset(new Set(['baseline']), select().workspaces).names).toEqual(['baseline']);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-9",
+      "title": "Explain a change",
+      "barHash": "5806296f6e51b607d58bcb70d508f2ff2c8c5f99d0e0a8444b8f1241f1adc212",
+      "model": "The change report identifies reference-fixture consumers of the edited symbol.",
+      "falsifier": "A known affected consumer is omitted without an explicit coverage limitation.",
+      "requiredScope": [
+        "P-010",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-change-report.e2e.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "testTitle": "retains the reference consumer and discloses any omitted bounded consumers",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 412,
+          "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+          "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(full.report.consumers).toEqual([{ path: 'consumer.ts', line1: 2, kind: 'function', name: 'target' }]);",
+            "expect(bounded.report.consumers).toEqual(full.report.consumers);",
+            "expect(bounded.report.limitations).toContain('Consumer results were truncated;",
+            "expect(bounded.report.freshness).toBe('unmeasured');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "cites the edited symbol reference consumer and rechecks it before review",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 360,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.status, result.stderr).toBe(0);",
+            "expect(first.answer.error).toBeNull();",
+            "expect(first.answer.backend).toBe('typescript-service');",
+            "expect(first.report.consumers).toEqual(expect.arrayContaining([\n        expect.objectContaining({ path: 'consumer.ts', line1: 2 }),\n      ]));",
+            "expect(first.report.changed).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'target.ts' })]));",
+            "expect((await call(first.report.sourceFingerprint)).report.freshness).toBe('unchanged');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-10",
+      "title": "Task-scoped context",
+      "barHash": "0c3e16d608549b185d968c4f4ef824aa8428c95773921699c6c381bf32cc333b",
+      "model": "A claim-time brief contains only evidence attributable to the claimed task scope.",
+      "falsifier": "A brief includes inaccessible repository evidence or stale content labelled current.",
+      "requiredScope": [
+        "P-012",
+        "P-021",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+          "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "uses the real safe packer/compiler and replaces stale excerpts without widening task scope",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 174,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(before.taskBrief.status, JSON.stringify(before.taskBrief)).toBe('current');",
+            "expect(before.taskBrief.graph.consumers).toContain('consumer.ts:2');",
+            "expect(before.taskBrief.files).toEqual(expect.arrayContaining([\n        expect.objectContaining({ path: 'guide.md', kind: 'doc' }), expect.objectContaining({ path: 'target.test.ts', kind: 'test' })]));",
+            "expect(before.taskBrief.recover).toHaveProperty('args.rootPath', root);",
+            "expect(JSON.stringify(before.taskBrief)).toContain('BEFORE_NATIVE_EDIT');",
+            "expect(resumed.taskBrief?.status, JSON.stringify(resumed.taskBrief)).toBe('current');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/task-brief.test.ts",
+          "testTitle": "rejects traversal, whole-repository globs, hidden paths and escaping symlinks before packing",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 185,
+          "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
+          "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(deps.root).toHaveBeenCalledWith('allowed', 'h');",
+            "expect(JSON.stringify(brief)).not.toContain('PRIVATE');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-11",
+      "title": "Coordination authority",
+      "barHash": "b1bb73e9580663af605d7561b89f632c9bc921c5ff52f33de5f075e12ecd4332",
+      "model": "A graph overlap advisory leaves authoritative assignments unchanged.",
+      "falsifier": "Viewing an overlap advisory takes over a peer work-item or bypasses a file lock.",
+      "requiredScope": [
+        "P-013",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts",
+          "testTitle": "orders a producer before its consumer while preserving inputs and authoritative peer claims",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 23,
+          "fileSha256": "093dacdbbdd6e45d68e428b3227ba6e85f539c1efaa2915bcea2ac4c863c8891",
+          "gitBlob": "d7176c67e85e2ac17d9e251ebd79004ac65c85f0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(advice.proposedOrder).toEqual(['P-002', 'P-001']);",
+            "expect(advice.ordering).toContainEqual({ producer: 'P-002', consumer: 'P-001', sourcePath: 'consumer.ts', targetPath: 'producer.ts', kind: 'callees' });",
+            "expect(advice.overlaps).toEqual([{ items: ['P-001', 'P-002'], paths: ['shared.ts'] }]);",
+            "expect(advice.ownership[1].coverage?.directHolder).toBe('peer');",
+            "expect(advice.fileClaims.held[0]).toEqual({ path: 'shared.ts', owner: 'peer', intent: 'WI-42', coordinationDomain: '/fixture' });",
+            "expect({ items, scope, peer, claims }).toEqual(original);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts",
+          "testTitle": "reports a graph/dependency conflict without changing authoritative dependencies",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 42,
+          "fileSha256": "093dacdbbdd6e45d68e428b3227ba6e85f539c1efaa2915bcea2ac4c863c8891",
+          "gitBlob": "d7176c67e85e2ac17d9e251ebd79004ac65c85f0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(advice.proposedOrder).toEqual([]);",
+            "expect(conflicting[1].blockedBy).toEqual(['P-001']);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-12",
+      "title": "Interface impact",
+      "barHash": "afeba9093163459124c095c9874099b50c5cab4b90c39eb8aa0a04b32cb551a1",
+      "model": "An interface-change report identifies the reference-fixture client mismatch.",
+      "falsifier": "A changed response field is accepted without exposing its incompatible known consumer.",
+      "requiredScope": [
+        "P-014",
+        "P-019",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+          "packages/operator-core/lib/code-intelligence/scoped-contracts.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/scoped-contracts.e2e.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "joins the real compiler report to a registered result contract and exposes a removed field to its typed and runtime client",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 119,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(registered).toBeDefined();",
+            "expect(projectedToolCallContract(name)).toMatchObject({ returns: { source: 'registered-output-schema',\n        outputJsonSchema: { required: ['value'], properties: { value: { type: 'string' } } } } });",
+            "expect(logs.join(' ')).not.toContain('[output-schema]');",
+            "expect(before.interfaces.status).toBe('measured');",
+            "expect(before.interfaces.mismatchedConsumers).toEqual([]);",
+            "expect(before.interfaces.registrations).toContainEqual(expect.objectContaining({ name, factoryAuthority: 'maintained-import',\n        responseValidator: expect.objectContaining({ path: 'contract.ts', line1: 4 }),\n        implementation: expect.objectContaining({ path: 'target.ts', line1: 2 }), runtimeRegistered: 'unmeasured' }));"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-13",
+      "title": "Evidence freshness",
+      "barHash": "9a10d4f51a046861662a6a00a73b86a7570aba4f8fbec066e2cd8648e450c751",
+      "model": "A changed evidence source prevents its prior proof from being treated as current.",
+      "falsifier": "A prior passing evidence binding remains current after the source fingerprint changes.",
+      "requiredScope": [
+        "P-015",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "testTitle": "invalidates proof after a dependent edit while preserving its requirement and test identity",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 318,
+          "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+          "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(current(measured.sourceFingerprint).overall).toBe('current');",
+            "expect(current(edited.sourceFingerprint)).toMatchObject({ overall: 'stale', staleReasons: ['source-stale'],\n        dimensions: { source: 'stale', spec: 'current', testRun: 'current' } });",
+            "expect(() => assertCodeDependencyVersions(captured.evidence.sources, edited.pin)).toThrow('does_not_match_measured_source');",
+            "expect(proof).toEqual({ specRevision: 1, testRunId: 42, sourceFingerprint: measured.sourceFingerprint });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "requires re-verification after a compiler-resolved dependency changes or disappears",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 245,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(captured.measurement.sourcePaths).toEqual(['consumer.ts', 'dependency.ts']);",
+            "expect(captured.evidence.sources).toEqual(expect.arrayContaining([expect.objectContaining({\n        path: 'dependency.ts', contentHash: createHash('sha256').update(readFileSync(join(project, 'dependency.ts'))).digest('hex'),\n      })]));",
+            "expect(current(measured.sourceFingerprint).overall).toBe('current');",
+            "expect(current(edited.sourceFingerprint)).toMatchObject({ overall: 'stale', staleReasons: ['source-stale'] });",
+            "expect(() => assertCodeDependencyVersions(captured.evidence.sources, edited.pin)).toThrow('does_not_match_measured_source');",
+            "expect(row.source_fingerprint).toBe(measured.sourceFingerprint);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-14",
+      "title": "Documentation drift",
+      "barHash": "05b6049b10972bc38e09b3aee35c0dda1a38643cddf5e7481d67d887abb081ec",
+      "model": "A changed documented interface creates a source-linked documentation update candidate.",
+      "falsifier": "A renamed documented symbol remains presented as current without a drift candidate.",
+      "requiredScope": [
+        "P-016",
+        "P-029"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/harness/docs/native-source-change.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/harness/docs/native-source-change.integration.test.ts",
+          "testTitle": "flags a real committed documented rename and delivers its scoped pinned candidate through the existing review hook",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 63,
+          "fileSha256": "f7aefcfe85f8c26dfc3c37e394ccb6abe124df62891f1d6bc581cf2dd600fd4d",
+          "gitBlob": "8403b9be779f11e6bc1face36c5b57ea520541a7",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(candidate.docId).toBe('api-guide.md');",
+            "expect(result.reverifyFlagged).toEqual(['api-guide.md']);",
+            "expect(doc.status).toBe('fresh');",
+            "expect(delivered?.sourceChanges).toContainEqual(expect.objectContaining({ path: 'api.ts', status: 'measured',\n        before: { commit: baseline, sha256: createHash('sha256').update(before).digest('hex') },\n        after: { commit: current, sha256: createHash('sha256').update(after).digest('hex') }, removedSymbols: ['readApi'] }));"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/harness/docs/native-source-change.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/harness/docs/native-source-change.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-15",
+      "title": "Runtime provenance",
+      "barHash": "955c8d478578ab1778d640f3b47876a72f484f02c9fe82b6ff89529af43615c2",
+      "model": "A runtime-specific answer identifies the artifact loaded by the selected current-build runtime and distinguishes it from the edited source tree.",
+      "falsifier": "A staging-only source change is reported as loaded on the final release runtime.",
+      "requiredScope": [
+        "P-017",
+        "P-026",
+        "P-027"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "testTitle": "keeps a staging source version distinct from the selected release artifact",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 382,
+          "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+          "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(release).toMatchObject({ repositoryId: 'reference-repo', sourceFingerprint: captured,\n        files: [{ capturedSourceSha256: captured, artifact: { buildSha: 'a'.repeat(40) }, containsCapturedSource: false }] });",
+            "expect((await sourceRuntimeProvenance(answer, 'staging-operator', root, dispatch)).files[0]!.containsCapturedSource).toBe(true);",
+            "expect((await sourceRuntimeProvenance(answer, 'staging-operator', root, dispatch)).files[0]).toMatchObject({\n        capturedSourceSha256: captured, editedSourceSha256: pipeline.acceptedSource.observedSha256,\n        artifact: { buildSha: 'b'.repeat(40) }, containsCapturedSource: null });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "identifies the loaded artifact and refuses to substitute a later compiler source version",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 314,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.status, result.stderr).toBe(0);",
+            "expect(name).toBe('dev:pipeline_position');",
+            "expect(args.path).toBe('target.ts');",
+            "expect(before.error).toBeNull();",
+            "expect(before.runtimeProvenance.repositoryId).toBe(before.evidence!.sourceScope.repositoryId);",
+            "expect(before.runtimeProvenance.files).toEqual([expect.objectContaining({ capturedSourceSha256: loadedHash,\n        artifact: expect.objectContaining({ buildSha }), containsCapturedSource: true })]);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-16",
+      "title": "Evidence-based diagnosis",
+      "barHash": "718a73c59c5313bb425b96ce8418e0af957d050083680466899bcc39209e7356",
+      "model": "An incident brief labels a static graph path as a hypothesis until distinguishing runtime evidence supports it.",
+      "falsifier": "The brief asserts causation from graph connectivity alone.",
+      "requiredScope": [
+        "P-018",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+          "packages/operator-core/lib/code-intelligence/task-brief.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/task-brief.test.ts",
+          "testTitle": "keeps observed failures and static candidates distinct from proven causation",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 96,
+          "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
+          "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(brief).toMatchObject({ status: 'measured', cause: 'unknown', runtimeExecution: 'unmeasured', workRecord: 'WI-task',\n      failures, candidates: [{ path: 'target.test.ts', basis: 'failed-test', causation: 'unverified' },\n        { path: 'consumer.ts', basis: 'static-relationship', causation: 'unverified' }], recentChanges: ['c'.repeat(40)] });",
+            "expect(brief.recover).toEqual({ tool: 'testing:runs', args: { testRunIds: [42], harness: 'h' } });",
+            "expect(JSON.stringify(brief)).not.toContain('outside.ts');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/task-brief.test.ts",
+          "testTitle": "does not turn a missing ledger read or an out-of-scope error into a cause",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 107,
+          "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
+          "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(taskIncidentBrief({ ...scope, failures: null })).toMatchObject({ status: 'unknown', cause: 'unknown', candidates: [] });",
+            "expect(taskIncidentBrief({ ...scope, failures: null }).recover).toEqual({ tool: 'work_items:get', args: { id: 'WI-task', harness: 'h' } });",
+            "expect(taskIncidentBrief({ ...scope, failures: [{ testRunId: 7, path: '../outside.test.ts', status: 'error', commit: null, logSha256: null }] }))\n      .toMatchObject({ status: 'measured', cause: 'unknown', failures: [], candidates: [] });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-17",
+      "title": "Cross-repository scope",
+      "barHash": "e12d3e81f9add4474b3dccc87499a29dfea45574d0c113a922f33e86203523fa",
+      "model": "A cross-repository relationship query respects the registered workspace scope.",
+      "falsifier": "A query returns relationship evidence from a repository outside the caller's allowed scope.",
+      "requiredScope": [
+        "P-019",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:12",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:24"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/scoped-contracts.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts",
+          "testTitle": "rejects an explicit foreign workspace before loading its registry",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 22,
+          "fileSha256": "8a5020de39fe4522a51453d9c17e47fc6102745bc5f8263ac64e2fab40624e00",
+          "gitBlob": "f3751e2e48df89ec7e8dfb40d1493d997a8c5117",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.error).toContain('workspace');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts",
+          "testTitle": "does not launch source workers for an unregistered repository",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 48,
+          "fileSha256": "8a5020de39fe4522a51453d9c17e47fc6102745bc5f8263ac64e2fab40624e00",
+          "gitBlob": "f3751e2e48df89ec7e8dfb40d1493d997a8c5117",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(io.registry).toHaveBeenCalledWith('workspace-a');",
+            "expect(result.error).toContain('not registered');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-18",
+      "title": "Architecture discovery",
+      "barHash": "b122a3bf80810cfe545054592a97e3070ec59c668b0cde2b6f7097ab9a93aa37",
+      "model": "A concept-search result is labelled as retrieval evidence rather than compiler truth.",
+      "falsifier": "A semantic/cluster result claims an authoritative dependency without source corroboration.",
+      "requiredScope": [
+        "P-020",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-029"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/first-party-discovery.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts",
+          "testTitle": "retrieves independently relevant source with RRF evidence, never relevance from a neighbouring component alone",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 44,
+          "fileSha256": "ace40691dc741f914171bcc69cc0b39abd755f17a0a245a4ba9f41e520e0f386",
+          "gitBlob": "bb81d82c0999a5d4fcab628d7238de743615d198",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.error).toBeNull();",
+            "expect(result.discovery!.matches[0]!.symbol.site.name).toBe('invoicePayment');",
+            "expect(result.discovery!.matches.every(match => match.evidence === 'retrieval')).toBe(true);",
+            "expect(result.discovery!.matches.map(match => match.symbol.site.name)).not.toContain('unrelated');",
+            "expect(result.discovery!.matches[0]!.rankers).toContain('symbol-path');",
+            "expect(result.discovery!.matches[0]!.rankers).toContain('source-text');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts",
+          "testTitle": "rejects partial-term matches across disconnected source instead of combining unrelated capabilities",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 59,
+          "fileSha256": "ace40691dc741f914171bcc69cc0b39abd755f17a0a245a4ba9f41e520e0f386",
+          "gitBlob": "bb81d82c0999a5d4fcab628d7238de743615d198",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(query(root, 'concept-search', { name: 'invoice' }).sites.length).toBeGreaterThan(0);",
+            "expect(query(root, 'concept-search', { name: 'garden' }).sites.map(site => site.name)).toContain('unrelated');",
+            "expect(mixed.error).toBeNull();",
+            "expect(mixed.discovery).toMatchObject({ outcome: 'not-found-in-scope', matches: [] });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-19",
+      "title": "Bounded context",
+      "barHash": "3c7be2b03bc9951a817f2ec35695835227f9e466e6cdd370e571cb67279302a0",
+      "model": "An evidence bundle exposes its omitted detail through a stable expansion reference.",
+      "falsifier": "A capped bundle silently presents its retained subset as complete.",
+      "requiredScope": [
+        "P-021",
+        "P-026"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:12",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:18"
+      ],
+      "planAuthority": [
+        "D-003"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "testTitle": "keeps complete small evidence distinct from a truncated preview and binds expansion to the saved bytes",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 37,
+          "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+          "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.answer.error).toBeNull();",
+            "expect(bundle).toMatchObject({ kind: 'captured-source', sourcePaths: ['target.ts'], truncated: false,\n        totalChars: source.length, retainedChars: source.length });",
+            "expect(artifact.preview).toBe(source);",
+            "expect(bundle.tokens.source).toBe(bundle.tokens.retained);",
+            "expect(bundle.tokens.source).toBeGreaterThan(0);",
+            "expect(bundle.expansion.args.file_path).toBe(path);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "retains a bounded actual source preview and recovers omitted evidence from its captured artifact after the source changes",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 86,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(response.data.answer.error, JSON.stringify(response.data.answer)).toBeNull();",
+            "expect(bundle).toMatchObject({ kind: 'captured-source', sourcePaths: ['target.ts'], truncated: true,\n        expansion: { tool: 'capability:read' } });",
+            "expect(artifact.preview).not.toContain('OMITTED_NATIVE_EVIDENCE');",
+            "expect(bundle.tokens.retained).toBeGreaterThan(0);",
+            "expect(bundle.tokens.retained).toBeLessThanOrEqual(bundle.tokens.budget);",
+            "expect(captured).toContain('OMITTED_NATIVE_EVIDENCE');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-20",
+      "title": "Dream source grounding",
+      "barHash": "1afd1814a578f8f4bd91dec19087544e8395e11bcbd4fe4316742b5f4aef9e77",
+      "model": "A graph-enriched Dream packet passes current-source verification.",
+      "falsifier": "An enriched packet remains eligible after a cited source hash changes.",
+      "requiredScope": [
+        "P-022",
+        "P-025"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:20"
+      ],
+      "planAuthority": [
+        "D-003"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/dream/capability-packets.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/dream/capability-packets.test.ts",
+          "testTitle": "refuses a source that changes during packing before it can enter cache",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 394,
+          "fileSha256": "8587e504e1f521a22996e3aa406bf64f10f546fcadeaf5040f2f02c6b97d0368",
+          "gitBlob": "f8b0a5276278a7821715fb7e2008b9b36e731b28",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(await buildCapabilityPacket(f.input, f.deps)).toMatchObject({ status: 'unavailable' });",
+            "expect(f.deps.cache.set).not.toHaveBeenCalled();"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/dream/capability-packets.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+            "packages/operator-core/lib/dream/capability-packets.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/dream/capability-packets.test.ts",
+          "testTitle": "queries a declaration identifier and bounds caller/callee discovery after compiler resolution",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 273,
+          "fileSha256": "8587e504e1f521a22996e3aa406bf64f10f546fcadeaf5040f2f02c6b97d0368",
+          "gitBlob": "f8b0a5276278a7821715fb7e2008b9b36e731b28",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(f.deps.resolveSymbol).toHaveBeenCalledWith(f.root, join(f.root, path), 2, 16);",
+            "expect(f.deps.lookup).toHaveBeenCalledWith(f.root, join(f.root, path), 2, 16);",
+            "expect(f.deps.neighbors).toHaveBeenCalledWith('callers', 'repo', 'narrowHarnessSlugsToSessionHive');",
+            "expect(f.deps.neighbors).toHaveBeenCalledWith('callees', 'repo', 'narrowHarnessSlugsToSessionHive');",
+            "expect(built.packet.coverage.excluded.join('\\n')).toContain('result truncated');",
+            "expect(built.packet.coverage.excluded.join('\\n')).toContain('index unknown or stale');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/dream/capability-packets.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+            "packages/operator-core/lib/dream/capability-packets.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-21",
+      "title": "Dream candidate provenance",
+      "barHash": "1f8c233166d05b032a8f7e16a55cdff6b5af62349aec501b7679f222267d496d",
+      "model": "A graph-proposed sampler relation is bound to both capability source versions.",
+      "falsifier": "A relation from an old capability version enters the current structural sample.",
+      "requiredScope": [
+        "P-023",
+        "P-025"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:20"
+      ],
+      "planAuthority": [
+        "D-003"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/dream/capability-packets.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/dream/capability-sampler.test.ts",
+          "testTitle": "rejects stale graph identity, inferred contracts and overlapping capability aliases",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 193,
+          "fileSha256": "27239600a4756ccc1623c0f3cc3454b46195393f7c0aa0cebeff650ab82dadea",
+          "gitBlob": "91df0db5a043fce017d4e4cf7a5b8003d2859726",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(buildCapabilityGraphSamplingHints(await snapshot([a, b])).relations).toEqual([]);",
+            "expect(buildCapabilityGraphSamplingHints(await snapshot([a, b])).relations).toEqual([]);",
+            "expect(buildCapabilityGraphSamplingHints(await snapshot([a, b])).relations).toEqual([]);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/dream/capability-sampler.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+            "packages/operator-core/lib/dream/capability-sampler.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/dream/capability-sampler.test.ts",
+          "testTitle": "uses supported versioned relation features and refuses name-only/stale hints",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 410,
+          "fileSha256": "27239600a4756ccc1623c0f3cc3454b46195393f7c0aa0cebeff650ab82dadea",
+          "gitBlob": "91df0db5a043fce017d4e4cf7a5b8003d2859726",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(r.selection.relation).toEqual(hint);",
+            "expect(r.selection.a.packet.unit.id).toBe(hint.aId);",
+            "expect(r.log.fallback).toBeNull();",
+            "expect(rejected.log.invalidRelations).toBe(1);",
+            "expect(rejected.selection.relation).toBeNull();",
+            "expect(rejected.log.strategy).toBe('uniform-cross-domain');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/dream/capability-sampler.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+            "packages/operator-core/lib/dream/capability-sampler.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-22",
+      "title": "Dream prior-art review",
+      "barHash": "64e120fd227378eb012bf071c0281729191026019f797147a06216d65cd7165d",
+      "model": "A proposal matching the existing integration fixture is classified as duplicate or refinement.",
+      "falsifier": "The same proposal is accepted as a verified novel integration.",
+      "requiredScope": [
+        "P-024",
+        "P-025"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:20"
+      ],
+      "planAuthority": [
+        "D-003"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts",
+          "testTitle": "supplies the existing integration and its renamed helper with exact source versions to independent review",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 48,
+          "fileSha256": "d02d73f2ab1766afd9f2f10a56978e942cae01d7de9ddddd5880af33d40b074f",
+          "gitBlob": "9103245ecb7c6171dca3654bd9497040706499ba",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(result.status).toBe('current');",
+            "expect(result.matches.map(row => row.ref).sort(), result.note).toEqual(['code-source:existing.ts', 'code-source:helper.ts']);",
+            "expect(result.matches.find(row => row.ref === 'code-source:existing.ts')).toMatchObject({ sourceHash: capabilityHash(f.source),\n      candidateHash: null, evidenceHash: null, locator: { kind: 'code', id: 'source:existing.ts', path: 'existing.ts' } });",
+            "expect(result.note).toContain('not proof of absence');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts",
+          "testTitle": "detects changed integration source after retrieval and preserves an empty-search unknown rather than claiming novelty",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 60,
+          "fileSha256": "d02d73f2ab1766afd9f2f10a56978e942cae01d7de9ddddd5880af33d40b074f",
+          "gitBlob": "9103245ecb7c6171dca3654bd9497040706499ba",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect((await adapter.readCurrent(prior))!.sourceHash).not.toBe(prior.sourceHash);",
+            "expect(absent.matches).toEqual([]);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-23",
+      "title": "Dream useful outcomes",
+      "barHash": "2f4082ceca5cd894fff25e8274fdd8a842456f0f02d10435c952dfcea020ca76",
+      "model": "The matched Dream study records independently assessed useful outcomes against its frozen budget.",
+      "falsifier": "The study reports success using only proposal volume or reviewer acceptance.",
+      "requiredScope": [
+        "P-025"
+      ],
+      "evidencePlane": "tree",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:20"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-027"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/dream/dream-study-graph-comparison.test.ts",
+          "packages/operator-core/lib/dream/dream-evaluation.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/dream/dream-evaluation.test.ts",
+          "testTitle": "reconstructs the spent graph study without promoting unknown novelty or reopening downstream trials",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 68,
+          "fileSha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
+          "gitBlob": "1e2ef5ffd9bc7b57afe6d0ea4963df56800dd661",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(findBoxIdentityPaths(JSON.stringify(saved))).toEqual([]);",
+            "expect(dreamEvaluationProtocolHash(comparison.protocol)).toBe(comparison.pin);",
+            "expect([frozenReview.blindHash, unblinded.blindHash, saved.blindHash]).toEqual([blindHash, blindHash, blindHash]);",
+            "expect(unblinded.blindPostId).toBe(frozenReview.posts[0].id);",
+            "expect(unblinded.posts[0].id).toBe(1179964);",
+            "expect(unblinded.posts[0].body).toContain('frozen labels UNCHANGED: both REJECT as frozen');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/dream/dream-evaluation.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/dream/dream-evaluation.test.ts"
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/dream/dream-evaluation.test.ts",
+          "testTitle": "keeps failed graph trials, missing judgments and unknown cost out of benefit claims",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 143,
+          "fileSha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
+          "gitBlob": "1e2ef5ffd9bc7b57afe6d0ea4963df56800dd661",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(missing).toMatchObject({ completeAttempts: true, commonInput: true, fullyAttributedCost: false,\n      usefulOutcomesPerDollar: null, verdict: 'inconclusive' });",
+            "expect(missing.treatments[0]).toMatchObject({ attempts: 2, candidateCount: 0, noCandidateAttempts: 2,\n      qualifiedFamilies: null, duplicateRate: null });",
+            "expect(missing.treatments[1]).toMatchObject({ missingLabels: 2, qualifiedFamilies: null, duplicateRate: null });",
+            "expect(assessed.treatments[1]).toMatchObject({ qualifiedFamilies: 0, refinementRate: 1, accountedUsd: 0.8 });",
+            "expect(assessed.treatments[0]!.duplicateRate).toBeNull();",
+            "expect(unknownNovelty.treatments[1]).toMatchObject({ duplicateRate: null, refinementRate: null,\n      noveltyUnknownCandidates: 2, qualifiedFamilies: null });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/dream/dream-evaluation.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/dream/dream-evaluation.test.ts"
+          ]
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-24",
+      "title": "Measured GitNexus disposition",
+      "barHash": "f5ab09eb9d92f200ca19b3308d5a7aeddd6a84fe29af30eb3440f28005320f5e",
+      "model": "The retirement decision accounts for each inventoried GitNexus consumer.",
+      "falsifier": "A retained consumer loses its backend during retirement without an approved disposition.",
+      "requiredScope": [
+        "P-027"
+      ],
+      "evidencePlane": "deployed",
+      "sourceRefs": [
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:1",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:6",
+        "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-005",
+        "D-008",
+        "D-018",
+        "D-023"
+      ],
+      "boundCheck": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts"
+        ]
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "testTitle": "preserves the separate internal-comparison and distribution decisions",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 591,
+          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(admitArm('gitnexus@1.6.9').admission.distribution?.decision).toBe('excluded');",
+            "expect(() => admitArm('gitnexus@1.6.9', undefined, 'distribution')).toThrow(/excluded from product distribution/);",
+            "expect(() => admitArm('no-third-party', undefined, 'distribution')).toThrow(/no explicit approved decision/);"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "boundImportChain": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      ],
+      "gaps": [
+        "Bound admission separation case cannot detect a missing consumer disposition or a retained consumer losing its backend. Add census-complete positive and missing/backend-loss negative cases through bound integration/e2e checks; qualify final deployed witnesses."
+      ],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-30",
+      "title": "Measured native use",
+      "barHash": "8a30bb5a5bfe484117e818011eecaa894dde115c877a285e70342803726940d3",
+      "model": "A scheduled rubric check reports native code-intelligence adoption from the deployed operator's ledgers.",
+      "falsifier": "BROKEN if any one: no scheduled code-intel:native-adoption-measured rescore result is recorded from the deployed release-operator ledgers; its evidence lacks the serving /api/health SHA or uses a non-release ledger; a still-open subject window rates pass rather than unknown; a declared per-operation volume, agent reach, failure-class, follow-through or substitutable raw-text dimension is absent; the result omits what the instrument cannot observe.",
+      "requiredScope": [
+        "P-033"
+      ],
+      "evidencePlane": "deployed",
+      "sourceRefs": [
+        "turn:54f63cd0@2026-10-14T06:03:28.626Z"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-009",
+        "D-011",
+        "D-012",
+        "D-014",
+        "D-016"
+      ],
+      "boundCheck": {
+        "kind": "instrument",
+        "instrumentKey": "code-intel:native-adoption-measured"
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
+          "testTitle": "measured passes on any observed lookups; an empty window is unknown, never pass",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 303,
+          "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+          "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(rateNativeAdoption(metrics, null).measured.verdict).toBe('pass');",
+            "expect(rateNativeAdoption(empty, null).measured).toMatchObject({ verdict: 'unknown', unknownReason: 'empty-population' });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
+          "testTitle": "resolves platform-computed scorecard snapshots for both criteria through the real seam",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 445,
+          "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
+          "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(reads).toBe(1);",
+            "expect(measured).toMatchObject({ verdict: 'pass', provenance: 'platform-computed' });",
+            "expect((measured?.value as { adoption: { lookups: number } }).adoption.lookups).toBe(8);",
+            "expect(goodUse).toMatchObject({ verdict: 'unknown', provenance: 'platform-computed' });",
+            "expect((goodUse?.value as { unknownReason?: string }).unknownReason).toBe('insufficient-sample');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        }
+      ],
+      "gaps": [],
+      "gradingStatus": "not-rated"
+    },
+    {
+      "criterion": "R-31",
+      "title": "Good native use",
+      "barHash": "188a9b82590c4b84c044e7645898b667705946f3be832a8c007e029288c1bd0f",
+      "model": "Post-intervention native code-intelligence adoption meets D-011's frozen target.",
+      "falsifier": "BROKEN if any one: the post window misses a D-011 bound (agentAdoptionRate < 0.12, nativeCallShare < 0.14, or refusalRate > 0.088); the post window is shorter than 72 hours or begins before interventions are verified serving on the deployed release operator; any D-011 baseline, bound or derivation rule differs from the decision; a window below 464 lookups rates anything but unknown, or a bound miss is reported as anything but fail.",
+      "requiredScope": [
+        "P-033"
+      ],
+      "evidencePlane": "deployed",
+      "sourceRefs": [
+        "turn:54f63cd0@2026-10-14T06:03:28.626Z"
+      ],
+      "planAuthority": [
+        "D-003",
+        "D-009",
+        "D-011",
+        "D-012",
+        "D-014",
+        "D-016"
+      ],
+      "boundCheck": {
+        "kind": "instrument",
+        "instrumentKey": "code-intel:native-adoption-good-use"
+      },
+      "detectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
+          "testTitle": "good use passes only when every frozen bound holds",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 318,
+          "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+          "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(rateNativeAdoption(metrics, target()).goodUse.verdict).toBe('pass');",
+            "expect(missed.verdict).toBe('fail');",
+            "expect(missed.reason).toContain('agent adoption');",
+            "expect(rateNativeAdoption(metrics, target({ maxRefusalRate: 0.1 })).goodUse.verdict).toBe('fail');",
+            "expect(rateNativeAdoption(metrics, target({ minNativeCallShare: 0.5 })).goodUse.verdict).toBe('fail');"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
+          "testTitle": "pins the baseline-derived bounds recorded in the decision",
+          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+          "status": "candidate-requires-assertion-review",
+          "line": 329,
+          "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+          "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+          "workingMatchesPinned": true,
+          "assertionExcerpts": [
+            "expect(NATIVE_ADOPTION_TARGET).toMatchObject({\n      decisionRef: 'native-code-intelligence-ecosystem-and-dream-2026-10-09#D-011',\n      baselineWindow: { windowStart: '2026-10-11T06:00:00.000Z', windowEnd: '2026-10-14T06:00:00.000Z' },\n      baseline: { agentAdoptionRate: 0.06, nativeCallShare: 0.0706, refusalRate: 0.177, lookups: 1857 },\n      minLookups: 464, minAgentAdoptionRate: 0.12, minNativeCallShare: 0.14, maxRefusalRate: 0.088,\n    });"
+          ],
+          "replay": {
+            "tool": "testing:run",
+            "args": {
+              "files": [
+                "packages/operator-core/lib/code-intelligence/native-adoption.test.ts"
+              ],
+              "harness": "papercusp"
+            }
+          },
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+        }
+      ],
+      "gaps": [
+        "Tests decide the rule; D-011 requires a separately qualified 72-hour post-deployment measurement at frozen targets. No qualified successful window is claimed."
+      ],
+      "gradingStatus": "not-rated"
+    }
+  ],
+  "inverseDecisions": [
+    {
+      "decision": "D-001",
+      "title": "Draft scope consolidates the conversation without reopening shipped or taking over independent lanes",
+      "coveringCriteria": [],
+      "disposition": "lifecycle-or-transferred-scope",
+      "rationale": "Historical draft scoping/provenance; execution is superseded by D-003 and D-030.",
+      "sourceSha256": "896d3a8a0b94d6dc4ad2969a3bfadc2a61305c99d079823ef209137a3591b4fd",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-001"}
+    },
+    {
+      "decision": "D-002",
+      "title": "Proposed architecture owns the evidence and workflow interface while reusing maintained analysis engines",
+      "coveringCriteria": [
+        "R-2",
+        "R-3",
+        "R-5",
+        "R-16",
+        "R-20",
+        "R-22"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Explicit unsupported/source/inference semantics; reuse is an implementation constraint.",
+      "sourceSha256": "42af8c25a59caad0b1edb5e4335ff57030191e4ec61763eb2e5ff5a3c5f83e04",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-002"}
+    },
+    {
+      "decision": "D-003",
+      "title": "Workspace owner authorizes AUTO execution, route SELF, through verified shipment",
+      "coveringCriteria": [
+        "R-1",
+        "R-2",
+        "R-3",
+        "R-4",
+        "R-5",
+        "R-6",
+        "R-7",
+        "R-8",
+        "R-9",
+        "R-10",
+        "R-11",
+        "R-12",
+        "R-13",
+        "R-14",
+        "R-15",
+        "R-16",
+        "R-17",
+        "R-18",
+        "R-19",
+        "R-20",
+        "R-21",
+        "R-22",
+        "R-23",
+        "R-24"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Core outcomes covered; execution route and independent acceptance are lifecycle gates. Advanced evaluations were later transferred by D-016/D-020.",
+      "sourceSha256": "a17aab67c602a5b0fa42be75471e9c726d91a0c990767413b9ca810086b0d88b",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-003"}
+    },
+    {
+      "decision": "D-004",
+      "title": "Detailed work-item decomposition is agent-authored; retain unknown source provenance explicitly",
+      "coveringCriteria": [],
+      "disposition": "lifecycle-or-transferred-scope",
+      "rationale": "Authorship/provenance instruction, not a product outcome. Preserve unknown owner provenance.",
+      "sourceSha256": "fed0522a25700e8a4835868b68255866d2d953e77a4a0cf7c700373f406b8005",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-004"}
+    },
+    {
+      "decision": "D-005",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-1",
+        "R-24"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Final distribution/retirement scope belongs to P027.",
+      "sourceSha256": "ceada60d2903d012d9b72954eb7dae65584c4dad52743016a1ec1e108942264b",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-005"}
+    },
+    {
+      "decision": "D-006",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-7"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Final matched backend verdict belongs to P026.",
+      "sourceSha256": "dfa62200378d7fcf7979a551d0cd0596f38dd7ceac8064bdfde8c77cfdc0b42d",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-006"}
+    },
+    {
+      "decision": "D-007",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-3"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Final graph source attribution belongs to P007/P017.",
+      "sourceSha256": "62e1a388b024f4048ee9c172b3e4ec3370bfdd548f0e55637424ebb9f19d6117",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-007"}
+    },
+    {
+      "decision": "D-008",
+      "title": "P-009 uses the existing first-party snapshot producer and reversible routine backend option",
+      "coveringCriteria": [
+        "R-8",
+        "R-24"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "First-party default, baseline-preserving selector and explicit optional engine; final census is R24.",
+      "sourceSha256": "f0333f40ff7395d257f1ddbb67ff7238da9b4ee8f9a20ca73bde36a426c0bb16",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-008"}
+    },
+    {
+      "decision": "D-009",
+      "title": "Workspace owner adds su-87f0aa6a as AUTO executor through shipment and adds measured good use (P-033) to scope",
+      "coveringCriteria": [
+        "R-30",
+        "R-31"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Native use and good use are mandatory; execution split is historical.",
+      "sourceSha256": "d753a1d60b82b4b3f7cf73f8eca328b17d3a6dadccd60020e1ae3f8db7648d58",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-009"}
+    },
+    {
+      "decision": "D-010",
+      "title": "D-009 lane split accepted by su-2245b010",
+      "coveringCriteria": [
+        "R-23",
+        "R-24"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Do not replay spent Dream trials; final handover evidence is gated. Route split is historical.",
+      "sourceSha256": "37f5e72700fc4082d9280fd35fca825e6b208563e737623c2a36dddade459581",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-010"}
+    },
+    {
+      "decision": "D-011",
+      "title": "P-033 baseline frozen and R-31 adoption target fixed before interventions",
+      "coveringCriteria": [
+        "R-30",
+        "R-31"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Frozen baseline, target bounds, equal 72-hour deployed window and sample floor.",
+      "sourceSha256": "14305695ccf4dcbac776ef66f99fe5eac213617c8d07ffa2c19247bc3d1d5f66",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-011"}
+    },
+    {
+      "decision": "D-012",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-30",
+        "R-31"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Adds instrument-backed adoption outcomes.",
+      "sourceSha256": "3c4c2421fbe82042b65f6e5d7db4e91b84f2809cfc5d85f8a5d6c77ffa2cc4f0",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-012"}
+    },
+    {
+      "decision": "D-013",
+      "title": "Workspace owner-directed successor resumes the full shipment lane with existing live acceptance ownership",
+      "coveringCriteria": [
+        "R-23",
+        "R-24",
+        "R-30",
+        "R-31"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Successor route historical; frozen Dream/adoption and downstream sequencing preserved.",
+      "sourceSha256": "29150bee59c2db7ffd6776693f46317024b75e0cb33ca2fa5b484cfdf27533f5",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-013"}
+    },
+    {
+      "decision": "D-014",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-30",
+        "R-31"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Adoption falsifiers preserved; R27 transferred by D020.",
+      "sourceSha256": "a74650bbb43ffa7582801af621de691cf043a15ff0770509fa57b0d1b2b0f9b2",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-014"}
+    },
+    {
+      "decision": "D-015",
+      "title": "P031 analyzer admission remains preparatory",
+      "coveringCriteria": [],
+      "disposition": "lifecycle-or-transferred-scope",
+      "rationale": "Preparatory advanced-analyzer admission, explicitly not acceptance; now belongs to follow-on optional-evaluations plan under D016/D020.",
+      "sourceSha256": "8b4bcb6205669aa79deeec9a74554291b84554884298fccc78adb54a634e8f7e",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-015"}
+    },
+    {
+      "decision": "D-016",
+      "title": "Workspace owner redirects delivery from pull to proactive push; push phase precedes P-026; Phase 7 split; GitNexus decided now",
+      "coveringCriteria": [
+        "R-10",
+        "R-16",
+        "R-19",
+        "R-24",
+        "R-30",
+        "R-31",
+        "R-32",
+        "R-33",
+        "R-34"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Push outcomes and unchanged adoption targets covered. Potential unmatched semantics: hot-path freshness/dedupe/budget/default flags and judge access have item/spec tests, but require checking that a mandatory rubric outcome actually grades them.",
+      "sourceSha256": "c799a501a3222f1d198ba8dfdbff62e1fbf33187acf7b486801ef5c0d995b4af",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-016"}
+    },
+    {
+      "decision": "D-017",
+      "title": "Workspace owner transfers whole-plan AUTO execution to su-8b8dac44 directly",
+      "coveringCriteria": [],
+      "disposition": "lifecycle-or-transferred-scope",
+      "rationale": "Superseded executor transfer; no new product bar.",
+      "sourceSha256": "a8729997b33d5f195a2794e4eb61eb3fd1b256b1e74c7b9f8babf1e6f5449e2b",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-017"}
+    },
+    {
+      "decision": "D-018",
+      "title": "P042 narrows hourly GitNexus maintenance to the independent first-party snapshot",
+      "coveringCriteria": [
+        "R-8",
+        "R-24"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "First-party hourly snapshot default and optional GitNexus analysis are distinct.",
+      "sourceSha256": "219edb6db17bfcea09ad5bd6d699333ccc9154da306269e4b25a1fb1173d686c",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-018"}
+    },
+    {
+      "decision": "D-019",
+      "title": "P034 schema blocker corrected by native readback of 1519 and its actual protected apply",
+      "coveringCriteria": [],
+      "disposition": "lifecycle-or-transferred-scope",
+      "rationale": "Historical migration/backup receipt correction; no new product guarantee; do not reapply migration1519.",
+      "sourceSha256": "66564c07a084c0557e7789924074bf449e7d76ac7730e55beff021363936e0f6",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-019"}
+    },
+    {
+      "decision": "D-020",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [],
+      "disposition": "lifecycle-or-transferred-scope",
+      "rationale": "Approved transfer R25-R29 to optional-evaluations plan; intentionally absent from core rubric.",
+      "sourceSha256": "deaf4022d9c6940abf9ddfd40933cba7754c0fa3875514e7075a46fd354c16df",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-020"}
+    },
+    {
+      "decision": "D-021",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-32",
+        "R-33",
+        "R-34"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "New additive push measures; preserve existing bars.",
+      "sourceSha256": "182189145b87fcea6fc9bd10141fb3af04236d4d27b72fbce840952d9a2589fb",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-021"}
+    },
+    {
+      "decision": "D-022",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-6",
+        "R-7",
+        "R-11",
+        "R-12",
+        "R-14",
+        "R-16",
+        "R-17",
+        "R-18",
+        "R-19",
+        "R-20",
+        "R-21",
+        "R-22",
+        "R-23"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Criterion methods and existing outcomes preserved, not another product behavior.",
+      "sourceSha256": "5b82c4d208c96aeed83b01fdb6108f9f473c28920fdeae56c75ca1c96f7a23e8",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-022"}
+    },
+    {
+      "decision": "D-023",
+      "title": "P042 consumer dispositions: keep first-party defaults and bounded internal options; deployed freshness receipt begins",
+      "coveringCriteria": [
+        "R-1",
+        "R-8",
+        "R-24"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Current consumer disposition; do not equate route/use with benefit or final artifacts.",
+      "sourceSha256": "3404b655c4c72777f76e717ab8ee4984b5eb6ed517094a9539b20800091aba4e",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-023"}
+    },
+    {
+      "decision": "D-024",
+      "title": "Keep P-026 blocked and unassigned until P-040/P-041 prerequisites resolve",
+      "coveringCriteria": [
+        "R-7"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Historical prerequisite sequencing; current lane authority determines when P026 executes.",
+      "sourceSha256": "bd5dc60467a5c060f00342bf4ad9ec1e0c1f085bcac95ef9ca580df503b25036",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-024"}
+    },
+    {
+      "decision": "D-025",
+      "title": "Workspace owner transfers whole-plan AUTO execution to su-72d15d1c (supersedes D-017's executor)",
+      "coveringCriteria": [],
+      "disposition": "lifecycle-or-transferred-scope",
+      "rationale": "Superseded executor identity; acceptance targets remain unchanged.",
+      "sourceSha256": "955d050ea736691a2dadea866b35167415a8c3a008c5e20869f81baa6f409820",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-025"}
+    },
+    {
+      "decision": "D-026",
+      "title": "P-041 per-leg disposition: keep every push leg on; sample too small to tune or switch off",
+      "coveringCriteria": [
+        "R-32",
+        "R-33",
+        "R-34"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Keep legs on; small/unknown samples do not justify rollout tuning. Read D028 correction.",
+      "sourceSha256": "0ab911e0c189940afecec102eda563cf0c645bf3baf7ab5ec99c44f211316a9e",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-026"}
+    },
+    {
+      "decision": "D-027",
+      "title": "P-025 Dream graph evaluation: result inconclusive, route NARROW",
+      "coveringCriteria": [
+        "R-23"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Scientific inconclusive outcome and NARROW disposition; never manufacture zero-cost benefit.",
+      "sourceSha256": "23c1a7d954e94d2869c74d3a080c84cb54ade7d88af5e1566fc75e32acb6b963",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-027"}
+    },
+    {
+      "decision": "D-028",
+      "title": "Correction to D-026: first-touch and resume follow-through counted positives only; disposition unchanged",
+      "coveringCriteria": [
+        "R-33"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Positive-only denominator bug correction; allow negative only when no test request/shell in complete window.",
+      "sourceSha256": "786a0e109ce1964d6abfc39813c831d8bf7805bce35203868080e4d110a6fbe3",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-028"}
+    },
+    {
+      "decision": "D-029",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-2",
+        "R-5",
+        "R-6",
+        "R-9",
+        "R-10",
+        "R-12",
+        "R-15",
+        "R-16",
+        "R-17",
+        "R-18"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Additive detector paths at rubric16; no outcome/bar change.",
+      "sourceSha256": "6ca60bb7f1298b208044ee45e749fa136c624b6c7b22a14ed0770100838286ed",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-029"}
+    },
+    {
+      "decision": "D-030",
+      "title": "Workspace owner transfers whole-plan AUTO execution to su-9ab8c7bf",
+      "coveringCriteria": [],
+      "disposition": "lifecycle-or-transferred-scope",
+      "rationale": "Current AUTO/self executor identity; no acceptance waiver or mirror choice authorization.",
+      "sourceSha256": "95d72750e2e165ae30fb2493b7cf9853e250000033084cfff1811311d9017359",
+      "sourceRead": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"decisions.D-030"}
+    }
+  ],
+  "historicalP026CheckpointArchive": {"tool":"artifacts:load","args":{"slug":"papercusp","rel_path":"evidence/native-rubric16-source-custody-2026-10-22.json"},"select":"historicalP026Checkpoint","contentHash":"f9f405923150","status":"Historical superseded record; reconcile assertions before acting"},
+  "limits": [
+    "Candidate assertion excerpts are source locators, not a detector-adequacy verdict. Read complete cases and production call graph; run distinguishing controls before claiming pass.",
+    "This edition does not bind evidence, change rubric16, revise frozen budgets/targets, certify serving runtimes, or claim shipment.",
+    "R1/R7/R24/R31 require their separate actual outcome witnesses even when detector tests pass.",
+    "D016 proactive delivery semantics need an explicit inverse-coverage audit; mapped related criteria do not imply all subclauses are covered."
+  ]
+}

@@ -6,13 +6,22 @@
  *
  * Pure: the settings file, the plugin hooks.json and the install-route repair are all fakes.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { ccHookEnrollment, ensureClaudePluginRails } from '../psu-launcher.mjs';
 
 const SETTINGS = '/home/u/.claude/settings.json';
 const ROOT = '/home/u/.papercusp/claude-plugins';
 const PLUGIN_HOOKS_PATH = `${ROOT}/plugins/papercusp/hooks/hooks.json`;
 const LOCKS = '/home/u/.papercusp/hooks/cc/pretooluse-locks-acquire.sh';
+const OPERATOR_URL = 'http://127.0.0.1:54321';
+
+// The degraded banner includes a repair URL. Keep its lazy target resolver off
+// the host's live proxy/discovery path, just like the fake repair and filesystem.
+beforeEach(() => {
+  vi.stubEnv('PAPERCUSP_OPERATOR_URL', OPERATOR_URL);
+  vi.stubEnv('PAPERCUSP_MCP_PROXY', '0');
+});
+afterEach(() => vi.unstubAllEnvs());
 
 const pluginHooks = { PreToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: LOCKS }] }] };
 const enrollment = (enabled: boolean | undefined = true) => ({
@@ -103,6 +112,7 @@ describe('ensureClaudePluginRails (P-004 launch guard)', () => {
     expect(banner).toMatch(/PAPERCUSP CLAUDE PLUGIN RAILS: MISSING OR DISABLED/);
     expect(banner).toContain(`plugin-missing: ${PLUGIN_HOOKS_PATH}`);
     expect(banner).toMatch(/NO papercusp hooks/);
+    expect(banner).toContain(`Fix: curl -X POST ${OPERATOR_URL}/api/desktop/install/papercusp-files`);
     expect(banner).toMatch(/Launching anyway/);
   });
 

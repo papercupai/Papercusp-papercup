@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as recallStats from './recall-stats';
 import * as corpusRecallIo from './corpus-recall-io';
 import * as coverageGate from '../search/coverage-gate';
+import * as recallStaleness from './recall-staleness';
+import * as flagServer from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { resetOperatorCacheForTests } from '../cache/instance';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
@@ -1976,6 +1979,52 @@ describe('buildMemoryContextBlock', () => {
       const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
 
       expect(block).toBe('## Operator memory (relevant entries)\n\n- [project] (id=m-healthy) guidance from the current module');
+    });
+
+    it.each(['flag', 'storage'] as const)('retains healthy recall while the advisory %s lookup is pending', async (phase) => {
+      process.env[FLAG_ENV] = '1';
+      const deadline = createMemoryWorkDeadline(1000);
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      let started = false;
+      const originalGetFlag = flagServer.getFlag;
+      const flag = vi.spyOn(flagServer, 'getFlag').mockImplementation(async (...args) => {
+        if (args[0] === FLAGS.MEMORY_STALENESS_IN_RECALL && phase === 'flag') {
+          started = true;
+          await pending;
+          return false;
+        }
+        return originalGetFlag(...args);
+      });
+      const storage = vi.spyOn(recallStaleness, 'loadMemoryStaleness').mockImplementation(async () => {
+        if (phase === 'storage') {
+          started = true;
+          await pending;
+        }
+        return new Map();
+      });
+      const backend = mockBackend([{ id: 'm-healthy', text: 'healthy advisory control', kind: 'project' }]);
+      useBackend(backend);
+      const block = buildMemoryContextBlock({
+        userId: 'u1', workspaceId: 'ws', queryContext: 'guidance',
+        harnessSlugs: [], potSlugs: [], deadline,
+      });
+      try {
+        const result = await block;
+        expect(started).toBe(true);
+        expect(result).toContain('id=m-healthy) healthy advisory control');
+        expect(deadline.signal.aborted).toBe(false);
+        expect(backend.search).toHaveBeenCalledOnce();
+        if (phase === 'flag') expect(storage).not.toHaveBeenCalled();
+        else expect(storage).toHaveBeenCalledOnce();
+      } finally {
+        release();
+        await block;
+        deadline.close();
+        flag.mockRestore();
+        storage.mockRestore();
+        resetMemoryDegradedForTest();
+      }
     });
   });
 });

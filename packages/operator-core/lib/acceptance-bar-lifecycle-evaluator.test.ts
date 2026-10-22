@@ -721,16 +721,81 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
     'pre-grading', options).codes).toContain('bar_snapshot_projection_stale');
   });
 
-  it.each(['tree', 'automated', 'absent'])('rejects a pending-delivery selection that is %s', (invalid) => {
+  it.each(['tree', 'automated', 'instrument', 'absent'])('rejects a pending-delivery selection that is %s', (invalid) => {
     const trace = bar({ method: 'Run checks.', check: { kind: 'instrument', instrumentKey: 'none' },
       automatedProofRequired: false, evidencePlane: 'deployed' });
     if (invalid === 'tree') trace.evidencePlane = 'tree';
     if (invalid === 'automated') trace.check = { kind: 'tests', files: ['x.test.ts'] };
+    if (invalid === 'instrument') trace.check = { kind: 'instrument', instrumentKey: 'manual' };
     const verdict = evaluateAcceptanceBarLifecycle(snapshot({ bars: [trace] }), 'pre-grading', {
       pendingDeliveryBarKeys: [invalid === 'absent' ? 'R-missing' : trace.barKey],
     });
     expect(verdict.satisfied).toBe(false);
+    expect(verdict.codes).toContain('bar_snapshot_pending_delivery_selection_invalid');
+    expect(verdict.codes).not.toContain('bar_snapshot_scope_invalid');
+    expect(verdict.nextRepair).toMatchObject({
+      code: 'bar_snapshot_pending_delivery_selection_invalid', barKey: null,
+    });
+    expect(verdict.nextRepair?.action).toContain('pendingDeliveryBarKeys');
+    expect(verdict.nextRepair?.action).toContain('instrumentKey:"none"');
+    expect(verdict.nextRepair?.action).toContain('deployed or live');
+    expect(verdict.nextRepair?.action).not.toContain('Declare a non-empty');
+    expect(verdict.message).toContain(verdict.nextRepair!.action);
+    expect(verdict).not.toHaveProperty('pendingDeliverySpecClauses');
+  });
+
+  it.each(['scope', 'plane'])('keeps a real %s defect ahead of an invalid pending-delivery selection', (invalid) => {
+    const trace = bar({ method: 'Run checks.', check: { kind: 'tests', files: ['x.test.ts'] },
+      ...(invalid === 'scope' ? { requiredScope: [] } : {
+        evidencePlane: 'staging' as AcceptanceBarTrace['evidencePlane'],
+      }),
+    });
+    const subject = snapshot({ bars: [trace] });
+    const verdict = evaluateAcceptanceBarLifecycle(subject, 'pre-grading', {
+      pendingDeliveryBarKeys: [trace.barKey],
+    });
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.codes).toEqual(expect.arrayContaining([
+      'bar_snapshot_scope_invalid', 'bar_snapshot_pending_delivery_selection_invalid',
+    ]));
+    expect(verdict.nextRepair).toMatchObject({
+      code: 'bar_snapshot_scope_invalid', barKey: trace.barKey,
+      action: 'Declare a non-empty tree, deployed, or live evidence scope.',
+    });
+    expect(verdict).not.toHaveProperty('pendingDeliverySpecClauses');
+  });
+
+  it('does not let an eligible pending-delivery selection waive an empty evidence scope', () => {
+    const trace = bar({ method: 'Verify delivery.', check: { kind: 'instrument', instrumentKey: 'none' },
+      automatedProofRequired: false, evidencePlane: 'deployed', requiredScope: [],
+    });
+    const verdict = evaluateAcceptanceBarLifecycle(snapshot({ bars: [trace] }), 'pre-grading', {
+      pendingDeliveryBarKeys: [trace.barKey],
+    });
+    expect(verdict.satisfied).toBe(false);
     expect(verdict.codes).toContain('bar_snapshot_scope_invalid');
+    expect(verdict.codes).not.toContain('bar_snapshot_pending_delivery_selection_invalid');
+    expect(verdict.nextRepair?.code).toBe('bar_snapshot_scope_invalid');
+    expect(verdict).not.toHaveProperty('pendingDeliverySpecClauses');
+  });
+
+  it('keeps a mixed pending-delivery request blocked without hiding automated proof', () => {
+    const manual = bar({ barKey: 'R-manual', method: 'Verify delivery.',
+      check: { kind: 'instrument', instrumentKey: 'none' }, automatedProofRequired: false,
+      evidencePlane: 'deployed', requiredScope: ['deployed'],
+    });
+    const automated = bar({ method: 'Run tests.', check: { kind: 'tests', files: ['x.test.ts'] } });
+    const verdict = evaluateAcceptanceBarLifecycle(snapshot({ bars: [manual, automated] }), 'pre-grading', {
+      pendingDeliveryBarKeys: [manual.barKey, automated.barKey, 'R-missing'],
+    });
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.codes).toContain('bar_snapshot_pending_delivery_selection_invalid');
+    expect(verdict.codes).not.toContain('bar_snapshot_scope_invalid');
+    expect(verdict.pendingDeliveryBarKeys).toEqual([manual.barKey]);
+    expect(verdict.blockingBars).toEqual(expect.arrayContaining([
+      expect.objectContaining({ barKey: automated.barKey,
+        codes: expect.arrayContaining(['bar_snapshot_proof_missing']) }),
+    ]));
     expect(verdict).not.toHaveProperty('pendingDeliverySpecClauses');
   });
 

@@ -1833,3 +1833,84 @@ export function _resetReplicationLivenessForTests(): void {
   openStallEiProbe = null;
   repairHandlers.clear();
 }
+
+/** One repair lease per remote core; diagnostics do not own another retry clock. */
+export interface ReplicationProgressRepair {
+  readonly keyHex: string;
+  readonly generation: number;
+  readonly knownLength: number;
+  readonly position: number;
+  readonly stalledForMs: number;
+}
+
+/**
+ * P-531: a deadline follows received/applied progress, never announce traffic or
+ * peer counts. The boot-owned caller serializes close/reopen under its merge gate
+ * and completes the lease afterwards. A slow repair cannot dispatch a second one.
+ * Use the merge cursor for sparse replicas: their contiguous prefix may stay zero.
+ */
+export class ReplicationProgressOwner {
+  private readonly logs = new Map<string, {
+    position: number;
+    lastProgressAtMs: number;
+    repair: ReplicationProgressRepair | null;
+  }>();
+  private generation = 0;
+
+  constructor(readonly deadlineMs = 30_000) {
+    if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
+      throw new RangeError('replication progress deadline must be positive and finite');
+    }
+  }
+
+  sample(input: {
+    keyHex: string;
+    knownLength: number;
+    position: number;
+    nowMs: number;
+  }): ReplicationProgressRepair | null {
+    const { keyHex, knownLength, position, nowMs } = input;
+    if (!keyHex || !Number.isSafeInteger(knownLength) || knownLength < 0 ||
+        !Number.isSafeInteger(position) || position < 0 || !Number.isFinite(nowMs)) {
+      throw new RangeError('replication progress requires a core key, measured lengths and finite time');
+    }
+    let state = this.logs.get(keyHex);
+    if (!state) {
+      state = { position, lastProgressAtMs: nowMs, repair: null };
+      this.logs.set(keyHex, state);
+    }
+    if (position > state.position || position >= knownLength) {
+      state.position = Math.max(state.position, position);
+      state.lastProgressAtMs = Math.max(state.lastProgressAtMs, nowMs);
+    }
+    if (state.repair || position >= knownLength || nowMs - state.lastProgressAtMs < this.deadlineMs) return null;
+    const repair: ReplicationProgressRepair = {
+      keyHex,
+      generation: ++this.generation,
+      knownLength,
+      position,
+      stalledForMs: nowMs - state.lastProgressAtMs,
+    };
+    state.repair = repair;
+    return repair;
+  }
+
+  /** A failed reopen is retried after the same bounded window, without a ladder. */
+  complete(repair: ReplicationProgressRepair, nowMs: number): boolean {
+    if (!Number.isFinite(nowMs)) throw new RangeError('replication repair completion requires finite time');
+    const state = this.logs.get(repair.keyHex);
+    if (state?.repair !== repair) return false;
+    state.repair = null;
+    state.lastProgressAtMs = Math.max(state.lastProgressAtMs, nowMs);
+    return true;
+  }
+
+  /** Revocation/re-admission starts a new lifetime; late completions stay fenced. */
+  forget(keyHex: string): void {
+    this.logs.delete(keyHex);
+  }
+
+  clear(): void {
+    this.logs.clear();
+  }
+}

@@ -193,7 +193,8 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
   // `---\n…\n---\n` block from the rendered markdown prevents
   // Vditor.preview from showing it as a low-contrast paragraph
   // (was dark-blue-on-dark-blue and unreadable).
-  const strippedRaw = data?.legacy ? raw : stripFrontmatter(raw);
+  const displayRaw = data?.items?.some(item => item.anchors?.length) ? data.prose ?? raw : raw;
+  const strippedRaw = data?.legacy ? raw : stripFrontmatter(displayRaw);
   const editing = pane === 'edit';
   const dirty = editing && draft !== null && draft !== raw;
   const locked = !!lock;

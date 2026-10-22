@@ -37,6 +37,8 @@ import {
 import { ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE } from './consult/grading-cascade';
 import { ACCEPTANCE_JUDGE_STACK } from './judge-identity-stack';
 import { mockResolvedTyped } from './testing/typed-mock';
+import type { readPlanBySlug } from './agent-tools/plans/source';
+import { parsePlan } from './agent-tools/plans/parser';
 
 describe('pre-publication review brief', () => {
   it('carries the exact unknown-only selection alongside independent verification', () => {
@@ -633,17 +635,31 @@ describe("WI-10002152: the grader never launches on a no-failover account route"
   });
 });
 
-const plan = {
+type GraderDeps = NonNullable<Parameters<typeof launchAcceptanceGrader>[2]>;
+
+const plan: NonNullable<Awaited<ReturnType<typeof readPlanBySlug>>> = {
+  parsed: parsePlan('', { filePath: 'ship-the-thing.md' }),
+  archived: false,
   row: {
     planSlug: 'ship-the-thing',
     workspaceId: 'ws-test',
     harnessSlug: 'papercusp',
     version: 7,
     contentHash: 'content-hash-7',
-    items: [{ id: 'P-001', status: 'done', text: 'Implement the thing' }],
-    decisions: [{ id: 'D-006', title: 'Independent grading', body: 'Use a frozen dedicated judge.' }],
+    content: '', title: null, status: 'ready', created: null, updated: null,
+    owner: null, initiative: null, template: null, templateData: null,
+    inputSchema: null, outputSchema: null, supersedes: [], supersededBy: null,
+    opStatus: null, opStartedAt: null, opUpdatedAt: null, currentWave: null,
+    opPriority: null, archived: false, isLegacy: false, updatedAt: '2026-09-22T18:00:00.000Z',
+    nowState: null, nowNext: null, nowNote: null, promotePolicy: null, forcedPast: null,
+    schedule: null, scheduleActive: false, scheduledAt: null, expiresAt: null,
+    tzid: null, templateSlug: null, runSeq: null,
+    items: [{ id: 'P-001', status: 'done', text: 'Implement the thing', importance: 'normal',
+      blockedBy: [], decisionRefs: [], phase: null }],
+    decisions: [{ id: 'D-006', title: 'Independent grading', body: 'Use a frozen dedicated judge.',
+      date: null, itemRefs: [] }],
   },
-} as never;
+};
 
 /** A plan whose build item is still open — recruitment must refuse before reading the rubric. */
 const planWithOpenBuildItems = {
@@ -1081,10 +1097,10 @@ function deps(launch: ReturnType<typeof vi.fn>) {
     id: 'WI-review-target',
   };
   return {
-    readPlan: vi.fn(async () => plan),
-    getRubric: vi.fn(async () => rubric),
+    readPlan: vi.fn<NonNullable<GraderDeps['readPlan']>>(async () => plan),
+    getRubric: vi.fn<NonNullable<GraderDeps['getRubric']>>(async () => rubric),
     getAudit: vi.fn(async () => audit),
-    readEffectiveAudits: vi.fn(async () => [] as never[]),
+    readEffectiveAudits: vi.fn<NonNullable<GraderDeps['readEffectiveAudits']>>(async () => []),
     listWork: vi.fn(async () => workItems),
     launch: launch as never,
     listTasks: vi.fn(async () => []),
@@ -1108,11 +1124,13 @@ describe('launchAcceptanceGrader', () => {
     'uses the effective non-code audit before refusing an unfinished certification tail', async recruit => {
       const launch = vi.fn();
       const d = deps(launch);
-      d.readPlan.mockResolvedValue({ row: { planSlug: 'ship-the-thing', harnessSlug: 'papercusp',
+      d.readPlan.mockResolvedValue({ ...plan, row: { ...plan.row,
         verificationProfile: 'coding', items: [{ id: 'P-004', status: 'wip', phase: 'Certified shipment',
-          text: 'Repair acceptance evidence and obtain certification' }] } } as never);
-      d.readEffectiveAudits.mockResolvedValue([{ entry: { itemId: 'P-004', verdict: 'not-code' } }] as never[]);
-      d.getRubric.mockResolvedValue(null as never);
+          text: 'Repair acceptance evidence and obtain certification', importance: 'normal',
+          blockedBy: [], decisionRefs: [] }] } });
+      d.readEffectiveAudits.mockResolvedValue([{ auditSeq: 1,
+        entry: { itemId: 'P-004', verdict: 'not-code', citations: [] } }]);
+      d.getRubric.mockResolvedValue(null);
       const result = await recruit('ship-the-thing', {} as never, d);
       expect(result.error).toContain('acceptance rubric missing');
       expect(result.error).not.toContain('build_items_open');

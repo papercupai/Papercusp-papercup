@@ -922,6 +922,61 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
 describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)', () => {
   const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'staging_generation_holder_evidence', 'prune_staging_generations'];
 
+  it('defers slow retired-generation cleanup within its budget so runtime preparation can continue', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-budget-'));
+    const generations = join(root, 'generations');
+    const candidate = join(generations, '.candidate-old.slow');
+    const checkout = join(candidate, 'checkout');
+    const bin = join(root, 'bin');
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'git'), '#!/usr/bin/env bash\nexec sleep 4\n', { mode: 0o755 });
+    try {
+      const result = runFn(PRUNE_FNS,
+        'log() { echo "$*"; }; prune_staging_generations 2; echo RUNTIME_PREPARATION_CONTINUES', {
+          env: { PATH: `${bin}:${process.env.PATH}`, STAGING_ROOT: join(root, 'absent-current'),
+            STAGING_GENERATIONS_ROOT: generations, STAGING_PROC_ROOT: join(root, 'absent-proc'),
+            INTEGRATION_ROOT: root },
+        });
+      expect(result.status).toBe(0);
+      expect(existsSync(checkout)).toBe(true);
+      expect(result.stdout).toContain('cleanup budget exhausted');
+      expect(result.stdout).toContain('RUNTIME_PREPARATION_CONTINUES');
+      expect(result.stdout).not.toContain('pruned unused staging generation');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('defers slow generation-directory deletion and retries it on the next tick', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-rm-budget-'));
+    const generations = join(root, 'generations');
+    const candidate = join(generations, '.candidate-old.rm-slow');
+    const checkout = join(candidate, 'checkout');
+    const bin = join(root, 'bin');
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'git'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(bin, 'rm'), '#!/usr/bin/env bash\nexec sleep 4\n', { mode: 0o755 });
+    const env = { PATH: `${bin}:${process.env.PATH}`, STAGING_ROOT: join(root, 'absent-current'),
+      STAGING_GENERATIONS_ROOT: generations, STAGING_PROC_ROOT: join(root, 'absent-proc'),
+      INTEGRATION_ROOT: root };
+    try {
+      const deferred = runFn(PRUNE_FNS, 'log() { echo "$*"; }; prune_staging_generations 2', { env });
+      expect(deferred.status).toBe(0);
+      expect(existsSync(candidate)).toBe(true);
+      expect(existsSync(`${candidate}.prune-pending`)).toBe(true);
+      expect(deferred.stdout).toContain('directory cleanup');
+
+      const collected = runFn(PRUNE_FNS,
+        'log() { echo "$*"; }; prune_staging_generations 2',
+        { env: { ...env, PATH: process.env.PATH } },
+      );
+      expect(collected.status).toBe(0);
+      expect(existsSync(candidate)).toBe(false);
+      expect(existsSync(`${candidate}.prune-pending`)).toBe(false);
+      expect(collected.stdout).toContain('completed deferred staging generation directory cleanup');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('retains crashed audit replay source until its bounded pin expires, then collects it (EI-25971079852455067)', () => {
     const root = mkdtempSync(join(tmpdir(), 'staging-audit-pin-'));
     try {

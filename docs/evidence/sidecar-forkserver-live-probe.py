@@ -3,7 +3,6 @@
 import datetime
 import hashlib
 import json
-import os
 import re
 import signal
 import subprocess
@@ -14,6 +13,24 @@ from pathlib import Path
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def summarize_trace(raw):
+    lines = raw.decode(errors='replace').splitlines()
+    calls = [line for line in lines if re.search(r'\b(?:clone|clone3|fork|vfork)\(', line)]
+    reads = [line for line in lines if re.search(r'\bread\(', line)]
+    durations = [float(match.group(1)) for line in calls
+                 for match in [re.search(r'<([\d.]+)>$', line)] if match]
+    read_durations = [float(match.group(1)) for line in reads
+                      for match in [re.search(r'<([\d.]+)>$', line)] if match]
+    return {
+        'forkCallCount': len(calls), 'forkSeconds': sum(durations),
+        'readSeconds': sum(read_durations),
+        'unmeasuredCallCount': sum(not re.search(r'<([\d.]+)>$', line) for line in calls + reads),
+        'traceLineCount': len(lines),
+        'instrumentErrors': [line[:200] for line in lines
+                             if line.startswith(('strace:', 'sudo:'))],
+    }
 
 
 def measure():
@@ -76,16 +93,9 @@ def measure():
             process.wait(timeout=5)
             output.close()
             raw = path.read_bytes()
-            lines = raw.decode(errors='replace').splitlines()
-            calls = [line for line in lines if re.search(r'\b(?:clone|clone3|fork|vfork)\(', line)]
-            durations = [float(match.group(1)) for line in calls
-                         for match in [re.search(r'<([\d.]+)>$', line)] if match]
             traces.append({
                 'label': label, 'pid': pid, 'startTicks': rows[pid]['startTicks'],
-                'forkCallCount': len(calls), 'forkSeconds': sum(durations),
-                'traceLineCount': len(lines),
-                'instrumentErrors': [line[:200] for line in lines
-                                     if line.startswith(('strace:', 'sudo:'))],
+                **summarize_trace(raw),
                 'rawEvidence': str(path), 'rawSha256': hashlib.sha256(raw).hexdigest(),
             })
     after = int(subprocess.check_output([
@@ -97,14 +107,18 @@ def measure():
         {'id': 'stable-live-runtime', 'passed': after == root,
          'evidence': f'bg-host MainPID before={root}, after={after}; sidecar={sidecar}.'},
         {'id': 'trace-instrument-available',
-         'passed': bool(traces) and all(not t['instrumentErrors'] and t['traceLineCount'] > 0 for t in traces),
-         'evidence': json.dumps([{k: t[k] for k in ('label', 'traceLineCount', 'instrumentErrors')} for t in traces])},
+         'passed': bool(traces) and all(not t['instrumentErrors'] and t['traceLineCount'] > 0
+                                       and t['unmeasuredCallCount'] == 0 for t in traces),
+         'evidence': json.dumps([{k: t[k] for k in ('label', 'traceLineCount', 'instrumentErrors', 'unmeasuredCallCount')} for t in traces])},
         {'id': 'forkserver-positive-control',
          'passed': any(t['label'] == 'forkserver' and t['forkCallCount'] > 0 for t in traces),
          'evidence': json.dumps([{k: t[k] for k in ('label', 'pid', 'forkCallCount')} for t in traces])},
         {'id': 'sidecar-no-child-forks',
          'passed': main['forkCallCount'] == 0,
          'evidence': f"sidecar={sidecar}, windowSeconds={window_seconds:.6f}, forkCalls={main['forkCallCount']}, forkSeconds={main['forkSeconds']}."},
+        {'id': 'sidecar-fork-and-read-budget',
+         'passed': (main['forkSeconds'] + main['readSeconds']) / window_seconds < 0.05,
+         'evidence': f"All read time conservatively bounds exec-wait reads: forkSeconds={main['forkSeconds']}, readSeconds={main['readSeconds']}, windowSeconds={window_seconds:.6f}; sum/window must be below0.05."},
     ]
     return {
         'schemaVersion': 1, 'kind': 'operational-test-evidence',
@@ -115,10 +129,12 @@ def measure():
         'exitCode': 0 if all(a['passed'] for a in assertions) else 1,
         'summary': 'Three-second live bg-host trace; forkserver syscall activity is the positive control for zero sidecar fork calls.',
         'assertions': assertions, 'traces': traces, 'windowSeconds': window_seconds,
+        'sidecarBlockedPercent': 100 * (main['forkSeconds'] + main['readSeconds']) / window_seconds,
         'runtime': {'bgHostPid': root, 'sidecarPid': sidecar, 'forkserverPids': forkservers},
         'limitations': [
             'Fork-related syscall counts include failed clone3 attempts, not only created children.',
-            'This checks fork blocking, not total event-loop or admission latency.',
+            'Every sidecar read duration is counted as an upper bound on exec-wait reads; unrelated reads can make this check fail conservatively.',
+            'This checks fork plus read blocking, not total event-loop or admission latency.',
             'Compare admission distributions only at similar sidecar ages.',
         ],
     }

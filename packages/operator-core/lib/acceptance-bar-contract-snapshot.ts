@@ -145,6 +145,8 @@ export type AcceptanceBarSnapshotCode =
   | 'bar_snapshot_role_invalid'
   | 'bar_snapshot_mandatory_invalid'
   | 'bar_snapshot_scope_invalid'
+  /** A pre-grading request selected a BAR outside the manual delivery exception. */
+  | 'bar_snapshot_pending_delivery_selection_invalid'
   | 'bar_snapshot_pass_ratings_invalid'
   | 'bar_snapshot_coverage_invalid'
   | 'bar_snapshot_check_missing'
@@ -744,6 +746,8 @@ export const ACCEPTANCE_BAR_REPAIR_ORDER = [
     'bar_snapshot_coverage_invalid',
     'bar_snapshot_check_missing',
     'bar_snapshot_check_invalid',
+    // Request repair is separate from amending the canonical BAR contract.
+    'bar_snapshot_pending_delivery_selection_invalid',
     'bar_snapshot_vetting_missing',
     'bar_snapshot_vetting_stale',
     // WI-10003187: accept the vetted clause projection before any proof/grading repair.
@@ -854,6 +858,10 @@ export function nextRepair(
     bar_snapshot_role_invalid: 'Make each BAR an outcome or make a disclosure explicitly cover outcome BARs.',
     bar_snapshot_mandatory_invalid: 'Mark every BAR outcome mandatory; disclosures must not satisfy the ship floor.',
     bar_snapshot_scope_invalid: 'Declare a non-empty tree, deployed, or live evidence scope.',
+    bar_snapshot_pending_delivery_selection_invalid:
+      'Remove ineligible or unknown BAR keys from pendingDeliveryBarKeys and supply their required proof before grading. '
+      + 'The pre-grading exception accepts only existing deployed or live BARs with check.kind:"instrument" and '
+      + 'instrumentKey:"none". Repair the request; this selection refusal does not require a rubric scope amendment.',
     bar_snapshot_pass_ratings_invalid:
       'Use non-empty positive pass ratings from the rubric scale for mandatory outcomes.',
     bar_snapshot_coverage_invalid: 'Repair disclosure coverage so it references existing outcome BAR keys only.',

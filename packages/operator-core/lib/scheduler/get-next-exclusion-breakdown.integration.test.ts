@@ -362,6 +362,46 @@ describe('WI-6673 — listIssueClaimableRows projects severity from payload._ei,
  * only a real database can.
  */
 describe('EI-18802055183255275 — readIssueClaimability (materialized temp-table path) agrees with the direct (unmaterialized) reads', () => {
+  it('cancels a work_items lock wait at its transaction-local statement timeout (EI-266693)', async () => {
+    const holder = await db.sql.reserve();
+    let releasePromise: Promise<void> | undefined;
+    let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+    const release = () => {
+      releasePromise ??= holder`ROLLBACK`.then(() => undefined);
+      return releasePromise;
+    };
+
+    try {
+      await holder`BEGIN`;
+      await holder`LOCK TABLE harness_shared.work_items IN ACCESS EXCLUSIVE MODE`;
+
+      const timeoutMs = 300;
+      const startedAt = performance.now();
+      // Bound the failure case too: if statement_timeout stops applying, releasing the lock
+      // lets the query finish and the SQLSTATE assertion fails instead of hanging the suite.
+      releaseTimer = setTimeout(() => { void release(); }, 1_600);
+      let readError: unknown;
+      try {
+        await readIssueClaimability(undefined, { harness: H, client: db.sql }, {
+          limit: 1,
+          breakdownOnly: true,
+          statementTimeoutMs: timeoutMs,
+        });
+      } catch (error) {
+        readError = error;
+      }
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(readError).toMatchObject({ code: '57014' });
+      expect(elapsedMs).toBeGreaterThanOrEqual(100);
+      expect(elapsedMs).toBeLessThan(1_300);
+    } finally {
+      if (releaseTimer) clearTimeout(releaseTimer);
+      await release();
+      holder.release();
+    }
+  });
+
   it('breakdown + rows + admitted composition from readIssueClaimability match the standalone calls, for a floor-stranded pool', async () => {
     await seedPlan('rc-plan', 'active');
     await seedIssue('WI-RC-1', null); // clean, claimable

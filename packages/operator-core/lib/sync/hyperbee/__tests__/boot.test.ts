@@ -39,7 +39,6 @@ import {
   sampleReplicationLiveness,
   dropReplicationLogState,
 } from '../replication-liveness';
-import * as replicationStallEi from '../replication-stall-ei';
 import * as hivePolicyStore from '../../../hive-policy-store';
 import * as hiveMemberIdentity from '../hive-member-identity-set';
 import * as federatedPotScope from '../../../federated-pot-scope';
@@ -852,11 +851,10 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
     ]);
     expect(reads).not.toHaveBeenCalled();
 
-    // The episode queued the normal repair-on-detect path. The next serialized
-    // pass re-attaches the session even though local length still reads zero.
+    // A diagnostic episode cannot bypass the progress owner's fixed deadline.
     await handle.mergeNow();
-    expect(openRemoteLogOverride).toHaveBeenCalledTimes(2);
-    expect(sessions[0]!.close).toHaveBeenCalledTimes(1);
+    expect(openRemoteLogOverride).toHaveBeenCalledTimes(1);
+    expect(sessions[0]!.close).not.toHaveBeenCalled();
     expect(reads).not.toHaveBeenCalled();
     expect(
       listBootHistory({
@@ -864,7 +862,7 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
         harnessSlug,
         kinds: ['replication_repair' as BootHistoryKind],
       }),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 });
 
@@ -2453,23 +2451,7 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
   });
 });
 
-// WI-3684 P-002 (plan p2p-parity-closeout-lanes-2026-07-10): e2e coverage for
-// boot.ts's repair-on-detect reaction to a `connected_never_replicated`
-// liveness episode. The SEND-side fix (P-001) drives `ensureSendSideWired`;
-// THIS describe covers the receive-side twin that already landed here —
-// `setReplicationRepairHandler` registers a per-harness handler that
-// ENQUEUES a re-attach (never mutates `admitted` directly — a liveness
-// episode can fire mid merge-pass) and `drainRepairQueue()` applies it under
-// the merge gate at the top of the NEXT pass (boot.ts ~1615-1682).
-describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
-  // Same silencing rationale + LIFO-ordering caveat as the WI-183 describe
-  // above: `dropReplicationLogState` (used below to re-arm the edge-triggered
-  // axis between repair attempts) fires a RECOVERY report through the
-  // module-level reporter seam (not the per-call `onStallEpisode` override),
-  // and `handle.close()` (pushed by each test onto the shared `cleanups`
-  // LIFO) does the same on teardown — so the reset must be pushed onto that
-  // SAME stack here, in `beforeEach`, to land below (and thus run after) the
-  // test's own `handle.close()` push.
+describe('bootHarnessSubstrate — P-531 replication progress ownership', () => {
   beforeEach(() => {
     setReplicationStallEpisodeReporterForTests(() => {});
     setReplicationStallRecoveryReporterForTests(() => {});
@@ -2479,1148 +2461,121 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     });
   });
 
-  function tmpWorkspaceRoot(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-repair-'));
-    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
-    return dir;
+  async function fixture() {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'mb-progress-'));
+    cleanups.push(() => { rmSync(workspaceRoot, { recursive: true, force: true }); });
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    cleanups.push(() => clock.mockRestore());
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const open = vi.fn(async (_store: unknown, keyHex: string): Promise<RemoteLog> => {
+      const fresh = {
+        keyHex, length: 0, contiguousLength: 0,
+        get: vi.fn(async () => null), update: async () => {},
+        prefetch: () => {}, has: async () => false,
+        peersCount: () => 0, close: vi.fn(async () => {}),
+      };
+      sessions.push(fresh);
+      return fresh;
+    });
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot, workspaceId: 'ws-progress', harnessSlug: 's-progress',
+      mergePollMs: 0, pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified', openRemoteLogOverride: open,
+    });
+    cleanups.push(() => handle.close());
+    await handle.mergeNow();
+    const frame = await validAnnounce({ log_core_key: 'e1'.repeat(32), log_length: 100 });
+    expect(await handle.onAnnounce(frame)).toEqual({ admit: true });
+    const events = (kind: BootHistoryKind) => listBootHistory({
+      workspaceId: 'ws-progress', harnessSlug: 's-progress', kinds: [kind],
+    });
+    return { handle, frame, sessions, open, events, advance: (ms: number) => { now += ms; } };
   }
 
-  /** A minimal RemoteLog replica with a spy-able `close()` — the drain only
-   *  needs the session to exist + be closeable (mirrors `fakeRemoteLog` in the
-   *  WI-1544 describe above, which is scoped to that block, not importable here). */
-  function fakeCloseableRemoteLog(keyHex: string): RemoteLog & { close: ReturnType<typeof vi.fn> } {
-    return {
-      keyHex,
-      length: 0,
-      contiguousLength: 0,
-      get: async () => null,
-      update: async () => {},
-      prefetch: () => {},
-      has: async () => false,
-      close: vi.fn(async () => {}),
-    };
-  }
-
-  it('drainRepairQueue closes the stale session, re-opens via openRemoteLogOverride, swaps `admitted`, records replication_repair — capped at 3 attempts per log', async () => {
-    const workspaceId = 'ws-repair-3684';
-    const harnessSlug = 's-repair-3684';
-    const keyHex = 'ee'.repeat(32);
-
-    // Every successful repair opens a FRESH session via this override — track
-    // each one so we can assert exactly which session is current/closed.
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh = fakeCloseableRemoteLog(k);
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    // No swarmBinding/swarmOverride (mirrors the WI-183 describe above) — boot
-    // never joins a real swarm, so boot's OWN per-pass liveness auto-sample
-    // (mergeOnePass ~2009) always sees `swarmConnections: undefined` for this
-    // harness and can never itself fire/interfere with the episode this test
-    // drives explicitly below.
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-    });
-    cleanups.push(() => handle.close());
-
-    // Seed `admitted` with the STALE session under repair — `handle.admitted`
-    // is the live Map boot.ts closes over (not a snapshot), so setting it here
-    // is equivalent to a real admission having happened earlier.
-    const stale = fakeCloseableRemoteLog(keyHex);
-    handle.admitted.set(keyHex, stale);
-
-    /**
-     * Fires one fresh `connected_never_replicated` episode for `keyHex` (via
-     * the SAME exported `sampleReplicationLiveness` the merge pass itself
-     * rides — the openRemoteLogOverride seam this test targets), then drains
-     * it through a real merge pass. `graceMs: 0` makes the FIRST sample after
-     * a (re)seed fire immediately — no fake timers / real sleeps needed. The
-     * `beforeEach` above silences the default reporter's `console.error`
-     * (would trip vitest-fail-on-console) and its fire-and-forget durable-EI
-     * dynamic import — out of scope for this unit test.
-     */
-    async function fireEpisodeAndDrain(): Promise<void> {
-      sampleReplicationLiveness(
-        workspaceId,
-        harnessSlug,
-        { keyHex, knownLength: 0, swarmConnections: 1 },
-        { graceMs: 0 },
-      );
-      await handle.mergeNow();
-    }
-
-    function repairEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair' as BootHistoryKind],
-      });
-    }
-
-    // ── Attempt 1: closes `stale`, opens session #1, swaps `admitted`, records
-    // the repair event. ──
-    await fireEpisodeAndDrain();
-    expect(stale.close).toHaveBeenCalledTimes(1);
-    expect(openRemoteLogOverride).toHaveBeenCalledWith(expect.anything(), keyHex);
-    expect(sessions).toHaveLength(1);
-    expect(handle.admitted.get(keyHex)).toBe(sessions[0]);
-    expect(repairEvents()).toHaveLength(1);
-    expect(repairEvents()[0]!.message).toContain('attempt 1/3');
-
-    // ── Attempts 2 and 3: each needs the liveness STATE re-armed first — the
-    // axis is edge-triggered (fires once per episode; see replication-liveness.ts)
-    // so `dropReplicationLogState` clears just the tracked liveness state for
-    // `keyHex`, letting a fresh episode fire. `repairAttempts` is boot.ts's OWN
-    // Map (untouched by that drop), so the cap keeps counting across the re-arms. ──
-    for (const attempt of [2, 3] as const) {
-      dropReplicationLogState(workspaceId, harnessSlug, keyHex);
-      await fireEpisodeAndDrain();
-      expect(sessions).toHaveLength(attempt);
-      expect(handle.admitted.get(keyHex)).toBe(sessions[attempt - 1]);
-      // The PRIOR session (this attempt's repair target) was closed exactly once.
-      expect(sessions[attempt - 2]!.close).toHaveBeenCalledTimes(1);
-      const events = repairEvents();
-      expect(events).toHaveLength(attempt);
-      expect(events[0]!.message).toContain(`attempt ${attempt}/3`); // newest-first
-    }
-
-    // ── Attempt 4 — THE CAP: `repairAttempts` is already 3, so the handler
-    // early-returns WITHOUT enqueueing (boot.ts: `if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) return;`)
-    // — no close, no re-open, no boot event. ──
-    dropReplicationLogState(workspaceId, harnessSlug, keyHex);
-    await fireEpisodeAndDrain();
-    expect(sessions).toHaveLength(3); // unchanged
-    expect(openRemoteLogOverride).toHaveBeenCalledTimes(3);
-    expect(handle.admitted.get(keyHex)).toBe(sessions[2]); // unchanged (session #3 stays current)
-    expect(sessions[2]!.close).not.toHaveBeenCalled(); // the live session was never closed
-    expect(repairEvents()).toHaveLength(3); // no 4th entry
+  it('reopens a stalled signed inventory leg by 30 seconds, without a diagnostic episode', async () => {
+    const f = await fixture();
+    f.advance(29_999);
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(1);
+    // Repeated signed announces do not postpone a progress deadline.
+    await f.handle.onAnnounce(f.frame);
+    f.advance(1);
+    await f.handle.mergeNow();
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(2);
+    expect(f.sessions[0]!.close).toHaveBeenCalledTimes(1);
+    expect(f.handle.admitted.get(f.frame.log_core_key)).toBe(f.sessions[1]);
+    expect(f.events('replication_repair')).toHaveLength(1);
+    expect(f.events('replication_repair')[0]!.message).toContain('30000ms without progress');
+    expect(f.sessions.every(s => !s.get.mock.calls.length)).toBe(true);
   });
 
-  // WI-4241: the repair-on-detect handler above was originally scoped to ONLY
-  // `connected_never_replicated`, on the assumption that a session re-attach
-  // "does not address" a `frozen` episode (replicator attached, writer ahead,
-  // zero ingest progress). Code-tracing the WI-4070/WI-183 stall (mergedPosition
-  // stuck at 0 despite a genuine peersCount>0 replicator peer and tens of
-  // thousands of known ops) found the opposite: the hang is a STALE in-memory
-  // replicator-peer object whose block-request channel silently died — exactly
-  // the zombie-session state a re-attach fixes. This mirrors the
-  // `connected_never_replicated` coverage above but drives the INGEST-PROGRESS
-  // axis (`sampleReplicationLiveness`'s `mergedPosition`/`knownLength` params)
-  // instead of the swarm-connection axis.
-  it('drainRepairQueue also engages for a `frozen` episode (replicator attached, ingest stuck) — not just `connected_never_replicated` — capped at 3 attempts per log (WI-4241)', async () => {
-    const workspaceId = 'ws-repair-4241';
-    const harnessSlug = 's-repair-4241';
-    const keyHex = 'ff'.repeat(32);
-
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh = fakeCloseableRemoteLog(k);
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-    });
-    cleanups.push(() => handle.close());
-
-    const stale = fakeCloseableRemoteLog(keyHex);
-    handle.admitted.set(keyHex, stale);
-
-    /**
-     * Fires one fresh `frozen` episode for `keyHex` — a replicator IS attached
-     * (peersCount > 0) but ingest is stuck (knownLength > mergedPosition, zero
-     * progress) — via the SAME `sampleReplicationLiveness` the merge pass
-     * itself rides, then drains it through a real merge pass. `graceMs: 0`
-     * makes the alarm fire on the first sample after a (re)seed (same pattern
-     * as `fireEpisodeAndDrain` above).
-     */
-    async function fireFrozenEpisodeAndDrain(): Promise<void> {
-      sampleReplicationLiveness(
-        workspaceId,
-        harnessSlug,
-        { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
-        { graceMs: 0 },
-      );
-      await handle.mergeNow();
+  it('retries past three unsuccessful sessions with zero peers and a zero-length fresh view', async () => {
+    const f = await fixture();
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      f.advance(30_000);
+      await f.handle.mergeNow();
+      await f.handle.mergeNow();
+      expect(f.open).toHaveBeenCalledTimes(attempt + 1);
     }
-
-    function repairEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair' as BootHistoryKind],
-      });
-    }
-
-    // ── Attempt 1: closes `stale`, opens session #1, swaps `admitted`, records
-    // the repair event — proving `frozen` now reaches the SAME repair path. ──
-    await fireFrozenEpisodeAndDrain();
-    expect(stale.close).toHaveBeenCalledTimes(1);
-    expect(openRemoteLogOverride).toHaveBeenCalledWith(expect.anything(), keyHex);
-    expect(sessions).toHaveLength(1);
-    expect(handle.admitted.get(keyHex)).toBe(sessions[0]);
-    expect(repairEvents()).toHaveLength(1);
-    expect(repairEvents()[0]!.message).toContain('attempt 1/3');
-
-    // ── Attempts 2 and 3: re-arm the edge-triggered axis via
-    // `dropReplicationLogState`, same as the `connected_never_replicated`
-    // coverage above. ──
-    for (const attempt of [2, 3] as const) {
-      dropReplicationLogState(workspaceId, harnessSlug, keyHex);
-      await fireFrozenEpisodeAndDrain();
-      expect(sessions).toHaveLength(attempt);
-      expect(handle.admitted.get(keyHex)).toBe(sessions[attempt - 1]);
-      expect(sessions[attempt - 2]!.close).toHaveBeenCalledTimes(1);
-      const events = repairEvents();
-      expect(events).toHaveLength(attempt);
-      expect(events[0]!.message).toContain(`attempt ${attempt}/3`); // newest-first
-    }
-
-    // ── Attempt 4 — THE CAP (REPAIR_MAX_ATTEMPTS_PER_LOG is shared across
-    // episode kinds, per log): no close, no re-open, no boot event. ──
-    dropReplicationLogState(workspaceId, harnessSlug, keyHex);
-    await fireFrozenEpisodeAndDrain();
-    expect(sessions).toHaveLength(3); // unchanged
-    expect(openRemoteLogOverride).toHaveBeenCalledTimes(3);
-    expect(handle.admitted.get(keyHex)).toBe(sessions[2]); // unchanged
-    expect(sessions[2]!.close).not.toHaveBeenCalled();
-    expect(repairEvents()).toHaveLength(3); // no 4th entry
+    expect(f.events('replication_repair')).toHaveLength(5);
+    // The verified writer target survives every fresh session's empty view.
+    expect(f.events('replication_repair')[0]!.message).toContain('writer=100');
   });
 
-  // EI-13317 rung (b): the gate-run-050615 forensics found the repair-on-detect
-  // mechanism above firing correctly but NOT sticking — the SAME log re-stalls
-  // after its 3-attempt session-repair budget is spent, and the handler above
-  // (`if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) return;`) silently no-ops
-  // forever past that point. This covers the escalation added on top: repair
-  // EXHAUSTION + a re-stall now forces a topic-level rejoin (the same lever
-  // rung (a)'s severed-link escalation uses — swarm.ts's `SwarmHandle.forceRejoin`
-  // — triggered here off replication-liveness instead of zero-live-peers).
-  it('EI-13317 rung (b): once the session-repair budget is EXHAUSTED and the log re-stalls anyway, escalates to a forced topic rejoin — rate-limited harness-wide', async () => {
-    const workspaceId = 'ws-repair-rejoin-13317';
-    const harnessSlug = 's-repair-rejoin-13317';
-    const keyHex = 'ab'.repeat(32);
-
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh = fakeCloseableRemoteLog(k);
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    // A spy-able fake swarm so `swarmHandle.forceRejoin()` (leave()+join()) is
-    // directly observable — this exercises the NEW external caller (boot.ts's
-    // repair-exhaustion path) invoking the SAME extracted lever the severed-
-    // link ladder (rung (a)) already uses internally.
-    const leaveSpy = vi.fn(() => {});
-    const joinSpy = vi.fn(() => ({ flushed: async () => {}, refresh: () => {} }));
-    const swarm: HyperswarmLike = {
-      join: joinSpy,
-      leave: leaveSpy,
-      on: () => {},
-      off: () => {},
-      connections: [],
-    };
-    const announceIdentity = makeAnnounceIdentityOverride(
-      'repair-rejoin',
-      13_317,
-      'repair-rejoin-13317',
-    );
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-      swarmBinding: { kind: 'topic', topic_hex: 'cd'.repeat(32) },
-      swarmOverride: swarm,
-      ...joinUnitIsolation,
-      announceIdentityOverride: announceIdentity.override,
-    });
-    cleanups.push(() => handle.close());
-
-    const stale = fakeCloseableRemoteLog(keyHex);
-    handle.admitted.set(keyHex, stale);
-
-    // EI-13317/WI-5481: this test exercises the EXHAUSTION → forced-rejoin path,
-    // now reached via the `frozen` kind. connected_never_replicated fast-paths
-    // straight to a prompt forced rejoin on its first episode (see the dedicated
-    // test below), so it never walks the 3-attempt ladder; `frozen` still walks
-    // it (a session re-attach DOES heal frozen — WI-4241), so it is the kind that
-    // reaches exhaustion. A fresh log created already-behind (knownLength >
-    // mergedPosition, peersCount>0) alarms `frozen` on each fire.
-    async function fireEpisodeAndDrain(): Promise<void> {
-      sampleReplicationLiveness(
-        workspaceId,
-        harnessSlug,
-        { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
-        { graceMs: 0 },
-      );
-      await handle.mergeNow();
-    }
-
-    function exhaustedEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_exhausted' as BootHistoryKind],
-      });
-    }
-
-    // Burn the 3-attempt session-repair budget first (same pattern as the
-    // coverage above), re-arming the edge-triggered axis between each.
-    await fireEpisodeAndDrain();
-    for (const _attempt of [2, 3]) {
-      dropReplicationLogState(workspaceId, harnessSlug, keyHex);
-      await fireEpisodeAndDrain();
-    }
-    expect(sessions).toHaveLength(3);
-    const joinCallsBeforeExhaustion = joinSpy.mock.calls.length;
-
-    // ── Attempt 4 — EXHAUSTED and re-stalled: no 4th session repair, but a
-    // topic-level forced rejoin fires instead. ──
-    dropReplicationLogState(workspaceId, harnessSlug, keyHex);
-    await fireEpisodeAndDrain();
-    expect(sessions).toHaveLength(3); // no additional session repair
-    expect(exhaustedEvents()).toHaveLength(1);
-    expect(exhaustedEvents()[0]!.message).toContain('3/3');
-    expect(leaveSpy).toHaveBeenCalledTimes(1);
-    expect(joinSpy.mock.calls.length).toBe(joinCallsBeforeExhaustion + 1);
-
-    // ── A second exhausted episode within the cooldown window does NOT fire
-    // a second rejoin — a harness-wide rate limit, not per-log, since several
-    // stalling logs on one topic must not each trigger their own leave+join. ──
-    dropReplicationLogState(workspaceId, harnessSlug, keyHex);
-    await fireEpisodeAndDrain();
-    expect(exhaustedEvents()).toHaveLength(1); // unchanged — cooldown gates it
-    expect(leaveSpy).toHaveBeenCalledTimes(1); // unchanged
+  it('renews the deadline on received progress and stops repairs once caught up', async () => {
+    const f = await fixture();
+    f.advance(29_000);
+    Object.defineProperty(f.sessions[0], 'contiguousLength', { value: 10, configurable: true });
+    await f.handle.mergeNow();
+    f.advance(29_000);
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(1);
+    Object.defineProperty(f.sessions[0], 'contiguousLength', { value: 100, configurable: true });
+    await f.handle.mergeNow();
+    f.advance(90_000);
+    await f.handle.mergeNow();
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(1);
   });
 
-  // WI-5332: `repairAttempts` is a per-process-lifetime Map — under
-  // restart-cadence disruption (a real sidecar restart, or the live-fed-gate
-  // rig's restart_durability/reconnect_catchup scenarios) it resets to 0
-  // before ever reaching REPAIR_MAX_ATTEMPTS_PER_LOG, so the forced-rejoin
-  // escalation above is structurally unreachable exactly when the condition
-  // is chronic (gate run 211750/223011: "attempt 1/3" repeating forever,
-  // never 2/3 or 3/3). This covers the fix: on a FRESH process's very FIRST
-  // episode for a log (attempts===0, simulating "just restarted"), a durable
-  // EI already open for this exact (harness, log, kind) — proving a PRIOR
-  // process already stalled on the SAME zombie and it never recovered —
-  // skips straight to the forced rejoin instead of re-running a fresh
-  // 3-attempt budget the next restart would just reset again.
-  it('WI-5332: an already-open durable EI for this exact log (proof of a prior-process chronic zombie) escalates to forced rejoin on the FIRST episode this process sees — no 3-attempt wait', async () => {
-    const workspaceId = 'ws-repair-chronic-5332';
-    const harnessSlug = 's-repair-chronic-5332';
-    const keyHex = 'cc'.repeat(32);
-
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh = fakeCloseableRemoteLog(k);
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    const leaveSpy = vi.fn(() => {});
-    const joinSpy = vi.fn(() => ({ flushed: async () => {}, refresh: () => {} }));
-    const swarm: HyperswarmLike = {
-      join: joinSpy,
-      leave: leaveSpy,
-      on: () => {},
-      off: () => {},
-      connections: [],
-    };
-    const announceIdentity = makeAnnounceIdentityOverride(
-      'repair-chronic',
-      5_332,
-      'repair-chronic-5332',
-    );
-
-    // Simulate "a prior process instance already escalated for this exact
-    // (harness, log, kind) and got restarted before it could recover" —
-    // hasOpenReplicationStallEi is the cross-restart signal boot.ts checks;
-    // mock it directly rather than actually filing/reading a real EI (that
-    // machinery is covered by episodic-ei.test.ts / replication-stall-ei's
-    // own dedup logic — this test only needs to prove boot.ts's WIRING).
-    const hasOpenSpy = vi
-      .spyOn(replicationStallEi, 'hasOpenReplicationStallEi')
-      .mockResolvedValue(true);
-    cleanups.push(() => hasOpenSpy.mockRestore());
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-      swarmBinding: { kind: 'topic', topic_hex: 'de'.repeat(32) },
-      swarmOverride: swarm,
-      ...joinUnitIsolation,
-      announceIdentityOverride: announceIdentity.override,
-    });
-    cleanups.push(() => handle.close());
-
-    const stale = fakeCloseableRemoteLog(keyHex);
-    handle.admitted.set(keyHex, stale);
-
-    function exhaustedEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_exhausted' as BootHistoryKind],
-      });
-    }
-
-    // bootHarnessSubstrate's OWN initial swarm join already happened during
-    // setup above — capture the baseline so the forceRejoin delta (leave()
-    // then a SECOND join()) is what gets asserted, same pattern as the
-    // EI-13317 rung (b) test above.
-    const joinCallsBeforeEscalation = joinSpy.mock.calls.length;
-
-    // ONE episode — this process's first ever for this log. Uses the `frozen`
-    // kind: connected_never_replicated now fast-paths to a prompt forced rejoin
-    // on its first episode (covered by its own test below), so the WI-5332
-    // chronic-zombie shortcut — which still applies to `frozen` — is exercised
-    // here without the prompt path deduping it.
-    sampleReplicationLiveness(
-      workspaceId,
-      harnessSlug,
-      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
-      { graceMs: 0 },
-    );
-    await handle.mergeNow();
-
-    // The chronic-check fires as a fire-and-forget async IIFE off the
-    // (synchronous) repair handler — give its microtask/await chain a tick
-    // to resolve before asserting.
-    //
-    // Assert the chronic-check's CALL SHAPE, never a total call count: WI-7011
-    // added `probeDurableAlarm` in replication-liveness.ts, which reads this same
-    // `hasOpenReplicationStallEi` export once per (log, axis) — three axes — to
-    // rehydrate a recovery that a process restart would otherwise orphan. Those
-    // probes share this spy, so an exact count asserts how many UNRELATED callers
-    // the export has rather than anything about the WI-5332 shortcut, and any
-    // future caller re-breaks it. The escalation assertions below are what
-    // actually pin THIS path's behaviour.
-    await vi.waitFor(() =>
-      expect(hasOpenSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ harnessSlug, logKeyHex: keyHex, kind: 'frozen' }),
-      ),
-    );
-    await vi.waitFor(() => expect(exhaustedEvents()).toHaveLength(1));
-    expect(exhaustedEvents()[0]!.message).toContain('chronic zombie');
-    expect(exhaustedEvents()[0]!.message).toContain('WI-5332');
-    expect(leaveSpy).toHaveBeenCalledTimes(1); // forceRejoin fired
-    expect(joinSpy.mock.calls.length).toBe(joinCallsBeforeEscalation + 1);
-
-    // The ordinary in-budget session re-attach ALSO still happened alongside
-    // (harmless — a redundant close+reopen never blocks on the async check).
-    expect(sessions).toHaveLength(1);
+  it('retries an unsuccessful reopen on the same fixed bound', async () => {
+    const f = await fixture();
+    f.open.mockRejectedValueOnce(new Error('reopen unavailable'));
+    f.advance(30_000);
+    await f.handle.mergeNow();
+    await f.handle.mergeNow();
+    expect(f.events('replication_repair_failed')).toHaveLength(1);
+    f.advance(29_999);
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(2);
+    f.advance(1);
+    await f.handle.mergeNow();
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(3);
+    expect(f.handle.admitted.get(f.frame.log_core_key)).toBe(f.sessions[1]);
   });
 
-  // EI-13317 / WI-5481: connected_never_replicated (the zombie-socket class) is
-  // the kind that fails the replication_soak SLA — a per-log session re-attach
-  // cannot heal a DEAD socket, and reaching the forced rejoin via the 3-attempt
-  // ladder (each attempt judged after REPLICATION_STALL_GRACE_MS = 180s) takes
-  // ~540s, far past the soak's 90s SLA. This proves the fix: THIS kind escalates
-  // to a forced topic rejoin PROMPTLY on its very first episode — no ladder wait.
-  it('EI-13317/WI-5481: connected_never_replicated escalates to a forced rejoin PROMPTLY on the first episode — no 3-attempt ladder wait (soak SLA)', async () => {
-    const workspaceId = 'ws-repair-prompt-5481';
-    const harnessSlug = 's-repair-prompt-5481';
-    const keyHex = 'ef'.repeat(32);
-
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh = fakeCloseableRemoteLog(k);
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    const leaveSpy = vi.fn(() => {});
-    const joinSpy = vi.fn(() => ({ flushed: async () => {}, refresh: () => {} }));
-    const swarm: HyperswarmLike = {
-      join: joinSpy,
-      leave: leaveSpy,
-      on: () => {},
-      off: () => {},
-      connections: [],
-    };
-    const announceIdentity = makeAnnounceIdentityOverride(
-      'repair-prompt',
-      5_481,
-      'repair-prompt-5481',
-    );
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-      swarmBinding: { kind: 'topic', topic_hex: 'fa'.repeat(32) },
-      swarmOverride: swarm,
-      ...joinUnitIsolation,
-      announceIdentityOverride: announceIdentity.override,
-    });
-    cleanups.push(() => handle.close());
-
-    const stale = fakeCloseableRemoteLog(keyHex);
-    handle.admitted.set(keyHex, stale);
-
-    function rejoinEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_exhausted' as BootHistoryKind],
-      });
-    }
-
-    const joinCallsBeforeEpisode = joinSpy.mock.calls.length;
-
-    // ── ONE connected_never_replicated episode — the FIRST for this log (no
-    // prior attempts, no prior durable EI). The prompt path must fire the forced
-    // rejoin immediately, WITHOUT walking the 3-attempt session-re-attach ladder. ──
-    sampleReplicationLiveness(
-      workspaceId,
-      harnessSlug,
-      { keyHex, knownLength: 0, swarmConnections: 1 },
-      { graceMs: 0 },
-    );
-    await handle.mergeNow();
-
-    // forceRejoin (leave() then a fresh join()) fired on the FIRST episode.
-    await vi.waitFor(() => expect(leaveSpy).toHaveBeenCalledTimes(1));
-    expect(joinSpy.mock.calls.length).toBe(joinCallsBeforeEpisode + 1);
-    const events = rejoinEvents();
-    expect(events).toHaveLength(1);
-    expect(events[0]!.message).toContain('connected_never_replicated');
-    expect(events[0]!.message).toContain('prompt forced rejoin');
-    // The session re-attach fallback also ran once (harmless — covers the
-    // broken-session-over-good-socket sub-case), but did NOT need 3 attempts.
-    expect(sessions).toHaveLength(1);
+  it('drops a revoked queued repair instead of reopening the device', async () => {
+    const f = await fixture();
+    f.advance(30_000);
+    await f.handle.mergeNow(); // queues the lease
+    await f.handle.revoke(f.frame.device_pubkey);
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(1);
+    expect(f.handle.admitted.has(f.frame.log_core_key)).toBe(false);
   });
 
-  // WI-5340 (WI-5332 Direction #1): the describes above only ever reach
-  // attempt 2/3 by manually calling `dropReplicationLogState` between fires —
-  // simulating a re-arm that a genuinely ineffective re-attach (the common
-  // case per the gate-run-211750/223011 evidence: "attempt 1/3" forever) can
-  // NEVER produce on its own, since replication-liveness.ts's alarm latch
-  // only clears on an OBSERVED recovery. This proves the fix: a re-attach
-  // that does not restore ingest reaches attempt 2/3 — and then the cap —
-  // purely off the post-repair confirmation window (`checkRepairConfirmation`,
-  // driven by mergeOnePass's own per-log sample), with `dropReplicationLogState`
-  // NEVER called anywhere in this test.
-  it('WI-5340: a re-attach that does NOT restore ingest reaches attempt 2/3 (and the cap) via the post-repair confirmation window alone — no dropReplicationLogState re-arm', async () => {
-    // The simulated stuck-zombie `get` below throws on every read, which after
-    // 3 consecutive failures trips read-merge's WI-2003 quarantine path — a
-    // deliberate, expected `console.error(...)` (advance-past-unreadable-op),
-    // same rationale as the other spies in this file. Mock it so this
-    // intentional log doesn't trip vitest-fail-on-console.
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const workspaceId = 'ws-repair-confirm-5340';
-    const harnessSlug = 's-repair-confirm-5340';
-    const keyHex = 'a1'.repeat(32);
-
-    // Every re-opened session stays a "stuck" zombie — a real writer well
-    // ahead (length 1000) but zero merge progress and a live replicator peer —
-    // so each repair is judged ineffective instead of a genuine recovery.
-    // `get` THROWS (not `=> null`, unlike `fakeCloseableRemoteLog` above) —
-    // read-merge's `readOpBoundedDetailed` treats a resolved `null` as a
-    // normal "version-gated drop" and ADVANCES the cursor past it, which
-    // would race mergeCursor.positions up to `length` after a single pass
-    // and falsely read as "caught up" to `checkRepairConfirmation` on the
-    // very next repair. A throw (⇒ `{ kind: 'unavailable' }`) is read-merge's
-    // actual "block never arrived" signal — it `break`s without advancing,
-    // so mergedPosition genuinely never moves, matching the real zombie.
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
-        keyHex: k,
-        length: 1000,
-        contiguousLength: 0,
-        get: async () => {
-          throw new Error('WI-5340 test: simulated stuck zombie — block fetch never resolves');
-        },
-        update: async () => {},
-        prefetch: () => {},
-        has: async () => false,
-        close: vi.fn(async () => {}),
-        peersCount: () => 1,
-      };
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-      // The post-repair confirmation judges on the very next per-log sample
-      // instead of waiting out the real 3-minute default grace.
-      replicationStallGraceMs: 0,
-    });
-    cleanups.push(() => handle.close());
-
-    // Settle boot's fire-and-forget initial merge before this fixture starts
-    // counting the passes that drive the synthetic repair episode below.
-    await handle.mergeNow();
-
-    const stale = fakeCloseableRemoteLog(keyHex);
-    handle.admitted.set(keyHex, stale);
-
-    function repairEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair' as BootHistoryKind],
-      });
-    }
-    function confirmationFailedEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_confirmation_failed' as BootHistoryKind],
-      });
-    }
-    function exhaustedEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_exhausted' as BootHistoryKind],
-      });
-    }
-
-    // ── Attempt 1: ONE genuine `frozen` episode — the only explicit fire in
-    // this whole test. drainRepairQueue applies it, and the SAME merge pass's
-    // per-log sample immediately judges the freshly re-attached session as
-    // still stuck (mergedPosition never advances off this fake), synthesizing
-    // attempt 2 directly via `enqueueRepairAttempt` — bypassing the edge-latch
-    // entirely. ──
-    sampleReplicationLiveness(
-      workspaceId,
-      harnessSlug,
-      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
-      { graceMs: 0 },
-    );
-    await handle.mergeNow();
-    expect(stale.close).toHaveBeenCalledTimes(1);
-    expect(sessions).toHaveLength(1);
-    expect(repairEvents()).toHaveLength(1);
-    expect(repairEvents()[0]!.message).toContain('attempt 1/3');
-    expect(confirmationFailedEvents()).toHaveLength(1);
-
-    // ── Attempt 2 — drained on the NEXT pass purely because
-    // `checkRepairConfirmation` enqueued it last pass. No episode fired, no
-    // `dropReplicationLogState` call. ──
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(2);
-    expect(handle.admitted.get(keyHex)).toBe(sessions[1]);
-    expect(sessions[0]!.close).toHaveBeenCalledTimes(1);
-    expect(repairEvents()).toHaveLength(2);
-    expect(repairEvents()[0]!.message).toContain('attempt 2/3');
-    expect(confirmationFailedEvents()).toHaveLength(2);
-
-    // ── Attempt 3 — same mechanism, one more pass. ──
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(3);
-    expect(handle.admitted.get(keyHex)).toBe(sessions[2]);
-    expect(sessions[1]!.close).toHaveBeenCalledTimes(1);
-    expect(repairEvents()).toHaveLength(3);
-    expect(repairEvents()[0]!.message).toContain('attempt 3/3');
-    expect(confirmationFailedEvents()).toHaveLength(3);
-
-    // ── THE CAP — this pass's confirmation check judges session #3 as still
-    // stuck and calls `enqueueRepairAttempt` again, but `repairAttempts` is
-    // already at REPAIR_MAX_ATTEMPTS_PER_LOG: no 4th session repair: instead
-    // it escalates to the forced-topic-rejoin path (no swarm bound here, so
-    // the rejoin call itself is a no-op, but the exhaustion event lands). ──
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(3); // unchanged — no 4th re-attach
-    expect(sessions[2]!.close).not.toHaveBeenCalled();
-    expect(repairEvents()).toHaveLength(3); // no 4th entry
-    expect(exhaustedEvents()).toHaveLength(1);
-
-    // ── Stable past the cap: nothing outstanding to judge, no further churn. ──
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(3);
-    expect(repairEvents()).toHaveLength(3);
-    expect(exhaustedEvents()).toHaveLength(1);
-  });
-
-  // WI-6324: the ZERO-KNOWLEDGE false confirmation. Every other test of this
-  // ladder hands the confirmation a writer "well ahead" (length 1000), so the
-  // `caughtUp` arm was never exercised with a zero-length view — and that is
-  // precisely the state a FRESH re-attached session is in. `knownLength` is the
-  // writer's length AS KNOWN TO OUR REPLICA, so a session that has just been
-  // re-opened (or one on a zombie connection that never delivers) reports 0 until
-  // replication actually delivers something. A bare `knownLength <= mergedPosition`
-  // then reads 0 <= 0 as "caught up" and CONFIRMS the repair — deleting the
-  // confirmation record and disarming the escalation ladder in exactly the case
-  // the ladder exists for. Observed as a deterministic red in the
-  // connected_never_replicated repro (`repair-confirmed: ingest recovered ...
-  // mergedPosition=0`, two seconds after the forced rejoin, nothing landing after).
-  //
-  // TEETH: on the pre-fix code the first mergeNow() below records NO
-  // confirmation-failed event and no second session is ever opened, so both
-  // assertions fail.
-  it('WI-6324: a re-attached session that knows NOTHING about the writer (knownLength 0) is NOT falsely confirmed as caught up — the ladder keeps escalating', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const workspaceId = 'ws-repair-confirm-6324';
-    const harnessSlug = 's-repair-confirm-6324';
-    const keyHex = 'b2'.repeat(32);
-
-    // The re-opened session is a FRESH zombie: it has learned nothing from the
-    // writer yet, so `length` is 0 (NOT 1000 as in the WI-5340 test above — that
-    // difference is the whole point of this test). `get` throws so mergedPosition
-    // genuinely never advances, matching a real zombie rather than a cursor race.
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
-        keyHex: k,
-        length: 0,
-        contiguousLength: 0,
-        get: async () => {
-          throw new Error('WI-6324 test: simulated zombie — block fetch never resolves');
-        },
-        update: async () => {},
-        prefetch: () => {},
-        has: async () => false,
-        close: vi.fn(async () => {}),
-        peersCount: () => 1,
-      };
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-      replicationStallGraceMs: 0,
-    });
-    cleanups.push(() => handle.close());
-
-    // Settle boot's fire-and-forget initial merge before this fixture starts
-    // counting the passes that drive the synthetic repair episode below.
-    await handle.mergeNow();
-
-    const stale = fakeCloseableRemoteLog(keyHex);
-    handle.admitted.set(keyHex, stale);
-
-    const confirmationFailedEvents = () =>
-      listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_confirmation_failed' as BootHistoryKind],
-      });
-
-    // One genuine episode (the writer IS ahead at detection time) applies repair
-    // attempt 1. The same pass's confirmation check then judges the freshly
-    // re-attached session — which reports knownLength 0.
-    sampleReplicationLiveness(
-      workspaceId,
-      harnessSlug,
-      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
-      { graceMs: 0 },
-    );
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(1);
-    expect(
-      confirmationFailedEvents(),
-      'a zero-length view is ABSENCE of evidence, not evidence of catch-up — the repair must be judged ineffective, not confirmed',
-    ).toHaveLength(1);
-
-    // And because it was judged ineffective, the ladder synthesizes attempt 2 on
-    // the next pass. On the pre-fix code the confirmation was deleted as
-    // "recovered", so no second session was ever opened.
-    await handle.mergeNow();
-    expect(
-      sessions,
-      'the escalation ladder must still be armed after a zero-knowledge sample',
-    ).toHaveLength(2);
-  });
-
-  // WI-5481 (live-fed gate stamp=171739): checkRepairConfirmation used to
-  // DELETE the outstanding confirmation unconditionally the moment its grace
-  // window elapsed — even when the sample it judged against had ZERO live
-  // replicator peers. A `connected_never_replicated` repair escalates
-  // straight to a forced topic rejoin (evict the zombie socket + fresh DHT
-  // join), so the very session this confirmation judges is almost always
-  // mid-reconnect (zero peers for a few seconds) right when the grace window
-  // elapses — the confirmation got discarded for good, and NO later pass
-  // ever re-judged the log even once a peer reconnected moments later,
-  // stranding the ladder at ONE repair forever. This test proves the fix: a
-  // zero-peers sample at judgment time RE-ARMS the confirmation instead of
-  // discarding it, so a later pass that finally observes a live (still-stuck)
-  // peer resumes the ladder and lands a genuine second re-attach.
-  it('WI-5481: a zero-peers sample at the confirmation-judgment moment re-arms instead of permanently abandoning the ladder', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const workspaceId = 'ws-repair-confirm-5481';
-    const harnessSlug = 's-repair-confirm-5481';
-    const keyHex = 'b2'.repeat(32);
-
-    // Every re-opened session is a "stuck" zombie (never advances) whose
-    // peersCount is externally controlled per-session via `livePeers` —
-    // simulating a socket mid-reconnect (0) that later re-attaches (1).
-    let livePeers = 0;
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
-        keyHex: k,
-        length: 1000,
-        contiguousLength: 0,
-        get: async () => {
-          throw new Error('WI-5481 test: simulated stuck zombie — block fetch never resolves');
-        },
-        update: async () => {},
-        prefetch: () => {},
-        has: async () => false,
-        close: vi.fn(async () => {}),
-        peersCount: () => livePeers,
-      };
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-      replicationStallGraceMs: 0,
-    });
-    cleanups.push(() => handle.close());
-
-    // Settle boot's fire-and-forget initial merge before this fixture starts
-    // counting the passes that drive the synthetic repair episode below.
-    await handle.mergeNow();
-
-    const stale = fakeCloseableRemoteLog(keyHex);
-    handle.admitted.set(keyHex, stale);
-
-    function repairEvents() {
-      return listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_repair' as BootHistoryKind] });
-    }
-    function confirmationFailedEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_confirmation_failed' as BootHistoryKind],
-      });
-    }
-
-    // ── Attempt 1: one genuine `frozen` episode, applied with zero peers
-    // already in effect (mirrors the forced-rejoin-just-evicted-the-socket
-    // moment) — drainRepairQueue applies it and stamps the confirmation. ──
-    sampleReplicationLiveness(
-      workspaceId,
-      harnessSlug,
-      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
-      { graceMs: 0 },
-    );
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(1);
-    expect(repairEvents()).toHaveLength(1);
-    expect(repairEvents()[0]!.message).toContain('attempt 1/3');
-
-    // ── One pass with ZERO live peers (still reconnecting after the repair's
-    // own forced rejoin): the confirmation must be RE-ARMED, not discarded —
-    // no attempt 2 yet, but nothing is lost either. (Kept to ONE zero-peers
-    // pass — each pass that actually reads this log's stuck position counts
-    // toward read-merge's own WI-2003 unrelated 3-consecutive-throw
-    // quarantine budget; burning it here would advance mergedPosition for a
-    // reason that has nothing to do with what THIS test is proving.) ──
-    expect(livePeers).toBe(0);
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(1); // no premature/extra re-attach
-    expect(repairEvents()).toHaveLength(1); // still just attempt 1
-    expect(confirmationFailedEvents()).toHaveLength(0); // never judged while peers==0
-
-    // ── The peer finally reconnects, still stuck (mergedPosition never
-    // advanced) — THE FIX: this pass judges the still-outstanding (re-armed)
-    // confirmation against a live peer, finds it stuck, and enqueues attempt
-    // 2 (queued for the NEXT drain, same as WI-5340's own attempt-2 pattern:
-    // "drained on the NEXT pass purely because checkRepairConfirmation
-    // enqueued it last pass"). Pre-fix, no confirmation would exist here at
-    // all (already discarded on the very first zero-peers judgment), so this
-    // event would never fire. ──
-    livePeers = 1;
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(1); // attempt 2 enqueued, not yet drained
-    expect(repairEvents()).toHaveLength(1);
-    expect(confirmationFailedEvents()).toHaveLength(1);
-
-    // ── Drained on this next pass — a genuine SECOND re-attach lands. (Not
-    // asserting the exact "attempt N/3" label: this harness's independent
-    // automatic replication-liveness sampler ALSO observes the same fresh
-    // session each pass and can synthesize its own repair episode off it,
-    // so the attempt-number label is entangled with that unrelated
-    // subsystem — not something this fix controls. What this fix owns, and
-    // what matters here, is that the ladder is NOT stuck at ONE session
-    // forever: a second re-attach genuinely lands once a peer reconnects,
-    // which never happened pre-fix because the confirmation was already
-    // discarded for good the moment the FIRST zero-peers judgment ran.) ──
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(2);
-    expect(repairEvents()).toHaveLength(2);
-    expect(repairEvents()[1]!.message).toContain('re-attached replica session');
-    expect(repairEvents()[1]!.message).toContain(keyHex.slice(0, 8));
-  });
-
-  // EI-18723690188615364: `checkRepairConfirmation` has THREE outcomes, but only
-  // the failure branch ever logged anything. Genuine recovery `delete()`d the
-  // confirmation and returned SILENTLY, and the zero-peers branch re-armed its
-  // own window SILENTLY (and unboundedly) — so from outside, "healed" and "hung
-  // forever" were the same observable: nothing. That made the ~6min window
-  // between an applied repair and real recovery unreadable — a live-federation
-  // gate run showed repair applied 15:52:58, data actually flowing ~15:58:40,
-  // and ZERO replication-liveness events in between; an operator reading that
-  // log concludes a 3-second incident against a real ~8.5min outage. These two
-  // tests pin both previously-silent branches. Pre-fix BOTH fail at the first
-  // event assertion (the kinds did not exist and nothing was recorded).
-  it('EI-18723690188615364: a CONFIRMED recovery is observable and carries the elapsed time since the repair was applied (was completely silent)', async () => {
-    const workspaceId = 'ws-repair-confirm-observable';
-    const harnessSlug = 's-repair-confirm-observable';
-    const keyHex = 'c3'.repeat(32);
-
-    // The re-opened session is HEALTHY and GENUINELY caught up.
-    //
-    // WI-6324: this test used to reach the caught-up branch via a bare
-    // `fakeCloseableRemoteLog` (length 0), i.e. `0 <= 0`. That is ABSENCE of
-    // knowledge — the state a session is in before replication has delivered
-    // anything — not evidence of catch-up, and treating it as recovery silently
-    // disarmed the escalation ladder on a real zombie connection. `caughtUp` now
-    // requires positive knowledge of the writer, so this test states its premise
-    // honestly instead of relying on the zero case: a writer of length 3 whose
-    // entries all resolve `null` (read-merge's "version-gated drop", which
-    // ADVANCES the cursor) leaves mergedPosition at 3 with knownLength 3 — a real
-    // caught-up session. The BEHAVIOUR under test (a confirmed recovery is
-    // observable and carries the incident clock) is unchanged.
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
-        ...fakeCloseableRemoteLog(k),
-        length: 3,
-        contiguousLength: 3,
-      };
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-      // WI-6324: a SMALL but non-zero confirmation grace. With 0 the confirmation
-      // is judged inside the very pass that applies the repair — before the fresh
-      // session has merged anything — so a genuine recovery would be recorded as a
-      // failure first, breaking this test's own "a recovery is NOT a failure"
-      // invariant for a purely fixture-level reason. Production uses a ~3min grace,
-      // so a re-attached session has long since learned the writer's length by the
-      // time it is judged; this just reproduces that ordering cheaply.
-      replicationStallGraceMs: 25,
-    });
-    cleanups.push(() => handle.close());
-
-    handle.admitted.set(keyHex, fakeCloseableRemoteLog(keyHex));
-
-    // One genuine `frozen` episode → drainRepairQueue applies the re-attach and
-    // the SAME pass's per-log sample judges the fresh (healthy) session.
-    sampleReplicationLiveness(
-      workspaceId,
-      harnessSlug,
-      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
-      { graceMs: 0 },
-    );
-    await handle.mergeNow();
-    // WI-6324: the repair swaps in the fresh session and would judge it within this
-    // SAME pass, before that session has merged anything — its merge cursor is still
-    // 0 here, which the grace above correctly defers past. Recovery only becomes
-    // OBSERVABLE on the next pass, once the cursor has actually advanced to the
-    // writer's length. (Previously this test "confirmed" on the first pass only
-    // because a zero-length view trivially satisfied `knownLength <= mergedPosition`
-    // — reading not-yet-started as finished, which is exactly the production bug
-    // WI-6324 fixes.)
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    await handle.mergeNow();
-
-    expect(sessions).toHaveLength(1);
-    const confirmed = listBootHistory({
-      workspaceId,
-      harnessSlug,
-      kinds: ['replication_repair_confirmed' as BootHistoryKind],
-    });
-    expect(confirmed).toHaveLength(1);
-    expect(confirmed[0]!.message).toContain('repair CONFIRMED');
-    // WI-6324: this fixture now recovers via the `advanced` arm — the merge cursor
-    // genuinely moves 0 → 3 on the second pass. It used to report 'caught up', but
-    // only by way of the zero-length shortcut this test no longer takes. Under the
-    // corrected semantics a "caught up but NOT advanced" confirmation requires the
-    // cursor to already be at/past a POSITIVE writer length at repair time, which
-    // is a different scenario than the one staged here; 'ingest resumed' is the
-    // honest description of what actually happened.
-    expect(confirmed[0]!.message).toContain('ingest resumed');
-    // THE POINT: the outcome carries the incident clock. Nothing else in the
-    // system records how long the log was actually broken — the repair-APPLIED
-    // line reads as an instant fix.
-    expect(confirmed[0]!.message).toMatch(/CONFIRMED \d+s after it was applied/);
-
-    // A recovery is NOT a failure and NOT a deferral — the three outcomes must
-    // stay distinguishable, which is the whole bug.
-    expect(
-      listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_confirmation_failed' as BootHistoryKind],
-      }),
-    ).toHaveLength(0);
-    expect(
-      listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_confirmation_deferred' as BootHistoryKind],
-      }),
-    ).toHaveLength(0);
-
-    // The confirmation was consumed: a later pass re-judges nothing and cannot
-    // emit a second verdict for the same applied repair.
-    await handle.mergeNow();
-    expect(
-      listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_confirmed' as BootHistoryKind],
-      }),
-    ).toHaveLength(1);
-  });
-
-  it('EI-18723690188615364: the zero-peers deferral is observable AND bounded — it records each deferral, then ABANDONS with a verdict instead of re-arming forever in silence', async () => {
-    // Same intentional read-merge quarantine console.error as the WI-5340/5481
-    // tests above (the stuck-zombie `get` throws).
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const workspaceId = 'ws-repair-defer-bound';
-    const harnessSlug = 's-repair-defer-bound';
-    const keyHex = 'd4'.repeat(32);
-
-    // A log that NEVER regains a live replicator peer: every judgment moment
-    // sees peersCount 0, so pre-fix the confirmation re-armed its own window on
-    // every single pass, forever, emitting nothing — the self-perpetuating
-    // silent-deferral shape. `get` throws so mergedPosition genuinely never
-    // advances (see WI-5340's note on throw-vs-null).
-    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
-    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
-        keyHex: k,
-        length: 1000,
-        contiguousLength: 0,
-        get: async () => {
-          throw new Error('EI-18723690188615364 test: stuck zombie — block fetch never resolves');
-        },
-        update: async () => {},
-        prefetch: () => {},
-        has: async () => false,
-        close: vi.fn(async () => {}),
-        peersCount: () => 0,
-      };
-      sessions.push(fresh);
-      return fresh;
-    });
-
-    const handle = await bootHarnessSubstrate({
-      workspaceRoot: tmpWorkspaceRoot(),
-      workspaceId,
-      harnessSlug,
-      mergePollMs: 0,
-      loadRevokedOverride: async () => new Set(),
-      openRemoteLogOverride,
-      replicationStallGraceMs: 0,
-      // Budget of 1 so the bound is reached in two passes — keeping the total
-      // pass count under read-merge's unrelated WI-2003 3-consecutive-throw
-      // quarantine budget, which would otherwise advance mergedPosition for a
-      // reason that has nothing to do with what this test proves.
-      repairConfirmationMaxDeferrals: 1,
-    });
-    cleanups.push(() => handle.close());
-
-    // Settle boot's fire-and-forget initial merge before this fixture starts
-    // counting the passes that drive the synthetic repair episode below.
-    await handle.mergeNow();
-
-    handle.admitted.set(keyHex, fakeCloseableRemoteLog(keyHex));
-
-    function deferredEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_confirmation_deferred' as BootHistoryKind],
-      });
-    }
-    function abandonedEvents() {
-      return listBootHistory({
-        workspaceId,
-        harnessSlug,
-        kinds: ['replication_repair_confirmation_abandoned' as BootHistoryKind],
-      });
-    }
-
-    // ── Pass 1: repair applied, judged against a zero-peers sample → DEFERRED
-    // (still broken), and now SAID SO. WI-5481's re-arm is preserved: the
-    // confirmation is not discarded, no attempt is synthesized. ──
-    sampleReplicationLiveness(
-      workspaceId,
-      harnessSlug,
-      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
-      { graceMs: 0 },
-    );
-    await handle.mergeNow();
-    expect(sessions).toHaveLength(1);
-    expect(deferredEvents()).toHaveLength(1);
-    expect(deferredEvents()[0]!.message).toContain('ZERO');
-    expect(deferredEvents()[0]!.message).toContain('(1/1)');
-    expect(abandonedEvents()).toHaveLength(0);
-
-    // ── Pass 2: the budget is spent — ABANDON with a recorded verdict rather
-    // than re-arm silently forever. Deliberately does NOT synthesize another
-    // attempt: permanently-zero peers is the no_replicator axis (WI-752/
-    // WI-1534's swarm self-heal loop), not this ladder. ──
-    await handle.mergeNow();
-    expect(abandonedEvents()).toHaveLength(1);
-    expect(abandonedEvents()[0]!.message).toContain('ABANDONING repair confirmation');
-    expect(abandonedEvents()[0]!.message).toContain('no_replicator');
-    expect(sessions).toHaveLength(1); // no retry storm at the self-heal loop
-
-    // ── Pass 3: the confirmation is gone — no further churn, and crucially no
-    // further SILENT re-arming (the pre-fix state was an unbounded, invisible
-    // loop here). ──
-    await handle.mergeNow();
-    expect(deferredEvents()).toHaveLength(1);
-    expect(abandonedEvents()).toHaveLength(1);
+  it('liveness reporters cannot create a second lifecycle repair clock', async () => {
+    const f = await fixture();
+    sampleReplicationLiveness('ws-progress', 's-progress', {
+      keyHex: f.frame.log_core_key, knownLength: 100, mergedPosition: 0, peersCount: 1,
+    }, { graceMs: 0 });
+    await f.handle.mergeNow();
+    await f.handle.mergeNow();
+    expect(f.open).toHaveBeenCalledTimes(1);
   });
 });
 

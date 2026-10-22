@@ -41,6 +41,12 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { hardText } from '../limits';
+import { anchorsInputSchema, resolveHarnessAnchors, type AnchorInput } from '../../plan-items/anchors';
+import { writePlanItemAnchors } from '../../plan-items/anchor-store';
+import { resolvePlanScope } from './source';
+import { effectivePlanProfile } from '../../plan-verification-escape';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { notifySyncInvalidate } from '../../sync-sse';
 
 /**
  * EI-8811: normalize a caller-supplied phase heading to satisfy the parser's
@@ -153,6 +159,7 @@ const itemSpec = z.object({
   deliverable: DELIVERABLE.optional(),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
+  anchors: anchorsInputSchema.optional(),
 });
 
 // Exported (back-compat name) — the SINGLE-item arg shape, now folded into a
@@ -168,6 +175,7 @@ export const argsSchema = z
     blockedBy: BLOCKED_BY.optional(),
     importance: IMPORTANCE.optional(),
     deliverable: DELIVERABLE.optional(),
+    anchors: anchorsInputSchema.optional(),
     items: z
       .array(itemSpec)
       .min(1)
@@ -252,6 +260,7 @@ interface NewItem {
   deliverable?: ItemDeliverable;
   harness?: string;
   rationale?: string;
+  anchors?: AnchorInput[];
 }
 
 function formatPadded(n: number): string {
@@ -431,6 +440,10 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
   );
   // Capture the written body so we can echo the parsed item back (WI-3363).
   let writtenBody: string | null = null;
+  let warnNoLinks = false;
+  const scope = it.anchors === undefined ? null : await resolvePlanScope({ harnessSlug,
+    workspaceId: (sctx as { workspaceId?: string }).workspaceId });
+  const anchors = scope ? await resolveHarnessAnchors(scope.workspaceId, harnessSlug ?? scope.harnessSlug, it.anchors!) : undefined;
   const result = await withPlanLock<AddItemValue>(
     ctx as never,
     {
@@ -438,12 +451,17 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
       intent: `plans:add-item to "${it.phase.slice(0, 40)}"`,
       ...(harnessSlug ? { harnessSlug } : {}),
       afterWrite: rev.afterWrite,
+      inTransaction: async (tx, _body, lockedScope, value) => {
+        if (value.ok && anchors !== undefined) await writePlanItemAnchors(tx,
+          { ...lockedScope, planSlug: it.slug }, { itemId: value.itemId, anchors }, resolveAgentIdentity(ctx).ownerId);
+      },
     },
-    async (current): Promise<{ newBody: string | null; value: AddItemValue }> => {
+    async (current, meta): Promise<{ newBody: string | null; value: AddItemValue }> => {
       if (current === null) {
         return { newBody: null, value: { ok: false, code: 'not_found' } };
       }
       const parsed = parsePlan(current, { filePath: it.slug + '.md' });
+      warnNoLinks = !it.anchors?.length && effectivePlanProfile(meta?.verificationProfile) !== 'general';
       if (parsed.isLegacy) {
         return {
           newBody: null,
@@ -509,6 +527,7 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
   }
 
   // `result.value` is narrowed to the ok-variant by the guard above.
+  if (anchors !== undefined) await notifySyncInvalidate('planItems.byPlan', { planSlug: it.slug });
   await emitPlanEventForCaller(ctx, {
     planSlug: it.slug,
     event: 'item_added',
@@ -523,6 +542,8 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
   const item = writtenBody ? echoParsedItem(writtenBody, result.value.itemId) : null;
   return {
     ...result.value,
+    ...(anchors !== undefined ? { anchors } : {}),
+    ...(warnNoLinks ? { warnings: ['This code plan item has no code links; add symbols or paths as anchors.'] } : {}),
     ...(item
       ? { item }
       : {
@@ -570,6 +591,7 @@ export default defineTool({
           deliverable: it.deliverable ?? args.deliverable,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
+          anchors: it.anchors ?? args.anchors,
         }))
       : [
           {
@@ -581,6 +603,7 @@ export default defineTool({
             deliverable: args.deliverable,
             harness: args.harness,
             rationale: args.rationale,
+            anchors: args.anchors,
           },
         ];
     const env = await runBulk(list, (it) => addItemOne(it, ctx), {

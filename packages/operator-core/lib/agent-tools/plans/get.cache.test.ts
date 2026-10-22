@@ -11,6 +11,7 @@
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { unknownAnchor, type PlanItemAnchor } from '../../plan-items/anchors';
 
 const M = vi.hoisted(() => {
   // The real readPlanBySlug (source.ts:1419) returns `{…} | null` — null IS the
@@ -88,6 +89,7 @@ const M = vi.hoisted(() => {
   });
   type PlanRead = ReturnType<typeof planFixture> | null;
   return {
+    readPlanItemAnchors: vi.fn(async (): Promise<Record<string, PlanItemAnchor[]>> => ({})),
     history: vi.fn(async () => ({
       status: 'available',
       brief: {
@@ -187,6 +189,7 @@ vi.mock('./_ctx-opts', () => ({
   resolveCtxHarnessSlug: M.resolveCtxHarnessSlug,
   resolveEffectiveHarnessSlug: M.resolveEffectiveHarnessSlug,
 }));
+vi.mock('../../plan-items/anchor-store', () => ({ readPlanItemAnchors: M.readPlanItemAnchors }));
 vi.mock('../../issue-blocks-merge', async (orig) => {
   const actual = await orig<typeof import('../../issue-blocks-merge')>();
   return {
@@ -262,6 +265,7 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.readPlanBySlug.mockClear();
+  M.readPlanItemAnchors.mockReset().mockResolvedValue({});
   M.planHarnessesForSlugs.mockReset();
   M.planHarnessesForSlugs.mockResolvedValue(new Map());
   M.ctxToPlanSourceOpts.mockClear();
@@ -420,6 +424,19 @@ describe('plans:get — cache wiring', () => {
     await run({ slug: 'alpha' });
     await run({ slug: 'alpha' });
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves anchored items in the cached detail without querying anchors for metadata', async () => {
+    const anchor = unknownAnchor({ symbol: 'Widget' }, 'no-snapshot');
+    M.readPlanItemAnchors.mockResolvedValue({ 'P-001': [anchor] });
+    await run({ slug: 'with-anchors', mode: 'meta' });
+    expect(M.readPlanItemAnchors).not.toHaveBeenCalled();
+    const first = await run({ slug: 'with-anchors' });
+    const cached = await run({ slug: 'with-anchors' });
+    expect(first.results[0].items).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'P-001', anchors: [anchor] })]));
+    expect(cached.results[0].items).toEqual(first.results[0].items);
+    expect(M.readPlanItemAnchors).toHaveBeenCalledOnce();
+    expect(M.readPlanItemAnchors).toHaveBeenCalledWith({ workspaceId: 'ws-get', harnessSlug: 'papercup', planSlug: 'with-anchors' });
   });
 
   it('does not cache a not_found result when a later read succeeds', async () => {

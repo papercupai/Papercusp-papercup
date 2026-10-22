@@ -362,12 +362,13 @@ describe('fresh worker channel', () => {
   // is still busy with it, so the next request must wait for the late reply.
   const kase = (id: string) => ({ id }) as unknown as Parameters<ReturnType<typeof createFairWorkerChannel>['query']>[0];
   const flush = (ms = 0) => new Promise(done => setTimeout(done, ms));
-  function channelUnderTest(deadlineMs: number, drainCapMs: number) {
+  function channelUnderTest(deadlineMs: number, drainCapMs: number,
+    observe?: Parameters<typeof createFairWorkerChannel>[0]['observe']) {
     const sent: Array<{ id: number; method: string }> = [];
     let clock = 0;
     const channel = createFairWorkerChannel({
       send: (line, done) => { sent.push(JSON.parse(line)); done(null); },
-      isLive: () => true, deadlineMs: () => deadlineMs, drainCapMs, now: () => (clock += 5),
+      isLive: () => true, deadlineMs: () => deadlineMs, drainCapMs, now: () => (clock += 5), observe,
     });
     const reply = (id: number, body: { result?: unknown; error?: string }) =>
       channel.receive(`FAIR_WORKER_REPLY=${JSON.stringify({ id, ...body })}`);
@@ -389,10 +390,35 @@ describe('fresh worker channel', () => {
   });
 
   it('fails the repetition loudly when an overrun worker never frees up', async () => {
-    const { channel, sent } = channelUnderTest(10, 30);
+    const observe = vi.fn();
+    const { channel, sent } = channelUnderTest(10, 30, observe);
     await channel.query(kase('stuck'));
-    await expect(channel.query(kase('after'))).rejects.toThrow('fresh worker still busy 30ms after a request deadline');
+    await expect(channel.query(kase('after'))).rejects.toThrow(
+      'fresh worker still busy 30ms after a request deadline (request=1 method=query case=stuck)');
     expect(sent).toHaveLength(1);
+    expect(observe.mock.calls.map(([event]) => event)).toEqual([
+      { event: 'send', requestId: 1, method: 'query', caseId: 'stuck' },
+      { event: 'deadline', requestId: 1, method: 'query', caseId: 'stuck' },
+      { event: 'drain-failed', requestId: 1, method: 'query', caseId: 'stuck' },
+    ]);
+  });
+
+  it('attributes a late reply to its original case before reporting the next request', async () => {
+    const observe = vi.fn();
+    const { channel, reply } = channelUnderTest(10, 1_000, observe);
+    await channel.query(kase('slow'));
+    const next = channel.rpc('identity');
+    reply(1, { result: {} });
+    await flush();
+    reply(2, { result: { pid: 42 } });
+    await expect(next).resolves.toEqual({ pid: 42 });
+    expect(observe.mock.calls.map(([event]) => event)).toEqual([
+      { event: 'send', requestId: 1, method: 'query', caseId: 'slow' },
+      { event: 'deadline', requestId: 1, method: 'query', caseId: 'slow' },
+      { event: 'reply', requestId: 1, method: 'query', caseId: 'slow' },
+      { event: 'send', requestId: 2, method: 'identity', caseId: null },
+      { event: 'reply', requestId: 2, method: 'identity', caseId: null },
+    ]);
   });
 
   it('keeps worker-reported and transport failures as errors, never a scored timeout', async () => {

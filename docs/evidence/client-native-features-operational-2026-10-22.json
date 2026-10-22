@@ -1,0 +1,241 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Client native feature operational and saved native receipts",
+  "framework": "operational",
+  "command": [
+    "node",
+    "apps/operator/scripts/hooks/cc/stop-failure-record.mjs",
+    "apps/operator/scripts/hooks/cc/posttooluse-failure-record.mjs",
+    "node scripts/test-files.mjs apps/operator/scripts/__tests__/psu-native-compaction-switches.test.ts"
+  ],
+  "startedAt": "2026-10-22T14:02:59Z",
+  "finishedAt": "2026-10-22T14:35:36.298520+00:00",
+  "exitCode": 0,
+  "summary": "Actual private hook rows and installed compaction gate semantics, plus re-resolved versioned Codex and Channels receipts. No implementation acceptance or shipment is inferred.",
+  "assertions": [
+    {
+      "id": "stopfailure-persisted",
+      "passed": true,
+      "evidence": "Actual stop-failure-record.mjs entry point -> staging operator activity:report -> agent_activity row 8957862, with synthetic session, error kind and server timestamp."
+    },
+    {
+      "id": "tool-error-persisted",
+      "passed": true,
+      "evidence": "Actual posttooluse-failure-record.mjs entry point -> row 8957864, error/post, tool correlation and scalar-only detail; nested input absent."
+    },
+    {
+      "id": "tool-interrupt-persisted",
+      "passed": true,
+      "evidence": "Actual posttooluse-failure-record.mjs entry point -> row 8960206, interrupted/post with the exact private correlation id."
+    },
+    {
+      "id": "codex-creation-time-policy",
+      "passed": true,
+      "evidence": "Four saved codex-cli0.163.0 rollout streams were re-read: fresh default and descendants remain disabled, fresh explicit opt-in and plain resume/fork descendants remain v1. D-008 records the exact launch procedure. This is a saved versioned observation, not a new provider call."
+    },
+    {
+      "id": "channels-versioned-native-receipts",
+      "passed": true,
+      "evidence": "Re-read CLI2.1.293 interactive/headless probe logs and corrected published report rpt_23cad088-c58e-4f8f-95eb-acbef256cce8. D-016 retracts the earlier43ms boundary: emit19:40:13.518Z to explicit engine turn start19:40:13.595Z is77ms. Preserve D-013 do-not-adopt, no headless registration and blocking development dialog. Current wake queue/coalescing intervals are not a separately measured transport hop."
+    },
+    {
+      "id": "native-compaction-gate-semantics",
+      "passed": true,
+      "evidence": "Current installed Claude2.1.293 gate bodies were extracted from the installed binary and executed in a VM with controlled env/settings. Full 21-case file passed with no skips. Controls: no switches permits auto/manual and reaches prefix_changed; idle setting false returns idle_compaction_off; either disabling env stops auto/idle; DISABLE_COMPACT also disables manual; psu env disables all. This measures decision semantics, not a live session timer."
+    }
+  ],
+  "hookPersistence": {
+    "workspace": "papercusp-workspace",
+    "operatorRoute": "http://127.0.0.1:3170",
+    "operatorBuildObserved": "c4f4f7a8ae",
+    "credentialScope": "host operator home selected explicitly for the current-build route; token bytes omitted",
+    "rows": [
+      {
+        "id": "8957862",
+        "session_id": "acceptance-native-features-c5ca-host-token-20261022",
+        "kind": "lifecycle",
+        "tool_name": null,
+        "phase": null,
+        "tool_use_id": null,
+        "status": "error",
+        "summary": "\u2716 turn failed on API error: acceptance_probe_api_error \u2014 Synthetic #2142 persistence check",
+        "detail": {
+          "error": "acceptance_probe_api_error",
+          "error_details": "Synthetic #2142 persistence check",
+          "hook_event_name": "StopFailure"
+        },
+        "created_at": "2026-10-22 14:02:59.436706+00"
+      },
+      {
+        "id": "8957864",
+        "session_id": "acceptance-native-features-c5ca-host-token-20261022",
+        "kind": "tool",
+        "tool_name": "acceptance_probe_tool",
+        "phase": "post",
+        "tool_use_id": "acceptance-host-token-error",
+        "status": "error",
+        "summary": "\u2716 tool failed: acceptance_probe_tool \u2014 Synthetic #2142 tool failure",
+        "detail": {
+          "command": "synthetic-persistence-check"
+        },
+        "created_at": "2026-10-22 14:02:59.687143+00"
+      },
+      {
+        "id": "8960206",
+        "session_id": "acceptance-native-features-c5ca-host-token-20261022",
+        "kind": "tool",
+        "tool_name": "acceptance_probe_tool",
+        "phase": "post",
+        "tool_use_id": "acceptance-host-token-interrupt",
+        "status": "interrupted",
+        "summary": "\u23f9 tool interrupted: acceptance_probe_tool \u2014 Synthetic #2142 interrupted tool",
+        "detail": {
+          "command": "synthetic-persistence-check"
+        },
+        "created_at": "2026-10-22 14:27:58.800393+00"
+      }
+    ]
+  },
+  "codexRollouts": [
+    {
+      "path": "/tmp/su-c5ca-cx/p001-live2/root-NEG/homes/session-p001-live2-NEG/sessions/2026/10/21/rollout-2026-10-21T12-50-31-01a15f5f-1f9f-7bd2-a241-1e980b7e54d2.jsonl",
+      "sha256": "aabdb2eb593b8399010f1641370d0c57928cf5a71738b10b0c4623d0eaa4a6e5",
+      "session": {
+        "id": "01a15f5f-1f9f-7bd2-a241-1e980b7e54d2",
+        "forked_from_id": null,
+        "cli_version": "0.163.0"
+      },
+      "turns": [
+        {
+          "timestamp": "2026-10-21T16:50:34.563Z",
+          "multi_agent_version": "disabled"
+        },
+        {
+          "timestamp": "2026-10-21T16:57:17.535Z",
+          "multi_agent_version": "disabled"
+        },
+        {
+          "timestamp": "2026-10-21T16:59:49.187Z",
+          "multi_agent_version": "disabled"
+        },
+        {
+          "timestamp": "2026-10-21T17:00:35.320Z",
+          "multi_agent_version": "disabled"
+        },
+        {
+          "timestamp": "2026-10-21T17:02:14.717Z",
+          "multi_agent_version": "disabled"
+        },
+        {
+          "timestamp": "2026-10-21T17:03:44.675Z",
+          "multi_agent_version": "disabled"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/su-c5ca-cx/p001-live2/root-NEG/homes/session-p001-live2-NEG/sessions/2026/10/21/rollout-2026-10-21T13-06-14-01a15f6d-7ee8-7490-8380-b0efb9e2ae9e.jsonl",
+      "sha256": "23ae3207a9bca044f70573ec15944b4584abd493a7b89dac2600cfeaf78224e5",
+      "session": {
+        "id": "01a15f6d-7ee8-7490-8380-b0efb9e2ae9e",
+        "forked_from_id": "01a15f5f-1f9f-7bd2-a241-1e980b7e54d2",
+        "cli_version": "0.163.0"
+      },
+      "turns": [
+        {
+          "timestamp": "2026-10-21T17:06:16.108Z",
+          "multi_agent_version": "disabled"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/su-c5ca-cx/p001-live3/root-TUI-ROOT/homes/session-p001-live3-TUI-ROOT/sessions/2026/10/21/rollout-2026-10-21T12-57-11-01a15f65-38f8-7c92-8665-b443a20d0264.jsonl",
+      "sha256": "c31582be2a682ca1764938e1ad33420e4c482e7c60a399a9cec9921eb38c2b8c",
+      "session": {
+        "id": "01a15f65-38f8-7c92-8665-b443a20d0264",
+        "forked_from_id": null,
+        "cli_version": "0.163.0"
+      },
+      "turns": [
+        {
+          "timestamp": "2026-10-21T16:57:13.571Z",
+          "multi_agent_version": "v1"
+        },
+        {
+          "timestamp": "2026-10-21T17:06:07.573Z",
+          "multi_agent_version": "v1"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/su-c5ca-cx/p001-live3/root-TUI-ROOT/homes/session-p001-live3-TUI-ROOT/sessions/2026/10/21/rollout-2026-10-21T13-06-09-01a15f6d-6e22-7b62-b335-04b25a7b21a5.jsonl",
+      "sha256": "25463696964d050f18738f3877f4c8663364a763e4bd3c431e8ad64539f99e63",
+      "session": {
+        "id": "01a15f6d-6e22-7b62-b335-04b25a7b21a5",
+        "forked_from_id": "01a15f65-38f8-7c92-8665-b443a20d0264",
+        "cli_version": "0.163.0"
+      },
+      "turns": [
+        {
+          "timestamp": "2026-10-21T17:06:11.673Z",
+          "multi_agent_version": "v1"
+        }
+      ]
+    }
+  ],
+  "channels": {
+    "interactive": {
+      "root": "/tmp/su-c5ca-chanpty-2Ex9",
+      "serverLog": "1792611598481 starting\n1792611598512 initialized protocol=claude-code\n1792611613518 emit probe-0-1792611613518\n1792611613519 sent probe-0-1792611613518\n1792611623512 emit probe-1-1792611623512\n1792611623513 sent probe-1-1792611623512\n",
+      "nativeDebugEvents": [
+        "2026-10-21T19:39:58.135Z [DEBUG] MCP server \"coordwake\": Starting connection with timeout of 30000ms",
+        "2026-10-21T19:39:58.502Z [DEBUG] MCP server \"coordwake\": Successfully connected (transport: stdio) in 638ms",
+        "2026-10-21T19:39:58.503Z [DEBUG] MCP server \"coordwake\": Connection established with capabilities: {\"hasTools\":true,\"hasPrompts\":false,\"hasResources\":false,\"hasResourceSubscribe\":false,\"serverVersion\":{\"name\":\"coordwake\",\"version\":\"0.0.1\"},\"protocolEra\":\"legacy\",\"negotiatedProtocolVersion\":\"2025-11-25\"}",
+        "2026-10-21T19:39:58.503Z [DEBUG] [MCP] Server \"coordwake\" connected with subscribe=false",
+        "2026-10-21T19:39:58.516Z [DEBUG] MCP server \"coordwake\": Channel notifications registered",
+        "2026-10-21T19:40:13.520Z [DEBUG] MCP server \"coordwake\": notifications/claude/channel: CHANNEL-PROBE probe-0-1792611613518: reply with exactly PONG 0",
+        "2026-10-21T19:40:13.595Z [DEBUG] [engine] turn 1 start",
+        "2026-10-21T19:40:13.911Z [DEBUG] [engine] turn 1 end (turns=1 usage in=0 out=0 cost=$0.0000 api=0ms stop=stop_sequence resultLen=0)",
+        "2026-10-21T19:40:13.912Z [ERROR] [engine] turn ended in error: You've hit your weekly limit \u00b7 resets Oct 25, 10pm (America/New_York)",
+        "2026-10-21T19:40:23.514Z [DEBUG] MCP server \"coordwake\": notifications/claude/channel: CHANNEL-PROBE probe-1-1792611623512: reply with exactly PONG 1",
+        "2026-10-21T19:40:52.532Z [DEBUG] MCP server \"coordwake\": Sending SIGINT to MCP server process",
+        "2026-10-21T19:40:52.583Z [DEBUG] MCP server \"coordwake\": MCP server process exited cleanly"
+      ],
+      "serverSha256": "818eacfc680771e02ebfdc09e0f5961315bf870359435845c84f961301d2a133",
+      "debugSha256": "9a56594233cfd382822be72d84b87def2ac9724723180de295bed6356a8f679e"
+    },
+    "headless": {
+      "root": "/tmp/su-c5ca-chanrun-7AXN",
+      "serverLog": "1792611480568 starting\n1792611480596 initialized protocol=claude-code\n1792611482097 emit probe-0-1792611482097\n1792611482098 sent probe-0-1792611482097\n1792611495603 emit probe-1-1792611495603\n1792611495603 sent probe-1-1792611495603\n",
+      "nativeDebugEvents": [
+        "2026-10-21T19:38:00.362Z [DEBUG] MCP server \"coordwake\": Starting connection with timeout of 30000ms",
+        "2026-10-21T19:38:00.591Z [DEBUG] MCP server \"coordwake\": Successfully connected (transport: stdio) in 293ms",
+        "2026-10-21T19:38:00.592Z [DEBUG] MCP server \"coordwake\": Connection established with capabilities: {\"hasTools\":true,\"hasPrompts\":false,\"hasResources\":false,\"hasResourceSubscribe\":false,\"serverVersion\":{\"name\":\"coordwake\",\"version\":\"0.0.1\"},\"protocolEra\":\"legacy\",\"negotiatedProtocolVersion\":\"2025-11-25\"}",
+        "2026-10-21T19:38:00.592Z [DEBUG] [MCP] Server \"coordwake\" connected with subscribe=false",
+        "2026-10-21T19:38:33.918Z [DEBUG] MCP server \"coordwake\": Sending SIGINT to MCP server process",
+        "2026-10-21T19:38:33.999Z [DEBUG] MCP server \"coordwake\": UNKNOWN connection closed after 33s (cleanly)",
+        "2026-10-21T19:38:34.006Z [DEBUG] MCP server \"coordwake\": Cleared connection cache for reconnection"
+      ],
+      "serverSha256": "9b4ed3ef55f82824e5f325e3d23112008838c902b46b46dddb1e65b0ee096fbe",
+      "debugSha256": "920f2153fdb24bcb402f8b34e9aeb86871844829c1cba9ca8276da9d5ad98a4c"
+    }
+  },
+  "channelReport": {
+    "report_id": "rpt_23cad088-c58e-4f8f-95eb-acbef256cce8",
+    "visibility": "owner",
+    "path": "/reports?sel=rpt_23cad088-c58e-4f8f-95eb-acbef256cce8",
+    "body_sha256": "6a1c524123b112806867c2465001d4b2cdabbd1439195b85638ce2cad7020569",
+    "body_md": "# Channels spike (P-005): measured, not adopted\n\nPlan `client-native-features-adoption-2026-10-21`, item P-005, Decision `client-native-features-adoption-2026-10-21#D-013`. Measured 2026-10-21 on Claude Code 2.1.293.\n\nCorrection (2026-10-22): the earlier 43 ms figure used the wrong event boundary. The saved native debug log explicitly starts engine turn 1 at 19:40:13.595Z, 77 ms after the server emit. No adoption conclusion changes. See plan D-016.\n\n## Verdict\n\n**Do not adopt Channels as the coord wake transport now.** Keep the prototype emitter (`packages/operator-core/lib/channels/coord-channel-emitter.ts`, tested against the CLI's own message schema) so a later adoption starts from a verified shape.\n\n## What Channels is (read from the installed CLI)\n\n- A channel is an MCP server that declares `capabilities.experimental[\"claude/channel\"]`.\n- It pushes `notifications/claude/channel` with `{ content: string, meta?: Record<string,string> }`. The CLI drops every meta key that is not `[a-zA-Z_][a-zA-Z0-9_]*`.\n- The CLI turns each push into a queued prompt `<channel source=\"\u2026\" key=\"value\">content</channel>` with priority `next`. It runs as the next turn and never interrupts a running one. The turn is marked `isMeta` with origin `{kind: \"channel\"}`.\n- Registration is skipped unless all of these hold: the server is named in `--channels` (a bare `server:` entry also needs `--dangerously-load-development-channels`; a plugin entry needs the approved allowlist); the provider is first-party; the `tengu_harbor` / `allow_channels` feature gates are on; org policy allows channels (team/enterprise need `channelsEnabled: true`); the connection is not on the modern protocol era.\n\n## Measurements\n\nProbe server: a stdio MCP server pushing the emitter's exact message shape at fixed delays.\n\n| Session shape | Registered? | Push to turn start | Notes |\n|---|---|---|---|\n| Interactive, in a PTY, `--dangerously-load-development-channels server:coordwake` | Yes, 13 ms after connect | **77 ms** (emit 19:40:13.518Z, notification receipt 19:40:13.520Z, explicit engine turn start 19:40:13.595Z) | A blocking `WARNING: Loading development channels` dialog had to be confirmed at launch. The model call then failed: the system account is at its weekly limit, so no reply was measured. |\n| Headless print mode, `-p --input-format stream-json` | No | No turn for either push (1.5 s, 15 s) | The server connected, but the CLI never registered the channel. |\n\nCurrent wake delivery, from `harness_shared.event_wake_deliveries` over the last 7 days:\n\n| Channel | Delivered | delivered \u2212 created p10 / p50 / p90 | Never picked up |\n|---|---|---|---|\n| psu-socket-inject | 9,330 | 47 s / 59 s / 280 s | 946 (10%) |\n\n`min_sleep_sec` averaged 60 s on those rows. The delay is the deliberate min-sleep and coalescing window plus the wait for the target session to go idle, not the transport hop, which is not recorded separately.\n\n## Why not adopt\n\n- **No like-for-like transport gain was measured.** The Channels emit-to-engine-turn interval is 77 ms. Current wake timings include the policy/coalescing window and waiting for an idle session; their transport hop was not separately measured. Channels also wait for the current turn to end.\n- **Every launch would carry a blocking dialog**, unless our plugin is on an approved channels allowlist we do not control.\n- **No headless coverage.** Headless wakes (`resume-headless`) would still need the current path.\n- **The 10% never-picked-up rate is not addressed.** The CLI queue also needs an idle session.\n- **It adds a second MCP server per session.**\n\n## What would change the verdict\n\n- The CLI accepts a local channel without the development dialog for individual accounts, or\n- Channels register in headless/print mode.\n\n## Side finding\n\nThe system OAuth account on this box (`~/.claude` credentials) reports `You've hit your weekly limit \u00b7 resets Oct 25, 10pm (America/New_York)`. Sessions launched on the default system account will fail until then.\n"
+  },
+  "installedClaude": {
+    "path": "~/.local/share/claude/versions/2.1.293",
+    "version": "2.1.293",
+    "sha256": "8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978"
+  },
+  "sourcePaths": [
+    "apps/operator/scripts/hooks/cc/stop-failure-record.mjs",
+    "apps/operator/scripts/hooks/cc/posttooluse-failure-record.mjs",
+    "apps/operator/scripts/__tests__/psu-native-compaction-switches.test.ts",
+    "packages/operator-core/lib/channels/coord-channel-emitter.ts"
+  ]
+}

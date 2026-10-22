@@ -31,6 +31,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
+import { nextRepair as acceptanceBarNextRepair } from './acceptance-bar-contract-snapshot';
 import {
   areAcceptanceLineageRelated,
   resolvePlanImplementerIdentities,
@@ -1033,6 +1034,26 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(v.message).toContain('NEXT REPAIR: Vet the current rubric revision');
       expect(mockRubrics).not.toHaveBeenCalled();
     });
+
+    it.each(['bar_snapshot_pending_delivery_selection_invalid', 'bar_snapshot_scope_invalid'] as const)(
+      'routes %s according to the measured defect rather than the umbrella contract refusal', (code) => {
+        const lifecycle = { ...verdict('pre-grading', [code]),
+          nextRepair: acceptanceBarNextRepair([code], []),
+        };
+        const repair = planAcceptanceRepairAction('some-plan-2026-08-11', {
+          satisfied: false, code: 'acceptance_bar_contract_not_ready',
+          acceptanceBarLifecycle: lifecycle,
+        });
+        if (code === 'bar_snapshot_scope_invalid') {
+          expect(repair).toMatchObject({ kind: 'contract-repair', repairVerb: 'rubrics:amend' });
+          expect(repair.instruction).toContain('Declare a non-empty');
+        } else {
+          expect(repair).toMatchObject({ kind: 'diagnostic', instruction: lifecycle.nextRepair!.action });
+          expect(repair).not.toHaveProperty('repairVerb');
+          expect(repair.instruction).toContain('pendingDeliveryBarKeys');
+        }
+      },
+    );
 
     it('a ship refusal that never deferred names the ship phase and carries no pre-grading verdict (P-038)', async () => {
       mockBarLifecycle.mockResolvedValue(verdict('ship', ['bar_snapshot_evidence_plane_unmet']));

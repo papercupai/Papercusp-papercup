@@ -451,7 +451,9 @@ export function evaluateAcceptanceBarLifecycle(
   const pending = new Set(snapshot.bars.filter((bar) => requested.has(bar.barKey)
     && (bar.evidencePlane === 'deployed' || bar.evidencePlane === 'live')
     && bar.check?.kind === 'instrument' && bar.check.instrumentKey === 'none').map((bar) => bar.barKey));
-  if ([...requested].some((key) => !pending.has(key))) addCode(codes, 'bar_snapshot_scope_invalid');
+  if ([...requested].some((key) => !pending.has(key))) {
+    addCode(codes, 'bar_snapshot_pending_delivery_selection_invalid');
+  }
   // Filter per BAR BEFORE folding snapshot codes. Removing the flat union would
   // also hide identical failures on unrelated tree/automated outcomes.
   const phaseSnapshot = pending.size === 0 ? snapshot : { ...snapshot, bars: snapshot.bars.map((bar) =>

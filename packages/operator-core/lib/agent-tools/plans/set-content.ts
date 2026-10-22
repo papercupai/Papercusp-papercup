@@ -396,7 +396,9 @@ export async function evaluateSetContent(
   // shrink/legacy/lint guards + the stored body see the real, preserved result. A body
   // that DOES carry its own `---…---` is left untouched — an intentional frontmatter
   // rewrite still passes through the legacy-boundary guard + lint unchanged.
-  let body = content;
+  let body = content.includes('↳ code:')
+    ? (await import('../../plan-items/anchors')).stripRenderedAnchorLines(content)
+    : content;
   let proposed = parsePlan(body, { filePath });
   // A CLEAN PG-canonical body omits frontmatter entirely and starts with markdown (`# …`).
   // A body that STRIPPED only its opening `---` fence is corruption, not omission: it begins

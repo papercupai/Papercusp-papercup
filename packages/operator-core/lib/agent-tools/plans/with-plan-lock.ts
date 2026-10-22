@@ -285,6 +285,8 @@ export interface PlanWriteMeta {
   planStatus: string | null;
   /** Operational lifecycle read under the same lock as the candidate body. */
   opStatus: string | null;
+  /** Absent stamps retain the inferred coding profile; read under this lock. */
+  verificationProfile?: string | null;
   /**
    * The plan's live structured columns, read INSIDE the lock (P-004). A mutator that
    * must validate against the plan's declared schema needs the schema as of this
@@ -634,9 +636,10 @@ export async function withPlanLock<T>(
         op_status: string | null;
         acceptance_bar_rubric_slug: string | null;
         now_note: unknown;
+        verification_profile: string | null;
       }[]
     >`
-      SELECT content, version, content_hash, status, template, template_data, input_schema, output_schema, op_status,
+      SELECT content, version, content_hash, status, template, template_data, input_schema, output_schema, op_status, verification_profile,
              acceptance_bar_rubric_slug, now_note
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
@@ -663,6 +666,7 @@ export async function withPlanLock<T>(
           contentHash: cur.content_hash,
           planStatus: cur.status ?? null,
           opStatus: cur.op_status ?? null,
+          verificationProfile: cur.verification_profile ?? null,
           templateData: cur.template_data ?? null,
           inputSchema: cur.input_schema ?? null,
           outputSchema: cur.output_schema ?? null,
@@ -679,11 +683,15 @@ export async function withPlanLock<T>(
           version: curVersion,
         }
       : null;
-    const { newBody, value, templateData: templateDataPatch, inputSchema, outputSchema, nowNote } = await mutator(
+    const mutation = await mutator(
       cur?.content ?? null,
       meta,
       { workspaceId, harnessSlug },
     );
+    const { value, templateData: templateDataPatch, inputSchema, outputSchema, nowNote } = mutation;
+    const newBody = mutation.newBody?.includes('↳ code:')
+      ? (await import('../../plan-items/anchors')).stripRenderedAnchorLines(mutation.newBody)
+      : mutation.newBody;
     let templateData = templateDataPatch;
 
     // P-008/P-009: dependency validity belongs at the one locked body-write

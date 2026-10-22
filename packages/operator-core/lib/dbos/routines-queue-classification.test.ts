@@ -256,8 +256,9 @@ describe('queueForRoutine — bounded trigger and import handlers', () => {
       ...TRIGGER_POLL_ACTIONS,
       'external-trigger-dispatch',
       'personal-vault-import',
+      'blueprint-operation',
     ]);
-    for (const action of ['external-trigger-dispatch', 'personal-vault-import']) {
+    for (const action of ['external-trigger-dispatch', 'personal-vault-import', 'blueprint-operation']) {
       expect(queueForRoutine(`system:${action}`)).toBe(ROUTINES_TRIGGERS_QUEUE);
       expect(shouldFireUnderPoolShed(`system:${action}`)).toBe(false);
       expect(CRITICAL_ROUTINE_ACTIONS.has(action)).toBe(false);
@@ -267,6 +268,9 @@ describe('queueForRoutine — bounded trigger and import handlers', () => {
   it('keeps unrelated and near-miss handlers on the ordinary queue', () => {
     expect(queueForRoutine('system:external-trigger-dispatch-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:personal-vault-import-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:blueprint-operation-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:pre-blueprint-operation')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('blueprint-operation')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:blueprint-run')).toBe(ROUTINES_QUEUE);
   });
 });

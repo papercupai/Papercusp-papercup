@@ -18,6 +18,7 @@ import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
+import { LIVE_FORKSERVER_INSTRUMENT_KEY } from './fleet/forkserver/live-instrument';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
@@ -55,6 +56,16 @@ import {
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const AUDIT_EVIDENCE = join(REPO_ROOT, 'docs/audits/application-performance-reliability-audit-2026-10-01-evidence.json');
+
+it('registers the actual live forkserver measurement through the existing command executor', () => {
+  const instrument = getRegisteredInstrument(LIVE_FORKSERVER_INSTRUMENT_KEY);
+  expect(instrument?.evaluator).toBe('command');
+  if (instrument?.evaluator !== 'command') throw new Error('live forkserver instrument is not executable');
+  expect(instrument.argv[0]).toBe('python3');
+  expect(instrument.argv[1]).toMatch(/docs\/evidence\/sidecar-forkserver-live-probe\.py$/);
+  expect(instrument.acceptNonZeroExit).toBe(true);
+  expect(instrument.parse('{}', { now: Date.now() })).toBeNull();
+});
 
 describe('P544 retained native/economics instruments', () => {
   it('registers three maintained readers with exact criterion and independent candidate pins', () => {

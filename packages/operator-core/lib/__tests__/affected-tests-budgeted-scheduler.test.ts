@@ -87,10 +87,11 @@ describe('native npm lifecycle diagnostics', () => {
   let root: string, baseline: ReturnType<typeof observe>;
   beforeAll(() => { root = mkdtempSync(join(tmpdir(), 'native-npm-lifecycle-')); baseline = observe(root); }, 30_000);
   afterAll(() => { rmSync(root, { recursive: true, force: true }); });
-  it.each([null, 'pretest', 'test', 'posttest'])('retains actual npm shells, inherited stdio and lifecycle failure %s', fail => {
+  it.each([null, 'pretest', 'test', 'posttest'])('native-npm-shell-identity: retains actual npm shells, inherited stdio and lifecycle failure %s', fail => {
     const runRoot = fail === null ? root : mkdtempSync(join(tmpdir(), 'native-npm-failure-'));
     try {
       const input = fail === null ? baseline : observe(runRoot, fail);
+      const expectedScripts = JSON.parse(readFileSync(join(input.cwd, 'package.json'), 'utf8')).scripts as Record<string, string>;
       const result = writeBudgetedTaskNativeExecutionReceipt(join(runRoot, 'retained'), input);
       const trace = result.observation.processTrace, lifecycle = trace.npmLifecycle;
       const expected = ['pretest', 'test', 'posttest'].slice(0, fail === 'pretest' ? 1 : fail === 'test' ? 2 : 3);
@@ -99,7 +100,9 @@ describe('native npm lifecycle diagnostics', () => {
       expect(lifecycle.root!.pid).toBe(input.processTrace.rootPid);
       for (const [index, span] of lifecycle.spans.entries()) {
         expect(span.command).toBe('/bin/sh');
-        expect(span.argv).toEqual(['-c', span.script]);
+        expect(span.script).toBe(expectedScripts[span.event]);
+        expect(span.argv).toEqual(['-c', expectedScripts[span.event]]);
+        expect(span.cwd).toBe(input.cwd);
         expect(span.stdioAccessible).toEqual({ stdout: false, stderr: false });
         expect(span.observerPid).toBe(input.processTrace.rootPid);
         expect(span.closedAtMs).toBeGreaterThanOrEqual(span.startedAtMs);
@@ -118,15 +121,27 @@ describe('native npm lifecycle diagnostics', () => {
       expect(result.observation.operationalAcceptance).toBe(false);
     } finally { if (runRoot !== root) rmSync(runRoot, { recursive: true, force: true }); }
   }, 30_000);
-  it('preserves an actually configured bash shell without relabelling the original sh capture', () => {
+  it('native-npm-shell-identity: preserves an actually configured bash shell without relabelling the original sh capture', () => {
     const runRoot = mkdtempSync(join(tmpdir(), 'native-npm-bash-'));
     try {
       const input = observe(runRoot, null, '/bin/bash');
+      const expectedScripts = JSON.parse(readFileSync(join(input.cwd, 'package.json'), 'utf8')).scripts as Record<string, string>;
+      const originalScripts = JSON.parse(readFileSync(join(baseline.cwd, 'package.json'), 'utf8')).scripts as Record<string, string>;
       const result = writeBudgetedTaskNativeExecutionReceipt(join(runRoot, 'retained'), input);
       expect(result.observation.processTrace.npmLifecycle.spans).toHaveLength(3);
       expect(result.observation.processTrace.npmLifecycle.spans.every(span => span.command === '/bin/bash')).toBe(true);
       const original = writeBudgetedTaskNativeExecutionReceipt(join(root, 'original-retained'), baseline);
       expect(original.observation.processTrace.npmLifecycle.spans.every(span => span.command === '/bin/sh')).toBe(true);
+      for (const [receipt, nativeInput, scripts] of [
+        [result, input, expectedScripts], [original, baseline, originalScripts],
+      ] as const) {
+        expect(receipt.observation.processTrace.npmLifecycle.spans.map(span => span.event)).toEqual(['pretest', 'test', 'posttest']);
+        for (const span of receipt.observation.processTrace.npmLifecycle.spans) {
+          expect(span.script).toBe(scripts[span.event]);
+          expect(span.argv).toEqual(['-c', scripts[span.event]]);
+          expect(span.cwd).toBe(nativeInput.cwd);
+        }
+      }
       expect(result.observation.orderedChainQualified).toBe(false);
     } finally { rmSync(runRoot, { recursive: true, force: true }); }
   }, 30_000);

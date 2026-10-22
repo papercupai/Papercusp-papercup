@@ -9192,6 +9192,18 @@ export function unreportedKickoffRefusalStrandsHost({ delivered, headless, recei
   return receipt.reason !== 'kickoff-proof-request-missing';
 }
 
+/** A provider quota wall is a terminal launch outcome, not an interactive
+ * session. The negative kickoff receipt tells the caller that no member was
+ * started; keeping the rejected PTY host alive after that receipt leaves its
+ * owner parked/wakeable even though every durable wake is deferred by the
+ * latched wall. Tear down that host on every provider-quota rejection,
+ * including visible launches and successfully published receipts. Other
+ * refusals retain their existing lifecycle (capacity can be transient, and a
+ * visible non-quota failure may still be actionable by its attached human). */
+export function terminalKickoffQuotaRefusalEndsHost({ delivered, kickoffReason }) {
+  return delivered !== true && kickoffReason === 'provider-quota-rejected';
+}
+
 /** Reuse the existing closed-loop /mcp walker, with one bounded second chance
  * for a server that was still connecting when the first dialog opened. */
 export async function verifyHeadlessRoleMcp(connect, attempts = 2) {
@@ -13370,7 +13382,10 @@ export function hostThroughPty(o) {
               nativeRef: proof.nativeRef ?? null,
               reason: `kickoff-not-submitted:${kickoffReason}`,
             });
-            if ((capacity && env.PAPERCUSP_PSU_HEADLESS === '1' && !receipt?.published) || unreportedKickoffRefusalStrandsHost({
+            if (terminalKickoffQuotaRefusalEndsHost({
+              delivered: false,
+              kickoffReason,
+            }) || (capacity && env.PAPERCUSP_PSU_HEADLESS === '1' && !receipt?.published) || unreportedKickoffRefusalStrandsHost({
               delivered: false,
               headless: env.PAPERCUSP_PSU_HEADLESS === '1',
               receipt,
@@ -16669,12 +16684,18 @@ export function hostThroughPty(o) {
     };
     terminateUnreportedKickoffRefusal = (details = {}) => {
       if (cleaned) return false;
-      appendHostEvent(ownerId, 'kickoff-refusal-unreported-terminating', details);
+      const terminalQuota = details.kickoffReason === 'provider-quota-rejected';
+      appendHostEvent(ownerId, terminalQuota
+        ? 'kickoff-provider-quota-rejected-terminating'
+        : 'kickoff-refusal-unreported-terminating', details);
       try {
         writeTerminalDiagnostic(
-          `psu-pty-host: kickoff not submitted (${details.kickoffReason ?? 'unknown'}) and the ` +
-            `refusal receipt could not be published (${details.receiptReason ?? 'unknown'}) for ` +
-            `${ownerId} — terminating headless host (WI-10006598)\n`,
+          terminalQuota
+            ? `psu-pty-host: kickoff not submitted because the provider account is quota-walled for ` +
+              `${ownerId} — terminating the rejected host so it cannot remain parked/wakeable.\n`
+            : `psu-pty-host: kickoff not submitted (${details.kickoffReason ?? 'unknown'}) and the ` +
+              `refusal receipt could not be published (${details.receiptReason ?? 'unknown'}) for ` +
+              `${ownerId} — terminating headless host (WI-10006598)\n`,
         );
       } catch {
         /* diagnostic only */

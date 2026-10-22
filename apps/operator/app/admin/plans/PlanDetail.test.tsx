@@ -62,11 +62,13 @@ vi.mock("./PlanEditor", () => ({
   default: ({
     onFeatureClick,
     readOnly,
+    value,
   }: {
     onFeatureClick?: (id: string) => void;
     readOnly?: boolean;
+    value?: string;
   }) => (
-    <div data-testid="plan-editor" data-read-only={String(readOnly)}>
+    <div data-testid="plan-editor" data-read-only={String(readOnly)} data-value={value}>
       {onFeatureClick ? (
         <button type="button" onClick={() => onFeatureClick("F-1")}>
           open feature
@@ -266,6 +268,16 @@ describe('PlanDetail (plan-detail main pane)', () => {
     // The EditBar Save button is present in edit mode.
     expect(screen.getByRole('button', { name: /Save/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+  });
+
+  it.each(['', '?pane=edit'])('keeps code-link display metadata out of editable plan bytes: %s', search => {
+    const canonical = '# My Plan\n\n- **P-001** `todo` Work';
+    const displayed = canonical + '\n  ↳ code: Widget code.ts · fresh';
+    planResult = { data: mkPlan({ raw: canonical, prose: displayed,
+      items: [{ id: 'P-001', text: 'Work', storedStatus: 'todo', effectiveStatus: 'todo', anchors: [{ requested: 'Widget' }] }],
+    }), loading: false, error: null };
+    renderDetail(<PlanDetail slug="my-plan" onClose={() => {}} />, search);
+    expect(screen.getByTestId('plan-editor').getAttribute('data-value')).toBe(search ? canonical : displayed);
   });
 
   it('deep-links to the per-plan Triggers tab through the ptab key', () => {

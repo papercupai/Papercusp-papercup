@@ -160,6 +160,7 @@ import {
   ROUTINES_HEAVY_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_QUEUE,
+  ROUTINES_TRIGGERS_QUEUE,
   TRIGGERS_QUEUE_ACTIONS,
   queueForRoutine,
 } from './routines-queue-classification';
@@ -225,6 +226,29 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     // the explicit critical floor still prevents a recovered window bursting.
     expect(critical.desiredWindow).toBe(windows[11].desiredWindow);
   });
+
+  it.each(['ok', 'elevated', 'critical'] as const)(
+    'isolates scheduled operation admission from an occupied background lane under %s pressure',
+    (pressure) => {
+      const operationQueue = queueForRoutine('system:blueprint-operation');
+      const backgroundQueue = queueForRoutine('system:interactive-usage-ingest');
+      const epoch = evaluateRoutineDispatchEpoch({
+        pressure,
+        probeMs: pressure === 'critical' ? 2_800 : pressure === 'elevated' ? 800 : 4,
+        inFlightByQueue: { [backgroundQueue]: 1 },
+        activeQueues: [operationQueue],
+        controller: createRoutineDispatchController(),
+        atMs: START,
+      });
+
+      // WI-6554700010020357: a long usage fire filled the ordinary window
+      // and withheld the daily operation even in a healthy pool epoch.
+      expect(backgroundQueue).toBe(ROUTINES_QUEUE);
+      expect(queue(epoch, backgroundQueue).availableStarts).toBe(0);
+      expect(operationQueue).toBe(ROUTINES_TRIGGERS_QUEUE);
+      expect(queue(epoch, operationQueue).availableStarts).toBe(pressure === 'critical' ? 0 : 1);
+    },
+  );
 
   it('bounds a many-clean-probe delayed-signal burst to current feedback credit', () => {
     const epoch = evaluateRoutineDispatchEpoch({

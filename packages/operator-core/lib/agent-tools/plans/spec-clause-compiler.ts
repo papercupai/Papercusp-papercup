@@ -138,6 +138,13 @@ const MULTI_EXTENDED_WHILE_RE = new RegExp(
 // stay on the existing multi-verb path and conjunctions in modifiers do not
 // become object bundles by themselves.
 const OBJECT_DETERMINER = '(?:a|an|the|each|every|one|two|both|another|separate|distinct|this|that|these|those|its|their)';
+// In "a completed request", the participle modifies the subject; it is not
+// another outcome. Keep coordinated predicates such as "completed and records".
+const ATTRIBUTIVE_PARTICIPLE_RE = new RegExp(
+  '\\b(' + OBJECT_DETERMINER + ')\\s+(?:[a-z]+ed|proven|made)\\b(?=\\s+(?!(?:and|or|while|when|if|unless)\\b)[a-z])',
+  'gi',
+);
+const OBJECT_CONDITION_BOUNDARY_RE = /\b(?:when|whenever|if|unless)\b/gi;
 const MULTI_OBJECT_CONJUNCTION_RE = new RegExp(
   '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]{0,120}\\b' + OBJECT_DETERMINER +
     '\\s+[A-Za-z0-9][A-Za-z0-9-]*(?:\\s+[A-Za-z0-9][A-Za-z0-9-]*){0,4}\\s+\\b(?:and|or)\\b\\s+' +
@@ -241,18 +248,22 @@ export function specBehaviorNonAtomicReason(rawBehavior: string): string | null 
   const behavior = normalizeSpecSemanticText(rawBehavior);
   if (/;\s*\S/.test(behavior)) return 'behavior contains multiple semicolon-separated assertions';
   if (/[.!?]\s+(?=[A-Z0-9])/.test(behavior)) return 'behavior contains multiple sentences';
-  if (MULTI_SUBJECT_SHARED_PREDICATE_RE.test(behavior)) {
+  const predicates = behavior.replace(ATTRIBUTIVE_PARTICIPLE_RE, '$1 modifier');
+  if (MULTI_SUBJECT_SHARED_PREDICATE_RE.test(predicates)) {
     return 'behavior groups multiple subjects under one predicate';
   }
   if (UMBRELLA_JOURNEY_REQUIREMENTS_RE.test(behavior)) {
     return 'behavior hides multiple requirements behind a journey or flow';
   }
   if (
-    MULTI_OBSERVABLE_CONJUNCTION_RE.test(behavior) ||
-    MULTI_EXTENDED_CONJUNCTION_RE.test(behavior) ||
-    MULTI_EXTENDED_WHILE_RE.test(behavior) ||
-    MULTI_OBJECT_CONJUNCTION_RE.test(behavior) ||
-    hasIndependentCommaClauseSeries(behavior)
+    MULTI_OBSERVABLE_CONJUNCTION_RE.test(predicates) ||
+    MULTI_EXTENDED_CONJUNCTION_RE.test(predicates) ||
+    MULTI_EXTENDED_WHILE_RE.test(predicates) ||
+    // Alternative actors inside a condition are not objects of the outcome's
+    // predicate. Other predicate checks still span the condition, so a later
+    // independent outcome cannot hide behind it.
+    MULTI_OBJECT_CONJUNCTION_RE.test(predicates.replace(OBJECT_CONDITION_BOUNDARY_RE, ';')) ||
+    hasIndependentCommaClauseSeries(predicates)
   ) {
     return 'behavior joins multiple independently observable outcomes';
   }

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "current-build-retention-verification",
+  "workItemId": "WI-6554700010018427",
+  "recoveryWorkItemId": "EI-26532466315996074",
+  "parentWorkItemId": "WI-10004735",
+  "verifiedOn": "2026-10-22",
+  "rootCause": "Age-based evidence reclamation had no protection edge from nonterminal work-item evidence bindings to the existing finite retention leases. Receipt fa5dc3e2-53a7-43db-847c-a6a4a68811b6 removed the original device-expiry evidence root while P-008 was still open.",
+  "fix": {
+    "mechanism": "Reuse the existing TSV retention leases. Pin evidence before accepting its binding; renew deterministic finite pins from non-retracted bindings of nonterminal work-items before reclaim's final protection read. Terminal work-items stop renewal and normal expiry permits reclamation.",
+    "sourcePaths": [
+      "packages/operator-core/lib/storage/retention-pins.ts",
+      "packages/operator-core/lib/storage/disk-reclaim.ts",
+      "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts"
+    ],
+    "tests": [
+      "packages/operator-core/lib/storage/retention-pins.test.ts",
+      "packages/operator-core/lib/storage/disk-reclaim.integration.test.ts",
+      "packages/operator-core/lib/storage/disk-reclaim-background-runtime.integration.test.ts",
+      "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts"
+    ]
+  },
+  "freshVerification": {
+    "runId": "20261022T150820Z-2908368",
+    "evidenceRoot": "/mnt/data/offload/verification-harness/isolated-integration/20261022T150820Z-2908368",
+    "sourceCommit": "dcfdfe34fd3ffa7b9c80c8a3c645aa7ced94380d",
+    "worktreeDirty": false,
+    "outerCase": "retains open acceptance evidence through the observed private background runtime",
+    "innerCase": "retention on a real fixture tree > retains old evidence bound to an open acceptance item and reclaims it after terminal lease expiry",
+    "testRunId": "21772197",
+    "innerRunGroupId": "63bf94d3-bb6d-4906-b866-5445e9416582",
+    "passed": 1,
+    "failed": 0,
+    "filtered": 108,
+    "verdict": "pass",
+    "phases": { "prepare": "passed", "execute": "passed", "teardown": "passed" },
+    "worker": { "code": 0, "signal": null, "timedOut": false, "exitWaitTimedOut": false, "stdioDrainTimedOut": false },
+    "outerRouterExitStatus": 0,
+    "sourceEvidenceStatus": "stable",
+    "observedSources": [
+      { "path": "packages/operator-core/lib/storage/disk-reclaim.integration.test.ts", "sha256": "74f1e696a0a44926f4f2d10e4ccb3920cdd05fbd157c5d5e8a5d25abe0c2c98e", "basis": "vite-pre-transform" },
+      { "path": "packages/operator-core/lib/storage/disk-reclaim.ts", "sha256": "d21ebe80dcc60ae17aa22ef0fd0d19f131c8d3c5a29e24c2065a802984b39107", "basis": "vite-pre-transform" },
+      { "path": "packages/operator-core/lib/storage/retention-pins.ts", "sha256": "4f0de932178e8040e087386c35e7c6b28ff88ddc2b4feac14c59afc13e965aba", "basis": "vite-pre-transform" }
+    ],
+    "assertions": [
+      "Only the nonterminal, same-workspace, non-retracted evidence binding renews a pin.",
+      "The old bound result remains readable after reclaim while unrelated old evidence is removed.",
+      "After terminal state and finite lease expiry, the formerly protected root is reclaimed."
+    ],
+    "cleanup": {
+      "runtimeRemoved": true,
+      "pgDataRemoved": true,
+      "privateRuntimePathAbsentOnReadback": true,
+      "privateDatabasePathAbsentOnReadback": true,
+      "originalWorkerIdentityGone": true,
+      "originalDatabaseIdentityGone": true,
+      "observationError": null
+    },
+    "artifacts": [
+      { "path": "result.json", "size": 1511, "sha256": "d4f9e65a1a11e4cbb183cdaafb665a29081ad808481cecbe641fb61c71b32887" },
+      { "path": "phases/prepare/source.json", "size": 4352, "sha256": "f8196260e1da5a1a2a35ba7ff04a4fb9b9d523c01bc9b7b3af1c777b9ca0240c" },
+      { "path": "phases/execute/worker-result.json", "size": 146, "sha256": "dc6d34436f79304ee70edd3df076072576d6f834f7e5f2ff3da74c487053605d" },
+      { "path": "phases/execute/lifecycle.json", "size": 1346, "sha256": "8d9a570aa88cde7398bfb48038ef844f15091abf74ca00a134983c4226ce714d" },
+      { "path": "phases/execute/lifecycle-observation.json", "size": 1384, "sha256": "1944f9624e403eb7307478761fe29a585cb900e3a245af33e83cac2a2c5bf794" },
+      { "path": "phases/execute/reclaim-test-receipts.ndjson", "size": 28545, "sha256": "8f07b672ab6828c6d6c07448cef1acc0ec186805586a10f436a3e1bfb0c30cf7" },
+      { "path": "phases/execute/executed-source-map.json", "size": 3445884, "sha256": "31eef7b6615ca831a31ef16850d6659c6ae9333cbf4531d604587dad5bec7d17" }
+    ]
+  },
+  "recoveredCustody": {
+    "receipt": "docs/evidence/iphone-p008-native-device-expiry-recovery-2026-10-22.json",
+    "receiptSha256": "a6e0e70c1d0661ef82a68486858acc7a5166ced0907f4daaf2a75e3914ea3d31",
+    "bindingId": 64411,
+    "declaredArtifactCount": 279,
+    "archiveDisposition": "Replacement container with recovered original members; the original archive container remains lost. No original native job was replayed."
+  },
+  "limits": [
+    "Selected current-build private-runtime verification; no final-release or deployed-main claim.",
+    "The scheduled renewal callsite was reviewed in source. This selected case exercises the shared reclaim and renewal functions in the private background runtime, rather than firing shared-host scheduled reclamation.",
+    "The earlier detached run 78bccb63-a01c-4c34-820a-deebf12886e7 has no recovered verdict and remains tracked separately under EI-26688628151488282.",
+    "Production-hostname native acceptance, hosted/account acceptance and whole-candidate shipment remain open on P-008."
+  ]
+}

@@ -144,19 +144,19 @@ function makeHistoricalRepo(): { repo: string; file: string; oldSha: string } {
  * EI-23362664002917898 broke. The bodies carry `as const` so the content only
  * parses once types are stripped, which is decided purely by file EXTENSION.
  */
-function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } {
+function makeHistoricalTsRepo(filename = 'subject.ts'): { repo: string; file: string; oldSha: string } {
   const repo = join(dir, 'historical-ts-repo');
   mkdirSync(repo);
-  const file = join(repo, 'subject.ts');
+  const file = join(repo, filename);
   git(repo, ['init', '-q']);
   git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
   git(repo, ['config', 'user.name', 'mutation-probe-test']);
   writeFileSync(file, '// stable-control\nexport const V = 1 as const;\n');
-  git(repo, ['add', 'subject.ts']);
+  git(repo, ['add', filename]);
   git(repo, ['commit', '-qm', 'historical ts source']);
   const oldSha = git(repo, ['rev-parse', 'HEAD']);
   writeFileSync(file, '// stable-control\nexport const V = 1 as const;\nexport const NEW_GUARD = 2 as const;\n');
-  git(repo, ['add', 'subject.ts']);
+  git(repo, ['add', filename]);
   git(repo, ['commit', '-qm', 'fix ts source']);
   return { repo, file, oldSha };
 }
@@ -2035,6 +2035,26 @@ describe('mutation-probe.sh — historical source mode', () => {
     // `snapshot-run-N` with no extension at all.
     expect(paths.filter((p) => p.endsWith('.ts'))).toEqual(paths);
   });
+
+  it.each(['subject.integration.test.ts', 'subject.spec.ts', 'subject.node-test.mts'])(
+    'preserves runnable test identity for historical snapshots of %s',
+    (filename) => {
+      const history = makeHistoricalTsRepo(filename);
+      const router = resolve(__dirname, '../../../scripts/test-files.mjs');
+      const classify = `node --input-type=module -e 'import { isTestFilePath } from ${JSON.stringify(router)}; process.exit(isTestFilePath(process.argv[1]) ? 0 : 2)' {}`;
+      const { code, out } = runProbeIO([
+        '--file', history.file,
+        '--against-commit', history.oldSha,
+        '--must-be-absent', 'NEW_GUARD',
+        '--positive-control', 'stable-control',
+        '--calibration', `${classify} && grep -q stable-control {}`,
+        '--test', `${classify} && grep -q NEW_GUARD {}`,
+      ]);
+      expect(code, out).toBe(0);
+      expect(out).toMatch(/mode=historical verdict=caught/);
+      expect(readFileSync(history.file, 'utf8')).toContain('NEW_GUARD');
+    },
+  );
 
   /**
    * EI-21882388979504012 — the same runner-MISUSE shape is exposed on the
