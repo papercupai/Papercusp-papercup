@@ -5215,7 +5215,7 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   "plans:new",
   "plans:get",
   "plans:set-status",
-  "plans:items",
+  // plans:get includes items with effectiveStatus; load the narrower plans:items view on demand.
   "plans:set-now",
   // work_items:create: #1 gap of the 2026-07-05 rebalance (608 fallback + 1,354 direct
   // across 5 roles/7d) — the spine had claim/complete but not the verb that CREATES one.

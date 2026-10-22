@@ -3,30 +3,6 @@ URL: /internal/docs/agent-insights/verification-system-map
 
 One map of everything that enforces a plan's requirement contract: the six doors that refuse (plans:start, plans:bind-spec-evidence, plans:set-plan-status shipped, plans:acceptance-disposition, plans:promote), the layer order, every contract refusal code with its meaning, the tables, tools and evidence kinds. Refusal codes are pinned to source by a doc-claims test.
 
-# whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-
-title: "Verification-system map: doors, layers, refusal codes, tables, tools, evidence kinds"
-description: "One map of everything that enforces a plan's requirement contract: the six doors that refuse (plans:start, plans:bind-spec-evidence, plans:set-plan-status shipped, plans:acceptance-disposition, plans:promote), the layer order, every contract refusal code with its meaning, the tables, tools and evidence kinds. Refusal codes are pinned to source by a doc-claims test."
-type: Convention
-discovered: 2026-10-11
-tags: \["verification", "acceptance", "requirement-contract", "refusal-codes"]
-status: active
-documents:
-
-* "packages/operator-core/lib/doc-claims/verification-system-map.ts"
-* "packages/operator-core/lib/plan-acceptance-gate.ts"
-* "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts"
-* "packages/operator-core/lib/agent-tools/plans/start.ts"
-* "packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts"
-* "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts"
-* "packages/operator-core/lib/agent-tools/work\_items/spec-test-adequacy-gate.ts"
-* "packages/operator-core/lib/agent-tools/plans/val-retirement.test.ts"
-  plans:
-* "verification-system-improvements-2026-10-10"
-* "verification-postship-followups-2026-10-11"
-
-***
-
 A plan's **requirement contract** is the set of things it promises and how each promise is proven. This page maps every part of the system that enforces that contract, in one place: the doors that refuse, the order the layers run in, every refusal code those doors return, the tables behind them, the tools you call, and the kinds of evidence that count.
 
 The refusal-code list below is checked against the code by `packages/operator-core/lib/doc-claims/verification-system-map.test.ts`. That test derives every code from the typed unions registered in `CONTRACT_GATE_CODE_TYPES` (`packages/operator-core/lib/doc-claims/verification-system-map.ts`). It fails when this page names a code no gate emits, omits one a gate does emit, or names a code that has no source definition or no test that triggers it.
@@ -86,6 +62,8 @@ From `ActivationGateRefusalCode` (`packages/operator-core/lib/agent-tools/plans/
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `conversation_audit_required` | Activation needs an audit of the complete source conversation (`plans:audit { phase:'activation' }`).              |
 | `item_provenance_unresolved`  | A plan item maps to no owner-typed turn and has no `itemProvenance` entry declaring it `derived` or `agent-added`. |
+| `plan_declarations_invalid`   | One or more required plan declaration sections are missing or invalid at activation.                               |
+| `unregistered_type`           | The plan references a plan-item type that is not registered in the workspace.                                      |
 
 From `PlanSpecQualityGateCode` (`packages/operator-core/lib/agent-tools/plans/plan-spec-quality-gate.ts`):
 

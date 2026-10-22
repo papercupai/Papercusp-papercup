@@ -121,15 +121,17 @@ export async function observeReportReadiness(page: Page, testInfo: TestInfo) {
 }
 
 /** Navigation is ready only after the selected report query finishes with exact saved text. */
-export async function navigateToPublishedReport(page: Page, report: PublishedReportProof) {
+export async function navigateToPublishedReport(page: Page, report: PublishedReportProof, navigationTimeout: number) {
+  // The selected query is navigation readiness, so both waits use the caller's
+  // navigation budget rather than inheriting a shorter or longer action timeout.
   const query = page.waitForResponse(response => {
     const url = new URL(response.url());
     if (!url.pathname.endsWith('/rest-query') || url.searchParams.get('name') !== 'reports.get') return false;
     try { return JSON.parse(url.searchParams.get('args') || '{}').reportId === report.report_id; }
     catch { return false; }
-  });
+  }, { timeout: navigationTimeout });
   const [, response] = await Promise.all([
-    page.goto(`/reports?sel=${encodeURIComponent(report.report_id)}&ws=${encodeURIComponent(report.workspace_id)}`), query,
+    page.goto(`/reports?sel=${encodeURIComponent(report.report_id)}&ws=${encodeURIComponent(report.workspace_id)}`, { timeout: navigationTimeout }), query,
   ]);
   expect(response.ok(), 'Selected report query must complete successfully').toBe(true);
   const payload = await response.json();

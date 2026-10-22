@@ -6,7 +6,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
 import {
-  codeIntelPushText, parkedResumeContextCount, PUSH_LEG_FLAGS, readPushResumeContext, resetParkedResumeContexts, snapshotResumeLeg,
+  boundedResumeContext, codeIntelPushText, parkedResumeContextCount, PUSH_LEG_FLAGS, readPushResumeContext,
+  RESUME_CONTEXT_TIMEOUT_MS, resetParkedResumeContexts, snapshotResumeLeg,
   type PushChannelDeps, type PushFact, type PushInput, type ReadResumeContextDeps,
 } from './push-channel';
 import { parsePushSnapshot } from './push-snapshot';
@@ -42,7 +43,8 @@ function resumeDeps(over: Partial<ReadResumeContextDeps> = {}) {
 
 function channel(resume: ReadResumeContextDeps, enabled = async () => true) {
   const committed: PushFact[] = [];
-  const resumeContext = vi.fn((i: PushInput) => readPushResumeContext(i, resume));
+  const resumeContext = vi.fn((i: PushInput, diagnostics?: Parameters<typeof readPushResumeContext>[2]) =>
+    readPushResumeContext(i, resume, diagnostics));
   const deps: PushChannelDeps = {
     snapshot: async () => snapshot(),
     enabled: vi.fn(enabled),
@@ -120,6 +122,46 @@ describe('P-006: a resume read that misses its bound is parked for the next batc
     expect(parkedResumeContextCount()).toBe(0);
   });
 
+  it('correlates a timed-out wait with the eventual per-phase read timings', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let releaseEpoch!: () => void;
+    const epochGate = new Promise<void>(resolve => { releaseEpoch = resolve; });
+    const { deps } = resumeDeps({ epoch: async () => {
+      await epochGate;
+      return { epoch: 2, bumpedAt: BUMPED };
+    } });
+
+    const result = await boundedResumeContext(input(), (value, diagnostics) => readPushResumeContext(value, deps, diagnostics));
+    expect(result).toBeUndefined();
+    expect(RESUME_CONTEXT_TIMEOUT_MS).toBe(100);
+    const prefix = '[code-intel-resume-context] ';
+    const timeoutLine = warn.mock.calls.map(([message]) => String(message))
+      .find(line => line.startsWith(prefix) && line.includes('"event":"wait-timeout"'));
+    if (!timeoutLine) throw new Error('Expected a correlated resume wait-timeout diagnostic');
+    const timeoutRecord = JSON.parse(timeoutLine.slice(prefix.length)) as { readId: string; elapsedMs: number; timeoutMs: number };
+    expect(timeoutRecord.timeoutMs).toBe(RESUME_CONTEXT_TIMEOUT_MS);
+
+    releaseEpoch();
+    let settledLine: string | undefined;
+    await vi.waitFor(() => {
+      settledLine = info.mock.calls.map(([message]) => String(message))
+        .find(line => line.startsWith(prefix) && line.includes('"event":"read-settled"'));
+      expect(settledLine).toBeDefined();
+    });
+    if (!settledLine) throw new Error('Expected the late resume read timing diagnostic');
+    const settledRecord = JSON.parse(settledLine.slice(prefix.length)) as {
+      readId: string; elapsedMs: number; phaseMs: Record<string, number>; phaseOutcomes: Record<string, string>;
+    };
+    expect(settledRecord.readId).toBe(timeoutRecord.readId);
+    expect(settledRecord.elapsedMs).toBeGreaterThanOrEqual(RESUME_CONTEXT_TIMEOUT_MS);
+    expect(settledRecord.phaseMs.epoch).toBeGreaterThan(0);
+    expect(settledRecord.phaseOutcomes.epoch).toBe('completed');
+    expect(settledRecord.phaseMs).toHaveProperty('previousWorkingSet');
+    expect(settledRecord.phaseMs).toHaveProperty('foreignWorkingSets');
+    expect(settledRecord.phaseMs).toHaveProperty('pushedSubjects');
+  });
+
   it('joins an in-flight read rather than starting another, and keys it per (workspace, owner)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const slow = slowChannel();
@@ -151,11 +193,12 @@ describe('P-006: a resume read that misses its bound is parked for the next batc
     await codeIntelPushText(input(), 0, fast.deps);
     expect(fast.committed).toHaveLength(1);
     expect(parkedResumeContextCount()).toBe(0);
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const failing = channel(resumeDeps({ epoch: async () => { throw new Error('ledger down'); } }).deps);
     await codeIntelPushText(input(), 0, failing.deps);
     expect(failing.committed).toEqual([]);
     expect(parkedResumeContextCount()).toBe(0);
+    expect(warn.mock.calls.map(([message]) => String(message)).some(line => line.includes('"errorMessage":"ledger down"'))).toBe(true);
   });
 });
 

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import setPlanStatusTool from './set-plan-status';
 import { withPlanLock } from './with-plan-lock';
 import { readAcceptanceBarContractSnapshot, type AcceptanceBarContractSnapshot } from '../../acceptance-bar-contract-snapshot';
@@ -9,7 +9,11 @@ import { evaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-e
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('@papercusp/db-org', async (original) => ({
-  ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn(),
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: vi.fn(),
+  // Plan pin resolution uses this transaction seam, not getOrgPg().sql (WI-26610267819720289).
+  withWorkspace: vi.fn(async (_workspaceId: string, callback: (tx: unknown) => unknown) =>
+    callback(async () => [])),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../acceptance-bar-contract-snapshot', async (original) => ({
@@ -78,6 +82,7 @@ describe('requirement fulfillment at the actual ship door', () => {
       },
     });
     expect(withPlanLock).not.toHaveBeenCalled();
+    expect(withWorkspace).toHaveBeenCalledWith('ws-test', expect.any(Function));
     expect(readAcceptanceBarContractSnapshot).toHaveBeenCalledWith(
       'wallet-plan',
       {},

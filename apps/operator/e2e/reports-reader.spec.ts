@@ -103,6 +103,26 @@ test('report clipboard capture initializes without Node transpiler globals', asy
   expect(window.reportProofMarkdown).toBe(markdown);
 });
 
+test('report query readiness uses the navigation budget beyond the action timeout', async ({ page }) => {
+  const endpoint = `/api/zero-harness/rest-query?name=reports.get&args=${encodeURIComponent(JSON.stringify({ reportId: report.report_id }))}`;
+  await page.route('**/api/zero-harness/rest-query?*', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ rows: [report] }),
+  }));
+  await page.route('**/reports?*', route => route.fulfill({ contentType: 'text/html',
+    body: `<script>setTimeout(() => fetch(${JSON.stringify(endpoint)}), 500)</script>`,
+  }));
+  page.setDefaultTimeout(200);
+  await navigateToPublishedReport(page, report, 3_000);
+});
+
+test('report query readiness still enforces the navigation deadline', async ({ page }) => {
+  await page.route('**/reports?*', route => route.fulfill({
+    contentType: 'text/html', body: '<!doctype html><title>No selected report query</title>',
+  }));
+  page.setDefaultTimeout(3_000);
+  await expect(navigateToPublishedReport(page, report, 250)).rejects.toThrow('page.waitForResponse: Timeout 250ms');
+});
+
 test('published report text and standalone HTML stay identical', async ({ page }, testInfo) => {
   const input = process.env.OPERATOR_REPORT_PROOF_JSON;
   const expected = input ? await readPublishedReportProof(input) : report;
@@ -116,7 +136,7 @@ test('published report text and standalone HTML stay identical', async ({ page }
       return undefined;
     });
   }
-  await navigateToPublishedReport(page, expected);
+  await navigateToPublishedReport(page, expected, testInfo.project.use.navigationTimeout ?? 30_000);
   await verifyPublishedReportAndOfflineExport(page, expected, testInfo);
 });
 

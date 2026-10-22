@@ -331,6 +331,29 @@ export interface ResumeContext {
   /** Source links for the entries, read with the context and off the push wall (P-006). */
   links?: FirstTouchContext;
 }
+
+interface ResumeReadDiagnostics {
+  readId: string;
+  startedAtMs: number;
+  phaseMs: Record<string, number>;
+  phaseOutcomes: Record<string, string>;
+}
+
+async function timeResumeReadPhase<T>(diagnostics: ResumeReadDiagnostics | undefined, phase: string,
+  work: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    const value = await work();
+    if (diagnostics) diagnostics.phaseOutcomes[phase] = 'completed';
+    return value;
+  } catch (error) {
+    if (diagnostics) diagnostics.phaseOutcomes[phase] = 'error';
+    throw error;
+  } finally {
+    if (diagnostics) diagnostics.phaseMs[phase] = Date.now() - startedAt;
+  }
+}
+
 export interface ResumeEntry {
   path: string;
   /** Why the file was in the carried set (`held` = from a work-item stamp). */
@@ -410,14 +433,18 @@ const resumeDefaults: ReadResumeContextDeps = {
 
 /** Previous-epoch working set first (in rank order), then sets stamped on held
  * items by a different owner; minus anything already pushed this epoch. */
-export async function readPushResumeContext(input: PushInput, deps: ReadResumeContextDeps = resumeDefaults): Promise<ResumeContext> {
+export async function readPushResumeContext(input: PushInput, deps: ReadResumeContextDeps = resumeDefaults,
+  diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext> {
   if (!input.owner || !input.workspace || !input.harness) return { entries: [] };
-  const epoch = await deps.epoch(input.owner);
+  const epoch = await timeResumeReadPhase(diagnostics, 'epoch', () => deps.epoch(input.owner));
   const [previous, foreign, pushed] = await Promise.all([
-    deriveCodeWorkingSet({ workspace: input.workspace, harness: input.harness, owner: input.owner, which: 'previous', root: input.root },
-      { epoch: async () => epoch, signals: deps.signals }).catch(() => null),
-    deps.foreign(input.owner, input.workspace, input.harness).catch(() => [] as ForeignWorkingSet[]),
-    deps.pushed(input, epoch.epoch).catch(() => [] as string[]),
+    timeResumeReadPhase(diagnostics, 'previousWorkingSet', () => deriveCodeWorkingSet(
+      { workspace: input.workspace, harness: input.harness, owner: input.owner, which: 'previous', root: input.root },
+      { epoch: async () => epoch, signals: query => deps.signals(query) },
+    )).catch(() => null),
+    timeResumeReadPhase(diagnostics, 'foreignWorkingSets', () => deps.foreign(input.owner, input.workspace, input.harness))
+      .catch(() => [] as ForeignWorkingSet[]),
+    timeResumeReadPhase(diagnostics, 'pushedSubjects', () => deps.pushed(input, epoch.epoch)).catch(() => [] as string[]),
   ]);
   const done = new Set(pushed.map(subject => subject.startsWith('resume:') ? subject.slice('resume:'.length) : subject));
   const entries: ResumeEntry[] = [];
@@ -470,15 +497,26 @@ export const RESUME_CONTEXT_TIMEOUT_MS = 100;
 export const RESUME_LINKS_TIMEOUT_MS = 2_000;
 export const RESUME_PARK_TTL_MS = 60_000;
 export const RESUME_PARK_MAX = 256;
-interface ParkedResume { at: number; read: Promise<ResumeContext>; value?: ResumeContext }
+export const RESUME_CONTEXT_DIAGNOSTIC_SAMPLE_EVERY = 32;
+interface ParkedResume { at: number; read: Promise<ResumeContext>; diagnostics: ResumeReadDiagnostics; value?: ResumeContext }
 const resumeParking = pinModuleState('@papercusp/operator-core.code-intel-resume-parking',
-  () => ({ parked: new Map<string, ParkedResume>() }));
+  () => ({ parked: new Map<string, ParkedResume>(), readSequence: 0, settledReads: 0 }));
 /** Test seam: forget every parked resume read. */
 export function resetParkedResumeContexts(): void { resumeParking.parked.clear(); }
 /** Test/diagnostic seam: how many resume reads are parked right now. */
 export function parkedResumeContextCount(): number { return resumeParking.parked.size; }
 
-export async function boundedResumeContext(input: PushInput, read: (input: PushInput) => Promise<ResumeContext>,
+function logResumeContextDiagnostic(level: 'info' | 'warn', event: string, diagnostics: ResumeReadDiagnostics,
+  elapsedMs: number, timeoutMs: number, errorMessage?: string): void {
+  const line = '[code-intel-resume-context] ' + JSON.stringify({ event, readId: diagnostics.readId, elapsedMs, timeoutMs,
+    phaseMs: { ...diagnostics.phaseMs }, phaseOutcomes: { ...diagnostics.phaseOutcomes },
+    ...(errorMessage ? { errorMessage: errorMessage.slice(0, 200) } : {}) });
+  if (level === 'warn') console.warn(line);
+  else console.info(line);
+}
+
+export async function boundedResumeContext(input: PushInput,
+  read: (input: PushInput, diagnostics?: ResumeReadDiagnostics) => Promise<ResumeContext>,
   timeoutMs = RESUME_CONTEXT_TIMEOUT_MS): Promise<ResumeContext | undefined> {
   const { parked } = resumeParking;
   const key = `${input.workspace}\u0000${input.owner}`;
@@ -488,14 +526,40 @@ export async function boundedResumeContext(input: PushInput, read: (input: PushI
   if (entry?.value) { parked.delete(key); return entry.value; }
   if (!entry) {
     while (parked.size >= RESUME_PARK_MAX) parked.delete(parked.keys().next().value!);
-    const fresh: ParkedResume = { at: now, read: Promise.resolve().then(() => read(input)) };
+    resumeParking.readSequence = (resumeParking.readSequence ?? 0) + 1;
+    const diagnostics: ResumeReadDiagnostics = {
+      readId: `${process.pid}:${resumeParking.readSequence}`, startedAtMs: 0, phaseMs: {}, phaseOutcomes: {},
+    };
+    const readPromise = Promise.resolve().then(() => {
+      diagnostics.startedAtMs = Date.now();
+      return read(input, diagnostics);
+    });
+    const fresh: ParkedResume = { at: now, read: readPromise, diagnostics };
     fresh.read.then(
-      value => { if (parked.get(key) === fresh) { fresh.value = value; fresh.at = Date.now(); } },
-      () => { if (parked.get(key) === fresh) parked.delete(key); });
+      value => {
+        if (parked.get(key) === fresh) { fresh.value = value; fresh.at = Date.now(); }
+        resumeParking.settledReads = (resumeParking.settledReads ?? 0) + 1;
+        const elapsedMs = Date.now() - diagnostics.startedAtMs;
+        if (elapsedMs >= RESUME_CONTEXT_TIMEOUT_MS || resumeParking.settledReads % RESUME_CONTEXT_DIAGNOSTIC_SAMPLE_EVERY === 0) {
+          logResumeContextDiagnostic('info', 'read-settled', diagnostics, elapsedMs, RESUME_CONTEXT_TIMEOUT_MS);
+        }
+      },
+      error => {
+        resumeParking.settledReads = (resumeParking.settledReads ?? 0) + 1;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logResumeContextDiagnostic('warn', 'read-error', diagnostics, Date.now() - diagnostics.startedAtMs,
+          RESUME_CONTEXT_TIMEOUT_MS, errorMessage);
+        if (parked.get(key) === fresh) parked.delete(key);
+      });
     parked.set(key, fresh);
     entry = fresh;
   }
-  const result = await withBoundedTimeout(entry.read, { timeoutMs, fallback: undefined, label: 'code-intel-resume-context' });
+  const result = await withBoundedTimeout(entry.read, {
+    timeoutMs, fallback: undefined, label: 'code-intel-resume-context', warn: false,
+  });
+  if (result.reason === 'timeout') {
+    logResumeContextDiagnostic('warn', 'wait-timeout', entry.diagnostics, result.elapsedMs, timeoutMs);
+  }
   // Answered in time (or failed): consumed. Timed out: stays parked for the next batch.
   if (result.reason !== 'timeout' && parked.get(key) === entry) parked.delete(key);
   return result.value;
@@ -817,7 +881,7 @@ export interface PushChannelDeps {
   legs(): ReadonlyMap<PushLegId, PushLeg>;
   context?(input: PushInput, paths: string[]): Promise<FirstTouchContext>;
   incidentContext?(input: PushInput, paths: string[]): Promise<IncidentAttribution>;
-  resumeContext?(input: PushInput): Promise<ResumeContext>;
+  resumeContext?(input: PushInput, diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext>;
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
   /** `dropped`: facts the request already found too big for `requestBudget`; the commit
    * classifies and records them with its own budget drops (WI-6554700010018440). */
@@ -955,19 +1019,21 @@ const defaults: PushChannelDeps = {
   },
   commit: commitPushFacts,
   incidentContext: readPushIncidentAttribution,
-  resumeContext: input => readPushResumeContext(input),
+  resumeContext: (input, diagnostics) => readPushResumeContext(input, undefined, diagnostics),
   notesContext: (input, paths) => readPushNotesContext(input, paths),
 };
 
 /** P-006: the resume context and its entries' source links in ONE background read. A
  * links read awaited inside the wall (`code-intel-resume-links`) was measured on :3170
  * to push the whole batch past CODE_INTEL_PUSH_WALL_MS, so nothing was committed. */
-async function readResumeWithLinks(input: PushInput, deps: PushChannelDeps): Promise<ResumeContext> {
-  const context = await deps.resumeContext!(input);
+async function readResumeWithLinks(input: PushInput, deps: PushChannelDeps,
+  diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext> {
+  const context = await deps.resumeContext!(input, diagnostics);
   const paths = context.entries.map(entry => entry.path).slice(0, RESUME_FACTS_PER_BATCH + 2);
   if (!deps.context || !paths.length) return context;
-  const links = await withBoundedTimeout(() => deps.context!(input, paths),
-    { timeoutMs: RESUME_LINKS_TIMEOUT_MS, fallback: undefined, label: 'code-intel-resume-links' });
+  const links = await timeResumeReadPhase(diagnostics, 'sourceLinks', () => withBoundedTimeout(() => deps.context!(input, paths),
+    { timeoutMs: RESUME_LINKS_TIMEOUT_MS, fallback: undefined, label: 'code-intel-resume-links', warn: false }));
+  if (links.reason && diagnostics) diagnostics.phaseOutcomes.sourceLinks = links.reason;
   return links.value ? { ...context, links: links.value } : context;
 }
 
@@ -984,7 +1050,8 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     // The resume read does not depend on any other leg, so it overlaps with them
     // instead of adding its own wait to the 250ms wall (P-003).
     const resumeContext = deps.resumeContext && deps.legs().has('resume') && await deps.enabled(PUSH_LEG_FLAGS.resume)
-      ? boundedResumeContext(input, i => readResumeWithLinks(i, deps)).then(value => ({ value }), () => ({ value: undefined }))
+      ? boundedResumeContext(input, (i, diagnostics) => readResumeWithLinks(i, deps, diagnostics))
+        .then(value => ({ value }), () => ({ value: undefined }))
       : null;
     // P-005: same overlap for the code-note read (a fact fold plus a re-hash of the
     // notes' file anchors), started only when this batch first-touched a file.

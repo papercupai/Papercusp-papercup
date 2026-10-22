@@ -27,11 +27,29 @@ describe('papercup-backup-health-check.sh', () => {
     // were dropped. The gate recorded exactly that for repairHead 709766df on
     // 2026-09-30 and it never reproduced, so the red carried no evidence. The
     // exit status, signal and FAIL lines now go into the assertion itself.
-    const run = spawnSync('bash', [SCRIPT, '--self-test'], {
-      encoding: 'utf8',
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024,
-    });
+    // Nested health-check invocations otherwise inherit the production watch
+    // list and rescan the shared /tmp and /tmp/pcv on every fixture. Keep this
+    // self-test hermetic; the cases that exercise the entry-count probe pass
+    // their own fixture path explicitly.
+    const isolatedTmpWatch = mkdtempSync(join(tmpdir(), 'papercup-backup-health-watch-'));
+    const run = (() => {
+      try {
+        return spawnSync('bash', [
+          '-c',
+          'test "$BACKUP_TMPDIR_WATCH" = "$1" || { echo "self-test did not receive its isolated tmp watch path" >&2; exit 97; }; exec bash "$2" --self-test',
+          'backup-health-self-test',
+          isolatedTmpWatch,
+          SCRIPT,
+        ], {
+          encoding: 'utf8',
+          timeout: 120_000,
+          maxBuffer: 1024 * 1024,
+          env: { ...process.env, BACKUP_TMPDIR_WATCH: isolatedTmpWatch },
+        });
+      } finally {
+        rmSync(isolatedTmpWatch, { recursive: true, force: true });
+      }
+    })();
     const output = run.stdout ?? '';
     // lastCheck names the last check that FINISHED. EI-25211496463956189: a timeout
     // (ETIMEDOUT/SIGTERM) left empty failLines and stderrTail, so the red never said

@@ -1514,6 +1514,45 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     expect(refused.ok ? '' : refused.message).not.toContain('is absent');
   });
 
+  it.each(['timeout', 'launch failure', 'repository error'])('preserves a %s while mapping the recorded test path', async (failure) => {
+    const deps = binder(cleanRow());
+    deps.git = async (cwd, args) => {
+      if (args[0] === 'ls-tree' && args.at(-1) === 'pkg/lib/x.test.ts') {
+        throw new Error(`git ${failure}: test-path probe unavailable`);
+      }
+      return localGitRunner(cwd, args);
+    };
+    const refused = await expandTestRunBinding(input(), SCOPE, deps);
+    expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_probe_failed' });
+    if (refused.ok) throw new Error('unexpected binding');
+    expect(refused.message).toContain(`git ${failure}: test-path probe unavailable`);
+    expect(refused.message).toContain(harness);
+    expect(refused.message).toContain(superCommit);
+    expect(refused.message).not.toContain('does not contain that file');
+  });
+
+  it('preserves failed gitlink discovery while mapping a deleted submodule clone', async () => {
+    const row = cleanRow({ root: `${goneClone(subCommit)}/${SUB}`, file_path: 'src/s.test.ts', commit_sha: subCommit });
+    const deps = binder(row);
+    deps.git = async (cwd, args) => {
+      if (args[0] === 'ls-files') throw new Error('git timeout: submodule index unavailable');
+      return localGitRunner(cwd, args);
+    };
+    const refused = await expandTestRunBinding(input(), SCOPE, deps);
+    expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_probe_failed' });
+    expect(refused.ok ? '' : refused.message).toContain('submodule index unavailable');
+  });
+
+  it('preserves malformed test-path output instead of claiming file absence', async () => {
+    const deps = binder(cleanRow());
+    deps.git = async (cwd, args) => args[0] === 'ls-tree' && args.at(-1) === 'pkg/lib/x.test.ts'
+      ? 'not an ls-tree entry'
+      : localGitRunner(cwd, args);
+    const refused = await expandTestRunBinding(input(), SCOPE, deps);
+    expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_probe_failed' });
+    expect(refused.ok ? '' : refused.message).toContain('not an ls-tree entry');
+  });
+
   it.each([
     ['malformed', 'not an ls-tree entry'],
     ['tree', `040000 tree ${'a'.repeat(40)}\tpkg/lib/x.ts`],
