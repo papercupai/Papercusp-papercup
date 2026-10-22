@@ -1467,6 +1467,7 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
       const absent = await expandTestRunBinding(input({ sourcePaths: ['pkg/lib/added-later.ts'] }), SCOPE, binder(cleanRow()));
       expect(absent).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
       expect(absent.ok ? '' : absent.message).toContain(`pkg/lib/added-later.ts is absent at ${superCommit.slice(0, 12)}`);
+      expect(absent.ok ? '' : absent.message).toContain(harness);
     } finally {
       await rm(added, { force: true });
     }
@@ -1484,7 +1485,43 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     const refused = await expandTestRunBinding(input(), SCOPE, deps);
     expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_probe_failed' });
     expect(refused.ok ? '' : refused.message).toContain(`git ${failure}: source probe unavailable`);
+    expect(refused.ok ? '' : refused.message).toContain(harness);
+    expect(refused.ok ? '' : refused.message).toContain(superCommit);
     expect(refused.ok ? '' : refused.message).not.toContain('is absent');
+  });
+
+  it.each([
+    ['malformed', 'not an ls-tree entry'],
+    ['tree', `040000 tree ${'a'.repeat(40)}\tpkg/lib/x.ts`],
+    ['gitlink', `160000 commit ${'b'.repeat(40)}\tpkg/lib/x.ts`],
+  ])('does not report a %s committed source entry as an absent file', async (_kind, entry) => {
+    const deps = binder(cleanRow());
+    deps.git = async (cwd, args) => args[0] === 'ls-tree' && args.at(-1) === 'pkg/lib/x.ts'
+      ? entry
+      : localGitRunner(cwd, args);
+    const refused = await expandTestRunBinding(input(), SCOPE, deps);
+    expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_probe_failed' });
+    if (refused.ok) throw new Error('unexpected binding');
+    expect(refused.message).toContain('expected a blob');
+    expect(refused.message).toContain(entry.split('\t')[0]!);
+    expect(refused.message).toContain(harness);
+    expect(refused.message).toContain(superCommit);
+    expect(refused.message).not.toContain('is absent');
+  });
+
+  it('does not report malformed ancestor output as an absent committed source', async () => {
+    const deps = binder(cleanRow());
+    deps.git = async (cwd, args) => {
+      if (args[0] === 'ls-tree' && args.at(-1) === 'pkg/lib/x.ts') return '';
+      if (args[0] === 'ls-tree' && args.at(-1) === 'pkg/lib') return 'unexpected ancestor output';
+      return localGitRunner(cwd, args);
+    };
+    const refused = await expandTestRunBinding(input(), SCOPE, deps);
+    expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_probe_failed' });
+    if (refused.ok) throw new Error('unexpected binding');
+    expect(refused.message).toContain('unexpected ancestor output');
+    expect(refused.message).toContain('pkg/lib');
+    expect(refused.message).not.toContain('is absent');
   });
 
   it('still refuses an unmappable clean run, naming the commit it checked', async () => {

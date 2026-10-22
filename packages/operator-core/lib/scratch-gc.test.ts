@@ -1,7 +1,13 @@
 /**
  * Phase 4 T2.3 scratch GC + quota unit tests.
  */
-import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { afterAll, describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 import { createHash } from 'node:crypto';
 
 // Pass-through spies on the SYNCHRONOUS fs calls, so a test can prove the reservation hot path

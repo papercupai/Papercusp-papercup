@@ -478,6 +478,63 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('routes a registered affected suite through the pinned exact-file script', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'precheck-affected-file-'));
+    const checkpointRoot = join(root, 'checkpoint');
+    const precheckRoot = `${checkpointRoot}-admission-precheck`;
+    const commands: string[][] = [];
+    const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      commands.push([...argv]);
+      if (argv.includes('/operator/apps/operator/bin/release/setup-release-checkout.sh')) {
+        mkdirSync(precheckRoot);
+        writeFileSync(join(precheckRoot, 'package.json'), JSON.stringify({
+          private: true,
+          scripts: {
+            'test:affected': 'node -e "throw new Error(\'unexpected positional filename\')"',
+            'test:file': 'node -e "require(\'node:assert/strict\').deepEqual(process.argv.slice(1), [\'tests/host.test.ts\']); console.log(\'Tests 1 passed (1)\')"',
+          },
+        }));
+        return { exitCode: 0, signal: null, timedOut: false, output: 'fixture prepared', durationMs: 1 };
+      }
+      return defaultExec(argv, opts);
+    };
+    try {
+      const runner = createCheckpointTreeFixPrecheckRunner({
+        ...base, integrationRoot: '/app', toolingRoot: '/operator', checkpointRoot,
+        testCommand: ['npm', 'run', 'test:affected'], exec,
+        runLockHeld: () => ({ held: false, elapsedSec: null }),
+      });
+      expect(await runner({ commit: C, files: ['tests/host.test.ts'] })).toMatchObject({
+        ran: true, results: [{ path: 'tests/host.test.ts', status: 'pass' }],
+      });
+      expect(commands.at(-1)).toEqual(['npm', 'run', 'test:file', '--', 'tests/host.test.ts']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses an affected suite with no registered exact-file script', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'precheck-missing-file-script-'));
+    const checkpointRoot = join(root, 'checkpoint');
+    const precheckRoot = `${checkpointRoot}-admission-precheck`;
+    const exec = vi.fn(async (): Promise<ExecResult> => {
+      mkdirSync(precheckRoot);
+      writeFileSync(join(precheckRoot, 'package.json'), JSON.stringify({
+        scripts: { 'test:affected': 'node affected-tests.mjs' },
+      }));
+      return { exitCode: 0, signal: null, timedOut: false, output: 'fixture prepared', durationMs: 1 };
+    });
+    try {
+      const runner = createCheckpointTreeFixPrecheckRunner({
+        ...base, integrationRoot: '/app', toolingRoot: '/operator', checkpointRoot,
+        testCommand: ['npm', 'run', 'test:affected'], exec,
+        runLockHeld: () => ({ held: false, elapsedSec: null }),
+      });
+      expect(await runner({ commit: C, files: ['tests/host.test.ts'] })).toMatchObject({
+        ran: false, reason: 'runner-failed', detail: expect.stringContaining('no registered test:file command'),
+      });
+      expect(exec).toHaveBeenCalledTimes(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('materializes a foreign app with operator tooling and runs its registered suite in the pinned app checkout', async () => {
     const exec = vi.fn(async (_argv: readonly string[], _opts: ExecOptions) => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult));
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, integrationRoot: '/app', toolingRoot: '/operator',

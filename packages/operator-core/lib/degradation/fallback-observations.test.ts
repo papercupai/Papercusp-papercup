@@ -5,7 +5,13 @@
  * The cross-process read-back against real Postgres lives in
  * fallback-observations.integration.test.ts.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 import type { Sql } from 'postgres';
 
 const { getOrgPgMock } = vi.hoisted(() => ({

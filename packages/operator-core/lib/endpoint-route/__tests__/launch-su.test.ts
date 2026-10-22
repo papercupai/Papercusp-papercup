@@ -56,6 +56,14 @@ import { EventEmitter } from 'node:events';
 import { EARLY_EXIT_PROBE_MS } from '../../console-spawn';
 import { STDERR_FLUSH_GRACE_MS } from '../../terminal-spawn';
 
+// Native GSettings is covered on a private bus in psu-gnome-renderer.test.ts.
+// Keep profile preparation outside this fake-clock/process fixture, as the
+// sibling terminal-spawn tests do: execFile must not touch the host desktop or
+// wait on native callbacks while this suite drives the early-exit probe.
+vi.mock('../../gnome-terminal-profile.mjs', () => ({
+  prepareGnomeTerminal: vi.fn(async (terminal: { bin: string; args: string[] }) => terminal),
+}));
+
 /**
  * spawnInTerminal's early-exit probe is EVENT-DRIVEN (it awaits `watchEarlyExit`,
  * which subscribes to the child's 'exit'/'error'), so the child this mock returns

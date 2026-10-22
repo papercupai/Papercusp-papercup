@@ -11,7 +11,13 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/context-doors-config.test.ts
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 
 const store = new Map<string, unknown>();
 vi.mock('./operator-state-pg', () => ({

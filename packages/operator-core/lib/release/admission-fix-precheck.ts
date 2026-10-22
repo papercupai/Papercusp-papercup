@@ -28,7 +28,7 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  * `scripts/test-files.mjs` per file), guarded by the gate's initial run-lock probe.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { accessSync, constants as fsConstants, createWriteStream, existsSync, mkdirSync, statSync, type WriteStream } from 'node:fs';
+import { accessSync, constants as fsConstants, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, type WriteStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveDependencyGenerationRoot } from './dependency-generation-root';
@@ -1020,6 +1020,30 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         detail: `${infra ? `infra=${infra} ` : ''}setup-release-checkout exited ${setup.exitCode ?? setup.signal} for ${commit.slice(0, 12)}${timeoutNote}; log=${logFile}: ${setup.output.slice(-600)}`,
       };
     }
+    // A foreign Papercusp fork registers the aggregate gate command, which
+    // deliberately rejects exact filenames. Resolve its existing file script
+    // from the pinned checkout rather than running that aggregate once per file.
+    let fileTestCommand = opts.testCommand;
+    if (
+      fileTestCommand?.length === 3 &&
+      path.basename(fileTestCommand[0] ?? '') === 'npm' &&
+      fileTestCommand[1] === 'run' &&
+      fileTestCommand[2] === 'test:affected'
+    ) {
+      let fileScript: unknown;
+      try {
+        const manifest = JSON.parse(readFileSync(path.join(precheckRoot, 'package.json'), 'utf8'));
+        fileScript = manifest.scripts?.['test:file'];
+      } catch { /* an unreadable declaration is not permission to infer a runner */ }
+      if (typeof fileScript !== 'string' || !fileScript.trim()) {
+        return {
+          ran: false,
+          reason: 'runner-failed',
+          detail: 'The registered test:affected command cannot accept exact files and the pinned checkout has no registered test:file command; log=' + logFile,
+        };
+      }
+      fileTestCommand = [fileTestCommand[0] as string, 'run', 'test:file'];
+    }
     const results: FixPrecheckFileResult[] = [];
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index] as string;
@@ -1030,8 +1054,8 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         heartbeatAtMs: Date.now(),
       });
       log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
-      const argv = opts.testCommand?.length
-        ? [...opts.testCommand, '--', file]
+      const argv = fileTestCommand?.length
+        ? [...fileTestCommand, '--', file]
         : ['node', 'scripts/test-files.mjs', file];
       const r = await execWithProgress(argv, {
         cwd: precheckRoot,
