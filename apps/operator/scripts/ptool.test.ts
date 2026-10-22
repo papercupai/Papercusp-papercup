@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -2801,6 +2801,44 @@ describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
       ok: true,
       _meta: { codeRunReplayProof: proof, outerOnly: 'kept', spilledOnly: 'kept' },
     });
+  });
+
+  it('reads a host operator spill when the session has a different workspace home', async () => {
+    const suffix = 'ws/code:run/00000000-0000-4000-8000-000000000000/result.spill';
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      content: [{ kind: 'reference', uri: `papercusp://scratch/${suffix}` }],
+    };
+    const hostPath = join(homedir(), '.papercusp', 'scratch', suffix);
+    const readSpill = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, summary: { report: 'preserved' } }) }],
+    });
+    expect(await unwrapOutputEnvelope(envelope, {
+      env: { PAPERCUSP_HOME: '/tmp/workspace-home' },
+      fileExists: path => path === hostPath,
+      readSpill,
+    })).toEqual({ ok: true, summary: { report: 'preserved' } });
+    expect(readSpill).toHaveBeenCalledExactlyOnceWith(hostPath);
+  });
+
+  it('prefers the scoped file and never searches outside an explicit scratch root', async () => {
+    const suffix = 'ws/code:run/00000000-0000-4000-8000-000000000000/result.spill';
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      content: [{ kind: 'reference', uri: `papercusp://scratch/${suffix}` }],
+    };
+    const readSpill = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"ok":true}' }] });
+    expect(await unwrapOutputEnvelope(envelope, {
+      env: { PAPERCUSP_HOME: '/tmp/workspace-home' }, fileExists: () => true, readSpill,
+    })).toEqual({ ok: true });
+    expect(readSpill).toHaveBeenCalledExactlyOnceWith(join('/tmp/workspace-home/scratch', suffix));
+    readSpill.mockClear();
+    expect(await unwrapOutputEnvelope(envelope, {
+      env: { PAPERCUSP_HOME: '/tmp/workspace-home', PAPERCUSP_SCRATCH_ROOT: '/tmp/explicit-root' },
+      fileExists: path => path === join(homedir(), '.papercusp', 'scratch', suffix),
+      readSpill,
+    })).toBe(envelope);
+    expect(readSpill).not.toHaveBeenCalled();
   });
 
   it('returns the envelope UNCHANGED — never a fabricated success — when the reference cannot be read or parsed', async () => {

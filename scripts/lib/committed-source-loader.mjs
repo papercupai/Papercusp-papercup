@@ -38,7 +38,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, appendFileSync, constants as fsConstants, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import Module, { register } from 'node:module';
-import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
 
@@ -230,8 +230,15 @@ function viteInlineSourceMap(bytes) {
 function viteSourceMapPath(map, source) {
   if (typeof source !== 'string' || !source) return null;
   try {
-    const url = new URL(source, map.sourceRoot);
-    return url.protocol === 'file:' ? fileURLToPath(url) : null;
+    if (isAbsolute(source)) return source;
+    if (/^[A-Za-z][A-Za-z\d+.-]*:/.test(source)) {
+      const url = new URL(source, map.sourceRoot);
+      return url.protocol === 'file:' ? fileURLToPath(url) : null;
+    }
+    // Vite sets sourceRoot to the config directory, but its relative sources are emitted by
+    // esbuild relative to absWorkingDir (process.cwd()). Applying sourceRoot duplicates paths
+    // outside cwd, such as turning /tmp/fixture/config.ts into /tmp/tmp/fixture/config.ts.
+    return resolve(process.cwd(), source);
   } catch {
     return null;
   }
@@ -317,15 +324,13 @@ function judgeViteConfigBundle(file, bytes) {
   }
 
   const mainRows = rows.filter((row) => {
-    if (typeof row.source !== 'string') return false;
+    if (typeof row.source !== 'string' || !hasViteFileScopePrefix(row.file, row.source)) return false;
     if (tempConfigName) return basename(row.file) === tempConfigName;
-    let sameFile;
     try {
-      sameFile = realpathSync(row.file) === realpathSync(file);
+      return realpathSync(row.file) === realpathSync(file);
     } catch {
-      sameFile = basename(row.file) === basename(file);
+      return false;
     }
-    return sameFile && (namedConfig || hasViteFileScopePrefix(row.file, row.source));
   });
   if (mainRows.length !== 1) {
     if (isViteConfigBundle) return unverifiableViteConfigBundle(file, 'main-source-not-found-or-ambiguous');

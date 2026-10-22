@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 /**
  * ptool.mjs — the `ptool` command.
  *
@@ -1355,7 +1355,7 @@ const OUTPUT_ENVELOPE_SCHEMA_VERSION = 'papercusp.output-envelope/v1';
 function scratchRootDir(env = process.env) {
   const override = typeof env.PAPERCUSP_SCRATCH_ROOT === 'string' ? env.PAPERCUSP_SCRATCH_ROOT.trim() : '';
   if (override) return override;
-  return papercuspPath('scratch');
+  return join(papercuspHome(env), 'scratch');
 }
 
 /**
@@ -1447,8 +1447,15 @@ export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayl
       part?.kind === 'evidence-reference' ||
       part?.type === 'reference'
     ) {
-      const path = scratchUriToPath(part.uri, env);
-      if (!path || !fileExists(path)) continue;
+      const paths = [scratchUriToPath(part.uri, env)];
+      // A session can carry a workspace-scoped PAPERCUSP_HOME while its local
+      // operator writes to the host home. Resolve the same URI there only when
+      // the primary file is absent. An explicit scratch-root override is final.
+      if (!env.PAPERCUSP_SCRATCH_ROOT?.trim()) {
+        paths.push(scratchUriToPath(part.uri, { ...env, PAPERCUSP_HOME: papercuspHome({}) }));
+      }
+      const path = [...new Set(paths)].find(candidate => candidate && fileExists(candidate));
+      if (!path) continue;
       // The spilled payload is itself an envelope: one of its content parts
       // is the tool's JSON and the rest is advisory prose ("See also: ..."),
       // which is why this scans for a parseable object instead of trusting
