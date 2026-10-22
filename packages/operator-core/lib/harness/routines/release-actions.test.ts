@@ -22,6 +22,11 @@ import { evaluateGateReuseAuditWindow } from '../../release/gate-fire-ledger';
 import { buildTestPassReuseHealth } from '../../release/test-pass-reuse-report';
 import { captureGateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
 import { readLastGateSuiteVerdictReplay } from './release-actions';
+import {
+  beginQualificationTransaction,
+  reserveQualificationRunner,
+  waitQualificationTransaction,
+} from '../../release/checkpoint-qualification-transaction';
 import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../../scripts/lib/test-pass-reuse.mjs';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -4679,6 +4684,58 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     }
   });
 
+  it('settles the retired queue qualification so the next fire can select the fresh tip', async () => {
+    const attemptId = 'retired-queue-attempt';
+    const retirableQueue = { ...queue, phase: 'awaiting-fixer' as const, fixerSpawnId: null, qualificationAttemptId: attemptId };
+    const begun = beginQualificationTransaction(null, { attemptId, candidate: queue.candidate, nowMs: 1 }).transaction;
+    const waiting = waitQualificationTransaction(begun, { attemptId, reason: 'repair-in-progress', nowMs: 2 }).transaction;
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ metadata: { repair_queue: retirableQueue, qualificationTransaction: waiting } }]))
+      .mockResolvedValueOnce(sqlRows([{ retired: true }]));
+
+    await expect(retireFrozenCandidateRepairQueue(target, retirableQueue)).resolves.toMatchObject({ retired: true });
+    const write = fakeSql.unsafe.mock.calls.find(([query]) => /RETURNING true AS retired/.test(String(query)));
+    expect(String(write?.[0])).toContain('|| $8::jsonb');
+    const patch = JSON.parse(String((write?.[1] as unknown[])?.[7]));
+    expect(patch.qualificationTransaction).toMatchObject({
+      attemptId,
+      phase: 'terminal',
+      outcome: { kind: 'code-inconclusive', reason: 'frozen-repair-queue-retired' },
+      currentPhysicalRunner: null,
+    });
+    const successor = beginQualificationTransaction(patch.qualificationTransaction, {
+      attemptId: 'fresh-tip-attempt', candidate: 'd'.repeat(40), nowMs: Date.now() + 1,
+    });
+    expect(successor).toMatchObject({ status: 'updated', transaction: { candidate: 'd'.repeat(40) } });
+  });
+
+  it.each(['live', 'unknown'] as const)('does not retire a queue whose qualification runner is %s', async (liveness) => {
+    const attemptId = 'running-queue-attempt';
+    const retirableQueue = { ...queue, phase: 'awaiting-fixer' as const, fixerSpawnId: null, qualificationAttemptId: attemptId };
+    const begun = beginQualificationTransaction(null, { attemptId, candidate: queue.candidate, nowMs: 1 }).transaction;
+    const running = reserveQualificationRunner(begun, {
+      attemptId, runnerId: 'runner', runId: 'run', pid: 123, started: true, leaseDurationMs: 60_000, nowMs: 2,
+    }).transaction;
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ metadata: { repair_queue: retirableQueue, qualificationTransaction: running } }]));
+    probeRunnerLiveness.mockResolvedValueOnce(liveness);
+    await expect(retireFrozenCandidateRepairQueue(target, retirableQueue)).resolves.toMatchObject({
+      retired: false, refusal: liveness === 'live' ? 'live-runner' : 'liveness-unknown',
+    });
+    expect(fakeSql.unsafe).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an unrelated qualification when retiring a queue', async () => {
+    const retirableQueue = { ...queue, phase: 'awaiting-fixer' as const, fixerSpawnId: null, qualificationAttemptId: 'older-attempt' };
+    const unrelated = beginQualificationTransaction(null, { attemptId: 'other-attempt', candidate: 'e'.repeat(40), nowMs: 1 }).transaction;
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ metadata: { repair_queue: retirableQueue, qualificationTransaction: unrelated } }]))
+      .mockResolvedValueOnce(sqlRows([{ retired: true }]));
+    await expect(retireFrozenCandidateRepairQueue(target, retirableQueue)).resolves.toMatchObject({ retired: true });
+    const write = fakeSql.unsafe.mock.calls.find(([query]) => /RETURNING true AS retired/.test(String(query)));
+    expect(JSON.parse(String((write?.[1] as unknown[])?.[7]))).toEqual({});
+    expect(probeRunnerLiveness).not.toHaveBeenCalled();
+  });
+
   it('retires only the exact inspected queue and returns the replacement on a CAS miss', async () => {
     const retirableQueue = { ...queue, phase: 'awaiting-fixer' as const };
     fakeSql.unsafe
@@ -4700,7 +4757,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
         /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+metadata->'repair_queue'->>'fixerSpawnId'[\s\S]+RETURNING true AS retired/,
       ),
       // P-010: the 7th param is the pending carry; a queue that admitted nothing carries nothing.
-      ['ws-42', 'my-harness', retirableQueue.candidate, retirableQueue.repairHead, retirableQueue.updatedAtMs, retirableQueue.fixerSpawnId, null],
+      ['ws-42', 'my-harness', retirableQueue.candidate, retirableQueue.repairHead, retirableQueue.updatedAtMs, retirableQueue.fixerSpawnId, null, '{}'],
     );
 
     const replacement = { ...retirableQueue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
@@ -4733,7 +4790,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       expect.stringMatching(
         /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+metadata->'repair_queue'->>'fixerSpawnId'[\s\S]+RETURNING true AS retired/,
       ),
-      ['ws-42', 'my-harness', newerQueue.candidate, newerQueue.repairHead, newerQueue.updatedAtMs, newerQueue.fixerSpawnId, null],
+      ['ws-42', 'my-harness', newerQueue.candidate, newerQueue.repairHead, newerQueue.updatedAtMs, newerQueue.fixerSpawnId, null, '{}'],
     );
   });
 

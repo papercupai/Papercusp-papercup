@@ -117,6 +117,8 @@ import {
   classifyQualificationVerdict,
   classifyScheduledQualificationJoin,
   describeQualificationSettleConflict,
+  isTerminalQualificationOutcome,
+  parseCheckpointQualificationTransaction,
   projectCheckpointQualificationState,
   probeRunnerLiveness,
   readStoredQualification,
@@ -124,6 +126,7 @@ import {
   recordStoredQualificationScheduledTerminalRecovery,
   recordStoredQualificationVerdict,
   reserveStoredQualificationRunner,
+  settleQualificationTransaction,
   type CheckpointQualificationTransaction,
   type RunnerLiveness,
 } from '../../release/checkpoint-qualification-transaction';
@@ -6886,7 +6889,9 @@ export async function retireFrozenCandidateRepairQueue(
   refusal?:
     | 'identity-mismatch'
     | 'live-fixer'
+    | 'live-runner'
     | 'liveness-unknown'
+    | 'qualification-unreadable'
     | 'active-dispatch-reservation'
     | 'unsafe-phase';
 }> {
@@ -6959,6 +6964,39 @@ export async function retireFrozenCandidateRepairQueue(
       };
     }
 
+    // Retiring a queue must also release its logical attempt. Otherwise the next scheduled
+    // fire joins that attempt and tests the retired candidate instead of the current branch.
+    // Read and settle under this same row lock; never disturb an unrelated attempt or a
+    // runner whose death has not been proved.
+    const qualificationPatch: Record<string, unknown> = {};
+    const rawQualification = lockedMetadata?.qualificationTransaction;
+    const qualification = rawQualification == null ? null : parseCheckpointQualificationTransaction(rawQualification);
+    if (rawQualification != null && !qualification) {
+      return { retired: false, current, refusal: 'qualification-unreadable' as const };
+    }
+    const ownsQualification = qualification && (
+      current.qualificationAttemptId
+        ? current.qualificationAttemptId === qualification.attemptId
+        : [current.candidate, current.repairHead].includes(qualification.candidate ?? '')
+    );
+    if (qualification && ownsQualification && !isTerminalQualificationOutcome(qualification.outcome)) {
+      if (qualification.currentPhysicalRunner) {
+        const liveness = await probeRunnerLiveness(qualification.currentPhysicalRunner);
+        if (liveness !== 'dead') {
+          return { retired: false, current, refusal: liveness === 'live' ? 'live-runner' as const : 'liveness-unknown' as const };
+        }
+      }
+      const settled = settleQualificationTransaction(qualification, {
+        attemptId: qualification.attemptId,
+        reason: 'frozen-repair-queue-retired',
+        evidenceRefs: [`retired-queue:${current.candidate}:${current.updatedAtMs}`],
+      });
+      if (settled.status !== 'updated') {
+        return { retired: false, current, refusal: 'qualification-unreadable' as const };
+      }
+      qualificationPatch.qualificationTransaction = settled.transaction;
+    }
+
     // P-010 (green-main-cycle-time-2026-10-08#D-026): the retired queue's admitted fixes are
     // carried into the next fresh cut; the record lands in the SAME write as the retire.
     const pendingCarry = nextFrozenRepairPendingCarry(
@@ -6980,7 +7018,8 @@ export async function retireFrozenCandidateRepairQueue(
                 ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
               END) #- '{gate_health,convergence}')
               || CASE WHEN $7::jsonb IS NULL THEN '{}'::jsonb
-                      ELSE jsonb_build_object('${FROZEN_REPAIR_CARRY_METADATA_KEY}', $7::jsonb) END,
+                      ELSE jsonb_build_object('${FROZEN_REPAIR_CARRY_METADATA_KEY}', $7::jsonb) END
+              || $8::jsonb,
               updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
@@ -7003,6 +7042,7 @@ export async function retireFrozenCandidateRepairQueue(
         expectedQueue.updatedAtMs,
         expectedQueue.fixerSpawnId,
         pendingCarry ? JSON.stringify(pendingCarry) : null,
+        JSON.stringify(qualificationPatch),
       ],
     )) as Array<{ retired: boolean }>;
     if (rows[0]?.retired === true) return { retired: true, current: null };
