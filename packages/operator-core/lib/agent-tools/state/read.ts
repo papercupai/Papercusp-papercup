@@ -205,6 +205,7 @@ export default defineTool({
         // say) would WIDEN the second gate for a caller who never presented one, which
         // is the same failure D-042 names: an access default that fails OPEN.
         role: ctx.role ?? '',
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
       },
       subject,
     );

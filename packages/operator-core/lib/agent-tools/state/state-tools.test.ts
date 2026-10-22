@@ -387,6 +387,16 @@ describe('state:read — the unknown stays branchable, and the role fails CLOSED
     expect(readCellMock.mock.calls[0][3]).toBe('su-peer');
   });
 
+  it('forwards the caller abort signal into readCell', async () => {
+    const signal = new AbortController().signal;
+    readCellMock.mockResolvedValue({ status: 'value', cell: 'test.cell', value: 1 });
+
+    await readTool.handler({ cell: 'test.cell' } as never, { ...CTX, signal } as never);
+
+    expect(readCellMock.mock.calls[0][2]).toMatchObject({ signal });
+    expect(readCellMock.mock.calls[0][2].signal).toBe(signal);
+  });
+
   it('documents and enforces `as` as a bare subject string, not an object envelope', () => {
     expect(readTool.args.safeParse({ cell: 'git.pipelinePosition', as: 'apps/operator/x.ts' }).success).toBe(true);
     expect(readTool.args.safeParse({ cell: 'git.pipelinePosition', as: { path: 'apps/operator/x.ts' } }).success).toBe(false);

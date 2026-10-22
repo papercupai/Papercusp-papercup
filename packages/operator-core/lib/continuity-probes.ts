@@ -698,8 +698,13 @@ function observedScalar(value: unknown): unknown {
   return undefined;
 }
 
+function continuityProbeTimeoutLabel(probe: ContinuityProbe, name: string): string {
+  if (probe.kind !== 'state-cell') return 'continuity-probe:' + name;
+  return 'continuity-probe:' + name + ':' + probe.cell + ':subject=' + (probe.as !== undefined);
+}
+
 export interface ContinuityProbeDispatchContext {
-  dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  dispatchTool?: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
   /**
    * Per-probe dispatch budget. Defaults to CONTINUITY_PROBE_TIMEOUT_MS, which is
    * sized for the wake/orient replay path where every probe sits on a turn's
@@ -763,7 +768,8 @@ async function runOne(
       },
     };
   }
-  if (!ctx.dispatchTool) {
+  const dispatchTool = ctx.dispatchTool;
+  if (!dispatchTool) {
     return {
       ...base,
       status: 'error',
@@ -773,11 +779,14 @@ async function runOne(
   }
   const timeoutMs = ctx.timeoutMs ?? CONTINUITY_PROBE_TIMEOUT_MS;
   const args = probeDispatchArgs(probe, timeoutMs);
-  const dispatched = await withBoundedTimeout(ctx.dispatchTool(name, args), {
-    fallback: null,
-    timeoutMs,
-    label: `continuity-probe:${name}`,
-  });
+  const dispatched = await withBoundedTimeout(
+    (signal) => dispatchTool(name, args, signal),
+    {
+      fallback: null,
+      timeoutMs,
+      label: continuityProbeTimeoutLabel(probe, name),
+    },
+  );
   if (dispatched.degraded || dispatched.value === null) {
     return {
       ...base,

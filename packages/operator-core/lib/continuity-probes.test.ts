@@ -191,7 +191,7 @@ describe('criterion ALL probes', () => {
           criteria: [{ key: 'proof', check: binding }], ratings: { proof: { rating: 'pass' } }, dispatchTool: dispatch,
         })).toMatchObject({ ok: true, checkRuns: { proof: { verdict: 'pass' } } });
         expect(dispatch).toHaveBeenCalledOnce();
-        expect(dispatch).toHaveBeenCalledWith('events:status', args);
+        expect(dispatch).toHaveBeenCalledWith('events:status', args, expect.any(AbortSignal));
       }
     },
   );
@@ -422,7 +422,7 @@ describe('continuity probe wake replay', () => {
     const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: '{"value":"green"}' }] }));
     const batch = await runContinuityProbeBatch([source(probe)], { dispatchTool });
     expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true });
-    expect(dispatchTool).toHaveBeenCalledWith('state:read', { cell: 'gate.verdict' });
+    expect(dispatchTool).toHaveBeenCalledWith('state:read', { cell: 'gate.verdict' }, expect.any(AbortSignal));
   });
 
   it('caps a mixed batch while preserving the selected prefix', async () => {
@@ -594,6 +594,65 @@ describe('continuity probe dispatch budget', () => {
     expect(batch.limits.timeoutMs).toBe(CONTINUITY_PROBE_TIMEOUT_MS);
     expect(batch.results[0]).toMatchObject({ status: 'error', executed: true, diagnostic: { code: 'timeout' } });
     expect(batch.results[0].diagnostic?.message).toContain(`${CONTINUITY_PROBE_TIMEOUT_MS}ms budget`);
+  });
+
+  it('aborts timed-out state-cell reads and scopes the timeout to cell + subject presence', async () => {
+    const probe: ContinuityProbe = {
+      kind: 'state-cell',
+      cell: 'gate.verdict',
+      as: 'private-subject',
+      schemaRevision: continuityProbeRevision('state:read')!,
+      expect: { path: '$.value', op: 'eq', value: 'green' },
+    };
+    let receivedSignal: AbortSignal | undefined;
+    let resolveLate!: (value: unknown) => void;
+    const dispatchTool = vi.fn(
+      (_name: string, _args: Record<string, unknown>, signal?: AbortSignal) => {
+        receivedSignal = signal;
+        return new Promise<unknown>((resolve) => { resolveLate = resolve; });
+      },
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const pending = runContinuityProbeBatch([source(probe)], { dispatchTool, timeoutMs: 10 });
+      await vi.advanceTimersByTimeAsync(10);
+      const batch = await pending;
+
+      expect(receivedSignal?.aborted).toBe(true);
+      expect(dispatchTool).toHaveBeenCalledWith(
+        'state:read',
+        { cell: 'gate.verdict', as: 'private-subject' },
+        expect.any(AbortSignal),
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('continuity-probe:state:read:gate.verdict:subject=true'),
+      );
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('private-subject'));
+      expect(batch.results[0]).toMatchObject({ status: 'error', diagnostic: { code: 'timeout' } });
+
+      resolveLate({ content: [{ type: 'text', text: '{"value":"green"}' }] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(batch.results[0]).toMatchObject({ status: 'error', diagnostic: { code: 'timeout' } });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves the cancellation signal live for a probe that finishes within budget', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const dispatchTool = vi.fn(
+      async (_name: string, _args: Record<string, unknown>, signal?: AbortSignal) => {
+        receivedSignal = signal;
+        return { content: [{ type: 'text', text: '{"state":"green"}' }] };
+      },
+    );
+
+    const batch = await runContinuityProbeBatch([source(readProbe())], { dispatchTool, timeoutMs: 100 });
+
+    expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true });
+    expect(receivedSignal).toBeInstanceOf(AbortSignal);
+    expect(receivedSignal?.aborted).toBe(false);
   });
 
   it('honours a caller budget, so the same slow read is judged instead of refused', async () => {

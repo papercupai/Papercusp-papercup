@@ -348,6 +348,7 @@ const resolveAnnouncementOwnershipMock = vi.hoisted(() => vi.fn(async () => new 
 // EI-21833804434126804: handler-level aggregate-timeout coverage must drive the
 // real defineTool handler without re-dispatching live tools or opening PG.
 const inProcessCallMock = vi.hoisted(() => vi.fn());
+const runContinuityProbesForOwnerMock = vi.hoisted(() => vi.fn());
 const getModesMock = vi.hoisted(() => vi.fn(async () => null as unknown));
 const readOwnerPresenceMock = vi.hoisted(() =>
   vi.fn(async () => ({ present: false, lastSeenAgoMs: null, activeSessions: 0 })),
@@ -372,6 +373,10 @@ const recordOrientDisclosuresMock = vi.hoisted(() => vi.fn(async () => 'unchange
 vi.mock('../../_compound-dispatch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../_compound-dispatch')>()),
   inProcessCall: inProcessCallMock,
+}));
+vi.mock('../../../continuity-probes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../continuity-probes')>()),
+  runContinuityProbesForOwner: runContinuityProbesForOwnerMock,
 }));
 vi.mock('../../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../modes/store')>()),
@@ -501,6 +506,84 @@ beforeEach(() => {
   listFleetsLedByMock.mockResolvedValue([]);
   acknowledgeControlTransitionMock.mockClear();
   acknowledgeControlTransitionMock.mockResolvedValue(true);
+  runContinuityProbesForOwnerMock.mockReset();
+});
+
+describe('coord:orient continuity probe dispatch', () => {
+  it('uses the in-process dispatcher and forwards the probe cancellation signal', async () => {
+    const ownerId = 'su-orient-continuity-dispatch-test';
+    const controller = new AbortController();
+    const nestedCalls: Array<{ name: string; args: unknown; signal?: AbortSignal }> = [];
+
+    inProcessCallMock.mockReturnValue(async (name: string, args: unknown, signal?: AbortSignal) => {
+      nestedCalls.push({ name, args, signal });
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      if (name === 'state:read') return { value: 'green' };
+      throw new Error('unexpected sub-call: ' + name);
+    });
+    runContinuityProbesForOwnerMock.mockImplementation(async (
+      _ownerId: string,
+      _workspaceId: string,
+      context: {
+        dispatchTool: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+      },
+    ) => {
+      await context.dispatchTool('state:read', { cell: 'gate.verdict' }, controller.signal);
+      return { total: 0 };
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue({
+      selfRecall: "sessions:search { session: 'self' }",
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    });
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    await orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        dispatchTool: vi.fn(),
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    );
+
+    expect(runContinuityProbesForOwnerMock).toHaveBeenCalledWith(
+      ownerId,
+      'ws-test',
+      expect.objectContaining({ dispatchTool: expect.any(Function) }),
+    );
+    expect(nestedCalls).toContainEqual({
+      name: 'state:read',
+      args: { cell: 'gate.verdict' },
+      signal: controller.signal,
+    });
+  });
 });
 
 describe('coord:orient args', () => {

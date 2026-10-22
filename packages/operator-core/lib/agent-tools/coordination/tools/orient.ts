@@ -3959,6 +3959,18 @@ export default defineTool({
       const { fetchOrientPipeline } = await import('../pipeline-health');
       return fetchOrientPipeline(args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? undefined);
     })().catch(() => null);
+    const orientInnerCallBase = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
+    const orientInnerCall: InnerCall = async (name, callArgs, signal) =>
+      phaseTracker.track('inner:' + name, async () => {
+        if (ctx.role === 'judge' && name === 'fleet:assignments') {
+          const requestedHarness = (callArgs as Record<string, unknown>).harness;
+          return orientInnerCallBase(name, {
+            agent: 'self',
+            ...(typeof requestedHarness === 'string' ? { harness: requestedHarness } : {}),
+          }, signal);
+        }
+        return orientInnerCallBase(name, callArgs, signal);
+      });
     // WI-42290: executable check rows are replayed on the same mandatory orient
     // bootstrap every loop wake already performs. Start the bounded read/dispatch
     // fold early so its latency overlaps the existing orientation legs; fail-soft
@@ -3969,25 +3981,13 @@ export default defineTool({
             try {
               const { runContinuityProbesForOwner } = await import('../../../continuity-probes');
               const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-              const batch = await runContinuityProbesForOwner(ownerId, ws, ctx);
+              const batch = await runContinuityProbesForOwner(ownerId, ws, { dispatchTool: orientInnerCall });
               return batch.total > 0 ? batch : undefined;
             } catch {
               return undefined;
             }
           })()
         : undefined;
-    const orientInnerCallBase = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
-    const orientInnerCall: InnerCall = async (name, callArgs, signal) =>
-      phaseTracker.track(`inner:${name}`, async () => {
-        if (ctx.role === 'judge' && name === 'fleet:assignments') {
-          const requestedHarness = (callArgs as Record<string, unknown>).harness;
-          return orientInnerCallBase(name, {
-            agent: 'self',
-            ...(typeof requestedHarness === 'string' ? { harness: requestedHarness } : {}),
-          }, signal);
-        }
-        return orientInnerCallBase(name, callArgs, signal);
-      });
     const fleetSummariesFold = readLedFleets
       ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {
           const led = await readLedFleets();
