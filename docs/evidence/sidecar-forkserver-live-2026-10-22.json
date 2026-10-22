@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Live sidecar forks are delegated to its forkserver",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "docs/evidence/sidecar-forkserver-live-probe.py"
+  ],
+  "startedAt": "2026-10-22T14:30:26.116258+00:00",
+  "finishedAt": "2026-10-22T14:30:31.219682+00:00",
+  "exitCode": 0,
+  "summary": "Three-second live bg-host trace; forkserver syscall activity is the positive control for zero sidecar fork calls.",
+  "assertions": [
+    {
+      "id": "stable-live-runtime",
+      "passed": true,
+      "evidence": "bg-host MainPID before=2138906, after=2138906; sidecar=2158514."
+    },
+    {
+      "id": "trace-instrument-available",
+      "passed": true,
+      "evidence": "[{\"label\": \"sidecar\", \"traceLineCount\": 734, \"instrumentErrors\": [], \"unmeasuredCallCount\": 0}, {\"label\": \"forkserver\", \"traceLineCount\": 516, \"instrumentErrors\": [], \"unmeasuredCallCount\": 0}]"
+    },
+    {
+      "id": "forkserver-positive-control",
+      "passed": true,
+      "evidence": "[{\"label\": \"sidecar\", \"pid\": 2158514, \"forkCallCount\": 0}, {\"label\": \"forkserver\", \"pid\": 2166935, \"forkCallCount\": 86}]"
+    },
+    {
+      "id": "sidecar-no-child-forks",
+      "passed": true,
+      "evidence": "sidecar=2158514, windowSeconds=3.000097, forkCalls=0, forkSeconds=0."
+    },
+    {
+      "id": "sidecar-fork-and-read-budget",
+      "passed": true,
+      "evidence": "All read time conservatively bounds exec-wait reads: forkSeconds=0, readSeconds=0.046668, windowSeconds=3.000097; sum/window must be below0.05."
+    }
+  ],
+  "traces": [
+    {
+      "label": "sidecar",
+      "pid": 2158514,
+      "startTicks": "146495161",
+      "forkCallCount": 0,
+      "forkSeconds": 0,
+      "readSeconds": 0.046668,
+      "unmeasuredCallCount": 0,
+      "traceLineCount": 734,
+      "instrumentErrors": [],
+      "rawEvidence": "/tmp/sidecar-forkserver-live-tkzg79r6/sidecar.strace",
+      "rawSha256": "58a5f40c1fa658a5cf9e5e49d169e41e104967b4e90055833ddaafce4021ddc7"
+    },
+    {
+      "label": "forkserver",
+      "pid": 2166935,
+      "startTicks": "146496225",
+      "forkCallCount": 86,
+      "forkSeconds": 0.650696,
+      "readSeconds": 0.841331,
+      "unmeasuredCallCount": 0,
+      "traceLineCount": 516,
+      "instrumentErrors": [],
+      "rawEvidence": "/tmp/sidecar-forkserver-live-tkzg79r6/forkserver.strace",
+      "rawSha256": "30a7a2de40d20051cc458d3deae274327ccfe05ea6b3ea13cc5ce43765772cd1"
+    }
+  ],
+  "windowSeconds": 3.0000972650013864,
+  "sidecarBlockedPercent": 1.555549566489753,
+  "runtime": {
+    "bgHostPid": 2138906,
+    "sidecarPid": 2158514,
+    "forkserverPids": [
+      2166935
+    ]
+  },
+  "limitations": [
+    "Fork-related syscall counts include failed clone3 attempts, not only created children.",
+    "Every sidecar read duration is counted as an upper bound on exec-wait reads; unrelated reads can make this check fail conservatively.",
+    "This checks fork plus read blocking, not total event-loop or admission latency.",
+    "Compare admission distributions only at similar sidecar ages."
+  ]
+}

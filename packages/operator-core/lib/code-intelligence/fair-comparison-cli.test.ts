@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { buildArm, createFairWorkerChannel, fairProcessCensus, FAIR_ARM_IDS, frozenGraphRequest, indexFileCensus, loadFairInputs, materializeFrozenControls,
   FAIR_WORKER_RUNTIME_MAX_SEC, materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
-  verifyFairWorkerSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
+  stopFairWorker, verifyFairWorkerSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
 // Transitive users can mock only their own subprocess seam. Importing the CLI's
 // helpers must not read/promisify the absent execFile before an actual CLI run.
@@ -78,6 +78,55 @@ describe('FAIR_ARM_IDS', () => {
 
   it('allows slow frozen-corpus graph indexes to outlive the former four-hour cap', () => {
     expect(FAIR_WORKER_RUNTIME_MAX_SEC).toBe(8 * 3600);
+  });
+});
+
+describe('fresh worker cleanup', () => {
+  it.each([{ ok: true }, { ok: false, error: 'already_gone' }])(
+    'removes private files only after scope proof when the client never closes (%j)', async outcome => {
+      vi.useFakeTimers();
+      const owned = mkdtempSync(join(tmpdir(), 'fair-worker-cleanup-'));
+      const killTask = vi.fn().mockResolvedValue({ ok: true });
+      const killScopeUnit = vi.fn().mockResolvedValue(outcome);
+      try {
+        const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+          exited: new Promise<void>(() => {}), owned }, async () => ({ killTask, killScopeUnit }));
+        const completed = expect(stopped).resolves.toBeUndefined();
+        await vi.advanceTimersByTimeAsync(10_000);
+        await completed;
+        expect(killTask).toHaveBeenCalledWith('worker-task',
+          { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
+        expect(killScopeUnit).toHaveBeenCalledWith('pc-worker.scope', { escalateAfterMs: 500 });
+        expect(existsSync(owned)).toBe(false);
+      } finally { vi.useRealTimers(); rmSync(owned, { recursive: true, force: true }); }
+    });
+
+  it('retains private files when a missing close event has no successful scope proof', async () => {
+    vi.useFakeTimers();
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-cleanup-'));
+    const killTask = vi.fn().mockResolvedValue({ ok: true });
+    const killScopeUnit = vi.fn().mockResolvedValue({ ok: false, error: 'permission_denied' });
+    try {
+      const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: new Promise<void>(() => {}), owned }, async () => ({ killTask, killScopeUnit }));
+      const refused = expect(stopped).rejects.toThrow('failed to drain; isolated files retained');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await refused;
+      expect(killScopeUnit).toHaveBeenCalledOnce();
+      expect(existsSync(owned)).toBe(true);
+    } finally { vi.useRealTimers(); rmSync(owned, { recursive: true, force: true }); }
+  });
+
+  it('cleans a normally closed worker without the missing-close fallback', async () => {
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-cleanup-'));
+    const killTask = vi.fn().mockResolvedValue({ ok: true });
+    const killScopeUnit = vi.fn();
+    try {
+      await stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: Promise.resolve(), owned }, async () => ({ killTask, killScopeUnit }));
+      expect(killScopeUnit).not.toHaveBeenCalled();
+      expect(existsSync(owned)).toBe(false);
+    } finally { rmSync(owned, { recursive: true, force: true }); }
   });
 });
 

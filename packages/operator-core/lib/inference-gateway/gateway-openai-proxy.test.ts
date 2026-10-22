@@ -37,7 +37,7 @@ import {
   InMemoryGatewayRequestOutcomeStore,
   resetGatewayRequestOutcomeStore,
 } from './gateway-request-outcome-store';
-import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
+import { RateLimitGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
 /** Managed Codex default id (the model-less fallback), derived so a deliberate default bump cannot strand these assertions. */
 const DEFAULT_CODEX_ID = CODEX_SAFE_DEFAULT_MODEL.split(':')[0];
@@ -91,8 +91,12 @@ let claudeUpstream: Upstream | undefined;
 let port = 0;
 const tempCodexHomes: string[] = [];
 
-// Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
-beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
+// Codex attempts use the shared backend registry, so each gateway fixture needs
+// fresh pacing/penalty buckets as well as an isolated durable-outcome store.
+beforeEach(() => {
+  resetGovernorRegistry();
+  configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore());
+});
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -103,6 +107,7 @@ afterEach(async () => {
   openaiUpstream = undefined;
   claudeUpstream = undefined;
   await Promise.all(tempCodexHomes.splice(0).map((home) => fs.rm(home, { recursive: true, force: true })));
+  resetGovernorRegistry();
   resetGatewayRequestOutcomeStore();
 });
 
@@ -1272,7 +1277,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       { model: 'gpt-x', input: 'hi' },
       { [ACCOUNT_HEADER]: 'cdx-1', [ACCOUNT_PIN_HEADER]: 'hard' },
     );
-    expect(res.status).toBe(429);
+    expect(res.status, await res.clone().text()).toBe(429);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-1');
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBeNull();
   });

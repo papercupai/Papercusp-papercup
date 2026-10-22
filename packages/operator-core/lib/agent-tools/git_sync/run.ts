@@ -26,6 +26,8 @@ import {
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { clampText, LIMITS, softText } from '../limits';
 import { requestOnlyHost } from '../../background-workers';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
 const execFileP = promisify(execFile);
 
@@ -57,6 +59,146 @@ const GIT_SYNC_COMMITTED_EVENT = 'git-sync:committed';
 const HEAD_SHA_TIMEOUT_MS = 5_000;
 const GIT_STATUS_MAX_BUFFER = 4 * 1024 * 1024;
 const GIT_STATUS_MAX_PATHS = 200;
+const GIT_SHA_PATTERN = /^[a-f0-9]{7,64}$/i;
+
+function gitSha(value: unknown): string | null {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  return GIT_SHA_PATTERN.test(candidate) ? candidate : null;
+}
+
+/**
+ * If dispatch aborts after git-sync:run has returned, expose the completed
+ * attempt's commit identity instead of turning a successful or partial commit
+ * into an ambiguous timeout. Unknown and still-running outcomes fail closed.
+ */
+export function gitSyncRunAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const callId = typeof context?.callId === 'string' ? context.callId.trim() : '';
+  if (context?.toolName !== 'git-sync:run' || !callId) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'git-sync:run receipt is missing its dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+
+  const payload = completedResultPayload(result);
+  if (!payload) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'git-sync:run returned no parseable completion payload after abort',
+      failures: ['missing-result-payload'],
+    };
+  }
+
+  const resultStatus = typeof payload.status === 'string' ? payload.status : '';
+  if (payload.fired === false) {
+    if (
+      (resultStatus === 'preview' && payload.dry_run === true) ||
+      (resultStatus === 'refused' && payload.reason === 'request-only-host')
+    ) {
+      return {
+        status: 'not-recorded',
+        reason: 'git-sync:run completed without firing the mutating action',
+        diagnostics: { resultStatus },
+      };
+    }
+    return {
+      status: 'recovery-incomplete',
+      reason: 'git-sync:run result did not classify its no-fire outcome',
+      failures: ['unclassified-no-fire-result'],
+      diagnostics: { resultStatus },
+    };
+  }
+  if (payload.fired !== true) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'git-sync:run result did not prove whether the mutating action fired',
+      failures: ['missing-fire-status'],
+      diagnostics: { resultStatus },
+    };
+  }
+
+  const outcome = asRecord(payload.outcome);
+  const outcomeStatus = typeof outcome?.status === 'string' ? outcome.status : '';
+  const slug = typeof payload.slug === 'string' ? payload.slug.trim().slice(0, 120) : '';
+  const committedCount =
+    typeof outcome?.committedCount === 'number' && Number.isSafeInteger(outcome.committedCount)
+      ? outcome.committedCount
+      : undefined;
+  const diagnostics = {
+    ...(slug ? { slug } : {}),
+    resultStatus,
+    ...(outcomeStatus ? { outcomeStatus } : {}),
+    ...(committedCount !== undefined ? { committedCount } : {}),
+  };
+
+  let localCommitSha = gitSha(outcome?.localCommitSha);
+  if (!localCommitSha && Array.isArray(outcome?.localCommitShas)) {
+    for (let index = outcome.localCommitShas.length - 1; index >= 0; index -= 1) {
+      localCommitSha = gitSha(outcome.localCommitShas[index]);
+      if (localCommitSha) break;
+    }
+  }
+  if (localCommitSha) {
+    return {
+      status: 'recorded',
+      effectRef: 'git-sync-run:' + callId + ':commit:' + localCommitSha,
+      reason: 'git-sync:run returned the exact local commit created by this attempt',
+      diagnostics: { ...diagnostics, localCommitSha },
+    };
+  }
+
+  if (outcomeStatus === 'synced') {
+    const headSha = gitSha(outcome?.headSha) ?? gitSha(payload.head_after);
+    if (headSha) {
+      return {
+        status: 'recorded',
+        effectRef: 'git-sync-run:' + callId + ':head:' + headSha,
+        reason: 'git-sync:run returned a completed sync result with its resulting HEAD',
+        diagnostics: { ...diagnostics, headSha },
+      };
+    }
+    return {
+      status: 'recovery-incomplete',
+      reason: 'git-sync:run reported synced without a valid resulting HEAD',
+      failures: ['missing-result-head'],
+      diagnostics,
+    };
+  }
+
+  if (outcomeStatus === 'nothing' || outcomeStatus === 'skipped') {
+    return {
+      status: 'not-recorded',
+      reason: 'git-sync:run completed without recording a repository change',
+      diagnostics,
+    };
+  }
+  if (outcomeStatus === 'skipped-locked' && committedCount === 0) {
+    return {
+      status: 'not-recorded',
+      reason: 'git-sync:run skipped locked paths and reported zero local commits',
+      diagnostics,
+    };
+  }
+
+  return {
+    status: 'recovery-incomplete',
+    reason:
+      resultStatus === 'in_progress' || payload.degraded === true
+        ? 'git-sync:run returned before the fire reached a terminal outcome'
+        : 'git-sync:run outcome did not identify whether a repository change was recorded',
+    failures: [
+      resultStatus === 'in_progress' || payload.degraded === true
+        ? 'fire-not-terminal'
+        : 'missing-completed-effect-identity',
+    ],
+    diagnostics,
+  };
+}
 
 async function headSha(repoDir: string): Promise<string | null> {
   try {
@@ -114,6 +256,7 @@ async function previewGitSync(repoDir: string): Promise<GitSyncPreview> {
 
 export default defineTool({
   name: 'git-sync:run',
+  abortCompletionReceipt: gitSyncRunAbortCompletionReceipt,
   profile: 'engineer',
   description:
     "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Mutating fires must execute on the background-worker host; a request-only operator refuses before entering git-sync, while dryRun:true remains a read-only preview everywhere. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",

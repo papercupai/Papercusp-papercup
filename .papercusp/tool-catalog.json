@@ -11242,7 +11242,7 @@
           "POST"
         ]
       },
-      "description": "Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Services report URL/status/latency; `mcpHandshake` independently validates JSON-RPC initialize, so a green operator GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; pass `unitsOnly:true` to skip the full endpoint snapshot when you only need those states. Read unknowns first because nonexistent and stopped units can both appear inactive.",
+      "description": "Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Returns a compact summary by default; detail:\"full\" includes complete supervision counters and diagnostic evidence. Services report URL/status/latency; `mcpHandshake` independently validates JSON-RPC initialize, so a green operator GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; pass `unitsOnly:true` to skip the full endpoint snapshot when you only need those states. Read unknowns first because nonexistent and stopped units can both appear inactive.",
       "capabilities": [
         "intel:read"
       ],
@@ -22679,7 +22679,7 @@
       "guidance": {
         "when": "New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).",
         "notWhen": "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
-        "chaining": "plans:add-item → plans:set-status to flip newly added items off `todo` when work starts."
+        "chaining": "Before writing a code item, run graph:query impact on the symbols it changes; pass symbols or paths as anchors (code links). plans:add-item → plans:set-status when work starts."
       }
     },
     {
@@ -23110,7 +23110,7 @@
           "POST"
         ]
       },
-      "description": "For { fromTestRun }, omit canonicalTestPath for local/Playwright rows (the recorded path is used); provide it only for a cargo test's defining .rs file or a mutation-probe copy-out run whose temporary mirror is unavailable. Before the first bind, supply fixturePaths or fixtureGlobs when calibration is needed, including the test file for inline fixtures. For fixtureCalibrated run evidence, direct relative imports that resolve to first-party test-support files are added to fixturePaths; transitive, external, and non-imported fixture inputs still need an explicit recipe. A missing recipe leaves calibration unknown, and adding it to an already-bound run is refused. details.adequacy.fixtureCalibrated=true requires these paths; fixtureFree=true is not independent proof of fixture absence. Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.",
+      "description": "Bind test, fixture, coverage-census, mutation/counterexample, check, manual or operational proof to an immutable spec revision and work item. For fromTestRun, omit canonicalTestPath for local/Playwright rows; supply it only for a cargo test's defining .rs file or an unavailable mutation-probe mirror's copy-out run. Supply fixturePaths/fixtureGlobs BEFORE the first bind when calibration is needed; include the test file for inline fixtures. fixtureCalibrated run evidence adds direct relative first-party test-support imports; transitive, external and non-imported inputs need an explicit recipe. Missing recipes leave calibration unknown; adding one after binding is refused. details.adequacy.fixtureCalibrated=true requires paths; fixtureFree=true is no independent absence proof. Repository evidence uses measurement for server hashing and bounded source/test remeasurement; opaque evidence supplies caller-attested sourceFingerprint. Exact replays are idempotent; changed fingerprints append history. retract requires row id and reason; stamped history remains but default reads exclude it.",
       "capabilities": [
         "plans:write"
       ],
@@ -24323,7 +24323,7 @@
           "POST"
         ]
       },
-      "description": "Create a plan in the plan STORE; never write a plan file. Pass `content` for the body or omit it for an empty starter. Slug uniqueness is lock-enforced. See /internal/docs/spec/plan-format.",
+      "description": "Create a plan in the plan store; never write a plan file. Optional content; lock-enforced unique slug. Format: /internal/docs/spec/plan-format.",
       "capabilities": [
         "plans:write"
       ],
@@ -24385,8 +24385,8 @@
       ],
       "guidance": {
         "when": "Starting a plan: plans:new { slug, title, content }. Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only consequential product choices, never engineering methodology. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner's approval ask with the ownerWalkthrough, not the requirements. Save edits with plans:set-content. Full verification remains unchanged. Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design \"### Bar-to-work map for this plan\". Fill \"## Existing infrastructure reused\" and \"## Third-party libraries\" (scaffolded; or notApplicable).",
-        "notWhen": "Editing an existing plan: plans:set-content / set-now / add-decision / add-item. Never hand-write docs/plans/*.md.",
-        "chaining": "Shape the product → reuse + libraries → requirement JSON + Bar-to-work map for this plan + P-NNN items → activation audit/spec quality → plans:start."
+        "notWhen": "Existing plan: plans:set-content / set-now / add-decision / add-item.",
+        "chaining": "Shape → reuse + libraries → R-N JSON + bar-to-work map + items → audit/spec quality → plans:start. Before a code item, run graph:query impact on the symbols it changes; pass anchors (code links)."
       }
     },
     {

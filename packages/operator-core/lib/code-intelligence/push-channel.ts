@@ -337,11 +337,13 @@ interface ResumeReadDiagnostics {
   startedAtMs: number;
   phaseMs: Record<string, number>;
   phaseOutcomes: Record<string, string>;
+  label?: string;
 }
 
 async function timeResumeReadPhase<T>(diagnostics: ResumeReadDiagnostics | undefined, phase: string,
   work: () => Promise<T>): Promise<T> {
   const startedAt = Date.now();
+  if (diagnostics) diagnostics.phaseOutcomes[phase] = 'running';
   try {
     const value = await work();
     if (diagnostics) diagnostics.phaseOutcomes[phase] = 'completed';
@@ -498,9 +500,12 @@ export const RESUME_LINKS_TIMEOUT_MS = 2_000;
 export const RESUME_PARK_TTL_MS = 60_000;
 export const RESUME_PARK_MAX = 256;
 export const RESUME_CONTEXT_DIAGNOSTIC_SAMPLE_EVERY = 32;
+const FIRST_TOUCH_CONTEXT_TIMEOUT_MS = 100;
+const FIRST_TOUCH_CONTEXT_DIAGNOSTIC_SLOW_MS = 50;
+const FIRST_TOUCH_CONTEXT_LABEL = 'code-intel-first-touch-context';
 interface ParkedResume { at: number; read: Promise<ResumeContext>; diagnostics: ResumeReadDiagnostics; value?: ResumeContext }
 const resumeParking = pinModuleState('@papercusp/operator-core.code-intel-resume-parking',
-  () => ({ parked: new Map<string, ParkedResume>(), readSequence: 0, settledReads: 0 }));
+  () => ({ parked: new Map<string, ParkedResume>(), readSequence: 0, settledReads: 0, firstTouchSettledReads: 0 }));
 /** Test seam: forget every parked resume read. */
 export function resetParkedResumeContexts(): void { resumeParking.parked.clear(); }
 /** Test/diagnostic seam: how many resume reads are parked right now. */
@@ -508,7 +513,8 @@ export function parkedResumeContextCount(): number { return resumeParking.parked
 
 function logResumeContextDiagnostic(level: 'info' | 'warn', event: string, diagnostics: ResumeReadDiagnostics,
   elapsedMs: number, timeoutMs: number, errorMessage?: string): void {
-  const line = '[code-intel-resume-context] ' + JSON.stringify({ event, readId: diagnostics.readId, elapsedMs, timeoutMs,
+  const line = '[' + (diagnostics.label ?? 'code-intel-resume-context') + '] '
+    + JSON.stringify({ event, readId: diagnostics.readId, elapsedMs, timeoutMs,
     phaseMs: { ...diagnostics.phaseMs }, phaseOutcomes: { ...diagnostics.phaseOutcomes },
     ...(errorMessage ? { errorMessage: errorMessage.slice(0, 200) } : {}) });
   if (level === 'warn') console.warn(line);
@@ -529,6 +535,7 @@ export async function boundedResumeContext(input: PushInput,
     resumeParking.readSequence = (resumeParking.readSequence ?? 0) + 1;
     const diagnostics: ResumeReadDiagnostics = {
       readId: `${process.pid}:${resumeParking.readSequence}`, startedAtMs: 0, phaseMs: {}, phaseOutcomes: {},
+      label: 'code-intel-resume-context',
     };
     const readPromise = Promise.resolve().then(() => {
       diagnostics.startedAtMs = Date.now();
@@ -879,7 +886,7 @@ export interface PushChannelDeps {
   snapshot(input: PushInput): Promise<PushSnapshot | null>;
   enabled(flag: FlagKey): Promise<boolean>;
   legs(): ReadonlyMap<PushLegId, PushLeg>;
-  context?(input: PushInput, paths: string[]): Promise<FirstTouchContext>;
+  context?(input: PushInput, paths: string[], diagnostics?: ResumeReadDiagnostics): Promise<FirstTouchContext>;
   incidentContext?(input: PushInput, paths: string[]): Promise<IncidentAttribution>;
   resumeContext?(input: PushInput, diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext>;
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
@@ -1012,8 +1019,28 @@ const defaults: PushChannelDeps = {
   },
   enabled: flag => getFlag(flag, 'system'),
   legs: () => state.legs,
-  context: async (input, paths) => {
-    const [links, locks] = await Promise.allSettled([readPushSourceLinks(input, paths), liveLockHoldingsStrict()]);
+  context: async (input, paths, diagnostics) => {
+    const [links, locks] = await Promise.allSettled([
+      timeResumeReadPhase(diagnostics, 'context.sourceLinks', () => readPushSourceLinks(input, paths)),
+      timeResumeReadPhase(diagnostics, 'context.liveLockHoldings', () => liveLockHoldingsStrict({
+        onPhase: event => {
+          if (!diagnostics) return;
+          const phase = 'context.locks.' + event.phase;
+          if (event.state === 'start') diagnostics.phaseOutcomes[phase] = 'running';
+          else {
+            diagnostics.phaseOutcomes[phase] = 'completed';
+            if (event.durationMs !== undefined) diagnostics.phaseMs[phase] = event.durationMs;
+          }
+        },
+      })),
+    ]);
+    if (diagnostics?.label === FIRST_TOUCH_CONTEXT_LABEL &&
+      Date.now() - diagnostics.startedAtMs >= FIRST_TOUCH_CONTEXT_TIMEOUT_MS) {
+      resumeParking.firstTouchSettledReads = (resumeParking.firstTouchSettledReads ?? 0) + 1;
+      const hasError = Object.values(diagnostics.phaseOutcomes).includes('error');
+      logResumeContextDiagnostic(hasError ? 'warn' : 'info', 'late-settled', diagnostics,
+        Date.now() - diagnostics.startedAtMs, FIRST_TOUCH_CONTEXT_TIMEOUT_MS);
+    }
     return { ...(links.status === 'fulfilled' ? links.value : { docs: null, specs: null }),
       locks: locks.status === 'fulfilled' ? locks.value : null };
   },
@@ -1031,7 +1058,7 @@ async function readResumeWithLinks(input: PushInput, deps: PushChannelDeps,
   const context = await deps.resumeContext!(input, diagnostics);
   const paths = context.entries.map(entry => entry.path).slice(0, RESUME_FACTS_PER_BATCH + 2);
   if (!deps.context || !paths.length) return context;
-  const links = await timeResumeReadPhase(diagnostics, 'sourceLinks', () => withBoundedTimeout(() => deps.context!(input, paths),
+  const links = await timeResumeReadPhase(diagnostics, 'sourceLinks', () => withBoundedTimeout(() => deps.context!(input, paths, diagnostics),
     { timeoutMs: RESUME_LINKS_TIMEOUT_MS, fallback: undefined, label: 'code-intel-resume-links', warn: false }));
   if (links.reason && diagnostics) diagnostics.phaseOutcomes.sourceLinks = links.reason;
   return links.value ? { ...context, links: links.value } : context;
@@ -1066,10 +1093,32 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     for (const [id, leg] of [...deps.legs()].sort(([a], [b]) => Number(b === 'interface') - Number(a === 'interface'))) {
       if (signal.aborted || !await deps.enabled(PUSH_LEG_FLAGS[id])) continue;
       try {
-        if (id === 'first-touch' && deps.context && firstTouchPaths(input).length) {
-          const context = await withBoundedTimeout(() => deps.context!(input, firstTouchPaths(input)),
-            { timeoutMs: 100, fallback: undefined, label: 'code-intel-first-touch-context' });
+        if (id === 'first-touch' && deps.context && touchedPaths.length) {
+          const diagnostics: ResumeReadDiagnostics = {
+            readId: randomUUID(), startedAtMs: Date.now(), phaseMs: {},
+            phaseOutcomes: { outerContext: 'running' }, label: FIRST_TOUCH_CONTEXT_LABEL,
+          };
+          const context = await withBoundedTimeout(() => deps.context!(input, touchedPaths, diagnostics),
+            { timeoutMs: FIRST_TOUCH_CONTEXT_TIMEOUT_MS, fallback: undefined, label: FIRST_TOUCH_CONTEXT_LABEL, warn: false });
+          diagnostics.phaseOutcomes.outerContext = context.reason ?? 'completed';
+          diagnostics.phaseMs.outerContext = context.elapsedMs;
+          if (context.reason === 'timeout') diagnostics.phaseOutcomes.underlyingCancellation = 'not-supported';
           input.firstTouchContext = context.value;
+          const hasPhaseError = Object.values(diagnostics.phaseOutcomes).includes('error');
+          if (context.reason) {
+            const event = context.reason === 'timeout' ? 'wait-timeout'
+              : context.reason === 'error' ? 'read-error' : 'read-aborted';
+            logResumeContextDiagnostic('warn', event, diagnostics, context.elapsedMs,
+              FIRST_TOUCH_CONTEXT_TIMEOUT_MS, context.errorMessage);
+          } else {
+            const settledReads = resumeParking.firstTouchSettledReads = (resumeParking.firstTouchSettledReads ?? 0) + 1;
+            if (context.elapsedMs >= FIRST_TOUCH_CONTEXT_DIAGNOSTIC_SLOW_MS || hasPhaseError ||
+              settledReads % RESUME_CONTEXT_DIAGNOSTIC_SAMPLE_EVERY === 0) {
+              logResumeContextDiagnostic(hasPhaseError ? 'warn' : 'info',
+                hasPhaseError ? 'read-settled-with-error' : 'read-settled', diagnostics, context.elapsedMs,
+                FIRST_TOUCH_CONTEXT_TIMEOUT_MS);
+            }
+          }
         }
         if (id === 'notes') {
           if (!notesContext) continue;

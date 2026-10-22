@@ -413,13 +413,13 @@ export function findSimilarPlans(
 export default defineTool({
   name: 'plans:new',
   description:
-    'Create a plan in the plan STORE; never write a plan file. Pass `content` for the body or omit it for an empty starter. Slug uniqueness is lock-enforced. See /internal/docs/spec/plan-format.',
+    'Create a plan in the plan store; never write a plan file. Optional content; lock-enforced unique slug. Format: /internal/docs/spec/plan-format.',
   guidance: {
     when: 'Starting a plan: plans:new { slug, title, content }. ' + PRODUCT_SHAPING_GUIDANCE + ' Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design "### Bar-to-work map for this plan". Fill "## Existing infrastructure reused" and "## Third-party libraries" (scaffolded; or notApplicable).',
     notWhen:
-      'Editing an existing plan: plans:set-content / set-now / add-decision / add-item. Never hand-write docs/plans/*.md.',
+      'Existing plan: plans:set-content / set-now / add-decision / add-item.',
     chaining:
-      'Shape the product → reuse + libraries → requirement JSON + Bar-to-work map for this plan + P-NNN items → activation audit/spec quality → plans:start.',
+      'Shape → reuse + libraries → R-N JSON + bar-to-work map + items → audit/spec quality → plans:start. Before a code item, run graph:query impact on the symbols it changes; pass anchors (code links).',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',

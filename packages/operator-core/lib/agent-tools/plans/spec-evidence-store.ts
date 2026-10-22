@@ -1552,26 +1552,39 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     const revision = revisions[0];
     if (!revision) return { status: 'spec_revision_not_found', specId: identity.spec_id, specRevision };
 
-    // A named plan clause can only be evidenced by the work-item promoted from
-    // that clause's plan item. Resolve provenance through the shared precedence
-    // rule (legacy columns, then the payload stamp); ad-hoc evidence has no plan
-    // item to enforce and retains its existing scope semantics.
+    // Named clauses require either their promoted work-item provenance or an
+    // existing explicit behavior-contract edge. The resolver follows that same
+    // clause identity to its current revision, including for standalone items;
+    // requiring promotion here made their enforced obligations impossible to prove.
+    // Historical edges remain authority for that identity (their immutable revision
+    // and fingerprint are verified by the edge table's composite foreign key).
+    // Check BEFORE the insert below: a binding must never authorize its own edge.
     if (planSlug !== ADHOC_WORK_ITEM_SPEC_SCOPE) {
       const provenance = planItemProvenanceFromRow(workItems[0]);
       if (provenance.planSlug !== planSlug || !provenance.itemIds.includes(revision.plan_item_id)) {
-        return {
-          status: 'work_item_plan_item_mismatch',
-          workItemId: input.workItemId,
-          planSlug,
-          specId: identity.spec_id,
-          planItemId: revision.plan_item_id,
-          actualPlanSlug: provenance.planSlug,
-          actualPlanItemIds: provenance.itemIds,
-          message:
-            `work item ${input.workItemId} is not promoted from ${planSlug} plan item ${revision.plan_item_id}; ` +
-            `its provenance resolves to ${provenance.planSlug ?? 'no plan'} ` +
-            `[${provenance.itemIds.join(', ') || 'no plan items'}].`,
-        };
+        const [contractEdge] = await tx<{ present: number }[]>`
+          SELECT 1 AS present FROM harness_shared.work_item_spec_revision_edges
+           WHERE workspace_id = ${scope.workspaceId}
+             AND harness_slug = ${scope.harnessSlug}
+             AND work_item_id = ${input.workItemId}
+             AND plan_slug = ${planSlug}
+             AND spec_id = ${identity.spec_id}
+           LIMIT 1`;
+        if (!contractEdge) {
+          return {
+            status: 'work_item_plan_item_mismatch',
+            workItemId: input.workItemId,
+            planSlug,
+            specId: identity.spec_id,
+            planItemId: revision.plan_item_id,
+            actualPlanSlug: provenance.planSlug,
+            actualPlanItemIds: provenance.itemIds,
+            message:
+              `work item ${input.workItemId} is not promoted from ${planSlug} plan item ${revision.plan_item_id}; ` +
+              `its provenance resolves to ${provenance.planSlug ?? 'no plan'} ` +
+              `[${provenance.itemIds.join(', ') || 'no plan items'}] and has no existing behavior-contract edge to this clause.`,
+          };
+        }
       }
     }
 

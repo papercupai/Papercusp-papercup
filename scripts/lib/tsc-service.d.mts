@@ -246,15 +246,19 @@ export function refreshProjectRootFiles({ api, snapshot, projects }: {
  *   programFiles: readonly string[],
  *   readText: (absFile: string) => string | null,
  *   configFile?: string,
+ *   dependencyCache?: Map<string, Map<string, Set<string>>>,
+ *   maxFiles?: number,
  * }} opts
  * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
  */
-export function checkedSetFor({ root, named, programFiles, readText, configFile }: {
+export function checkedSetFor({ root, named, programFiles, readText, configFile, dependencyCache, maxFiles }: {
     root: string;
     named: Iterable<string>;
     programFiles: readonly string[];
     readText: (absFile: string) => string | null;
     configFile?: string;
+    dependencyCache?: Map<string, Map<string, Set<string>>>;
+    maxFiles?: number;
 }): {
     files: string[];
     named: number;
@@ -290,15 +294,18 @@ export function namedSetFor({ root, named, programFiles }: {
  * Companion declarations and their executable source share a module identity.
  *
  * @param {{ root: string, named: Iterable<string>, candidates: Iterable<string>,
- *   readText?: (absFile: string) => string | null, configFile?: string }} opts
+ *   readText?: (absFile: string) => string | null, configFile?: string,
+ *   dependencyCache?: Map<string, Map<string, Set<string>>>, stopAfter?: number }} opts
  * @returns {Set<string>} Absolute candidate paths depending on a named module.
  */
-export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile }: {
+export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile, dependencyCache, stopAfter }: {
     root: string;
     named: Iterable<string>;
     candidates: Iterable<string>;
     readText?: (absFile: string) => string | null;
     configFile?: string;
+    dependencyCache?: Map<string, Map<string, Set<string>>>;
+    stopAfter?: number;
 }): Set<string>;
 /**
  * A dependency is check scope, not diagnostic causality. Attribute only a diagnostic whose

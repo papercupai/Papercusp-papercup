@@ -1084,6 +1084,7 @@ function deps(launch: ReturnType<typeof vi.fn>) {
     readPlan: vi.fn(async () => plan),
     getRubric: vi.fn(async () => rubric),
     getAudit: vi.fn(async () => audit),
+    readEffectiveAudits: vi.fn(async () => [] as never[]),
     listWork: vi.fn(async () => workItems),
     launch: launch as never,
     listTasks: vi.fn(async () => []),
@@ -1103,6 +1104,34 @@ function deps(launch: ReturnType<typeof vi.fn>) {
 }
 
 describe('launchAcceptanceGrader', () => {
+  it.each([launchAcceptanceGrader, resolveAcceptanceGrader])(
+    'uses the effective non-code audit before refusing an unfinished certification tail', async recruit => {
+      const launch = vi.fn();
+      const d = deps(launch);
+      d.readPlan.mockResolvedValue({ row: { planSlug: 'ship-the-thing', harnessSlug: 'papercusp',
+        verificationProfile: 'coding', items: [{ id: 'P-004', status: 'wip', phase: 'Certified shipment',
+          text: 'Repair acceptance evidence and obtain certification' }] } } as never);
+      d.readEffectiveAudits.mockResolvedValue([{ entry: { itemId: 'P-004', verdict: 'not-code' } }] as never[]);
+      d.getRubric.mockResolvedValue(null as never);
+      const result = await recruit('ship-the-thing', {} as never, d);
+      expect(result.error).toContain('acceptance rubric missing');
+      expect(result.error).not.toContain('build_items_open');
+      expect(d.getRubric).toHaveBeenCalled();
+      expect(launch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([launchAcceptanceGrader, resolveAcceptanceGrader])(
+    'keeps implementation blocked when the effective audit cannot be read', async recruit => {
+      const d = deps(vi.fn());
+      d.readPlan.mockResolvedValue(planWithOpenBuildItems);
+      d.readEffectiveAudits.mockRejectedValue(new Error('audit unavailable'));
+      expect(await recruit('ship-the-thing', {} as never, d))
+        .toMatchObject({ state: 'failed', openBuildItems: ['P-001'] });
+      expect(d.getRubric).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([launchAcceptanceGrader, resolveAcceptanceGrader])('refuses recruitment before reading the rubric or launching while build work is open', async recruit => {
     const launch = vi.fn();
     const d = deps(launch);

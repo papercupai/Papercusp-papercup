@@ -391,6 +391,48 @@ export function createGovernedProcessDemandSampler(
   };
 }
 
+/** Keep passive shutdown telemetry from changing a completed test verdict. */
+function withoutAcknowledgedWorkerShutdown(output) {
+  const requested = new Set();
+  const acknowledged = new Set();
+  const baseKeys = ['pid', 'event', 'childPid', 'elapsedMs'];
+  return output.split('\n').filter(line => {
+    if (!line.startsWith('TEST_FILE_STARTUP_TRACE ')) return true;
+    let row;
+    try { row = JSON.parse(line.slice('TEST_FILE_STARTUP_TRACE '.length)); }
+    catch { return true; }
+    if (!row || typeof row !== 'object' || Array.isArray(row)
+        || !Number.isInteger(row.pid) || row.pid <= 0
+        || !Number.isInteger(row.childPid) || row.childPid <= 0
+        || !Number.isFinite(row.elapsedMs) || row.elapsedMs < 0) return true;
+    const key = `${row.pid}:${row.childPid}`;
+    const hasOnly = (...fields) => Object.keys(row).every(field => [...baseKeys, ...fields].includes(field));
+    if (row.event === 'stop-sent' && hasOnly()) {
+      requested.add(key);
+      acknowledged.delete(key);
+    } else if (row.event === 'stopped-received' && hasOnly('stopMs', 'error')) {
+      if (requested.has(key) && row.error === false && Number.isFinite(row.stopMs) && row.stopMs >= 0) {
+        acknowledged.add(key);
+      } else {
+        acknowledged.delete(key);
+      }
+    }
+    // Only a matching successful stop acknowledgement explains these signals.
+    // Unknown fields/malformed records remain subject to the fatal-output check;
+    // an unexpected worker death must not become trustworthy just by being traced.
+    if (!acknowledged.has(key) || !['SIGTERM', 'SIGKILL'].includes(row.signal)) return true;
+    if (row.event === 'worker-signal' && hasOnly('signal', 'sent') && typeof row.sent === 'boolean') return false;
+    if (row.event === 'worker-exit' && hasOnly('code', 'signal', 'started')
+        && row.code === null && typeof row.started === 'boolean') return false;
+    if (row.event === 'worker-close' && hasOnly('code', 'signal') && row.code === null) {
+      requested.delete(key);
+      acknowledged.delete(key);
+      return false;
+    }
+    return true;
+  }).join('\n');
+}
+
 /** Classify whether a child produced a trustworthy test verdict. */
 export function classifyGovernedTestProcessOutcome(outcome = {}) {
   const output = `${outcome.stdout ?? ''}\n${outcome.stderr ?? ''}\n${outcome.output ?? ''}`;
@@ -408,7 +450,7 @@ export function classifyGovernedTestProcessOutcome(outcome = {}) {
   if (outcome.error && (code == null || code < 0 || output.trim() === '')) {
     return { kind: 'cancel', reason: `test process failed to start: ${outcome.error.message ?? outcome.error}` };
   }
-  if (/TEST_FILE_WATCHDOG|TEST_FILE_ROUTE_ERROR|worker\s+(?:exited|crash)|TasksMax|SIG(?:TERM|KILL)/i.test(output)) {
+  if (/TEST_FILE_WATCHDOG|TEST_FILE_ROUTE_ERROR|worker\s+(?:exited|crash)|TasksMax|SIG(?:TERM|KILL)/i.test(withoutAcknowledgedWorkerShutdown(output))) {
     return { kind: 'cancel', reason: 'test worker/route exited without a trustworthy verdict' };
   }
   if (code == null || signal) {

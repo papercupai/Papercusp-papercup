@@ -6052,17 +6052,58 @@ async function excludeDependencyGenerationRootRecord(
  * a durable-step re-run or a reaped-and-requeued fire cannot double-commit.
  */
 async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts): Promise<CommitRepoResult> {
-  // WI-10006725: scratch files the catch-all creates (its private index, the shared-index
-  // refresh pathspec) are removed on EVERY exit path, a thrown runner included.
-  const scratch: string[] = [];
-  try {
-    return await commitOneRepoWithScratch(runGit, repoPath, o, scratch);
-  } finally {
-    for (const file of scratch) {
-      await rm(file, { force: true }).catch(() => {});
-      await rm(`${file}.lock`, { force: true }).catch(() => {});
+  const runPass = async (): Promise<CommitRepoResult> => {
+    // WI-10006725: scratch files the catch-all creates (its private index, the shared-index
+    // refresh pathspec) are removed on EVERY exit path, a thrown runner included.
+    const scratch: string[] = [];
+    try {
+      return await commitOneRepoWithScratch(runGit, repoPath, o, scratch);
+    } finally {
+      for (const file of scratch) {
+        await rm(file, { force: true }).catch(() => {});
+        await rm(`${file}.lock`, { force: true }).catch(() => {});
+      }
     }
+  };
+
+  const first = await runPass();
+  const heldSkippedPaths = (first.skippedPaths ?? []).filter(
+    (entry): entry is Extract<GitSyncSkippedPath, { owner: string }> => 'owner' in entry && 'intent' in entry,
+  );
+  if (!o.refreshLiveLockHoldings || heldSkippedPaths.length === 0) return first;
+
+  // The pre-stage census becomes `effectiveExcludePaths` for the whole pass. A
+  // hold released while the later importer/manifest/index preparation runs stays
+  // excluded from every add; the post-stage guard cannot recover it because it
+  // only examines paths already in an index. Re-read after the pass and, when a
+  // skipped live hold has cleared, run the whole bounded repo pass once more so
+  // dependency and content guards are recomputed with the released path present.
+  let currentHoldings: GitSyncLockHolding[];
+  try {
+    currentHoldings = await o.refreshLiveLockHoldings();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    o.log(`[git-sync] ${o.harnessSlug}/${o.scope}: post-pass live-lock release check failed; no retry — ${detail}`);
+    return first;
   }
+  const releasedPaths = heldSkippedPaths.filter(
+    (skipped) => !currentHoldings.some((holding) => gitSyncPathsOverlap(skipped.path, holding.path.trim())),
+  );
+  if (releasedPaths.length === 0) return first;
+
+  o.log(
+    `[git-sync] ${o.harnessSlug}/${o.scope}: ${releasedPaths.length} previously held path(s) released during repo preparation ` +
+      `(${releasedPaths.slice(0, 5).map((entry) => entry.path).join(', ')}); retrying the repo commit once with guards recomputed`,
+  );
+  const retry = await runPass();
+  return {
+    ...retry,
+    committedLocal: first.committedLocal || retry.committedLocal,
+    dirtyPathCount: Math.max(first.dirtyPathCount, retry.dirtyPathCount),
+    committedCount: first.committedCount + retry.committedCount,
+    ...(first.error && retry.error ? { error: `${first.error}; retry: ${retry.error}` } :
+      first.error ? { error: first.error } : retry.error ? { error: retry.error } : {}),
+  };
 }
 
 async function commitOneRepoWithScratch(

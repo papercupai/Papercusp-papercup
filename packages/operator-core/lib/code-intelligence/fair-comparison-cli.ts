@@ -443,6 +443,42 @@ export function createFairWorkerChannel(io: FairWorkerChannelIo) {
   return { receive, failAll, rpc, query };
 }
 
+/** Prove the payload scope is gone before removing a repetition's private files. */
+export async function stopFairWorker(
+  { taskId, scopeUnit, exited, owned }: {
+    taskId: string | null; scopeUnit: string | null; exited: Promise<void> | null; owned: string;
+  },
+  loadControls: () => Promise<Pick<typeof import('../task-manager/control'), 'killTask' | 'killScopeUnit'>> =
+    () => import('../task-manager/control'),
+): Promise<void> {
+  const { killScopeUnit, killTask } = await loadControls();
+  if (taskId) {
+    const outcome = await killTask(taskId, { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
+    if (!outcome.ok && outcome.error !== 'already_gone') {
+      // A terminal ledger row can outlive its now-empty kernel scope.
+      const scope = outcome.error === 'not_live' && scopeUnit
+        ? await killScopeUnit(scopeUnit, { escalateAfterMs: 500 }) : null;
+      if (!scope || (!scope.ok && scope.error !== 'already_gone'))
+        throw new Error(`fresh worker task cleanup refused (${outcome.error}); isolated files retained`);
+    }
+  }
+  if (exited) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const drained = await Promise.race([exited.then(() => true),
+        new Promise<boolean>(done => { timer = setTimeout(() => done(false), 10_000); })]);
+      if (!drained) {
+        // The transient systemd-run client can withhold its close event after
+        // the registered payload scope has emptied. Verify that scope directly.
+        const scope = scopeUnit ? await killScopeUnit(scopeUnit, { escalateAfterMs: 500 }) : null;
+        if (!scope || (!scope.ok && scope.error !== 'already_gone'))
+          throw new Error('fresh worker task failed to drain; isolated files retained');
+      }
+    } finally { clearTimeout(timer); }
+  }
+  await rm(owned, { recursive: true, force: true });
+}
+
 /** One managed worker per repetition; reuse the existing arm adapters and task metrics. */
 export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, frozenPath: string): Promise<FairArmFactory> {
   await verifyFairWorkerSource();
@@ -462,38 +498,7 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
     let taskId: string | null = null;
     let cgroupPath: string | null = null;
     let scopeUnit: string | null = null;
-    const stop = async () => {
-      if (taskId) {
-        const { killScopeUnit, killTask } = await import('../task-manager/control');
-        const outcome = await killTask(taskId, { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
-        if (!outcome.ok && outcome.error !== 'already_gone') {
-          // A terminal confined row may be refused as not_live even after its
-          // cgroup has emptied. Confirm that kernel state instead of reading a
-          // refusal as either unconditional success or a surviving process.
-          const scope = outcome.error === 'not_live' && scopeUnit
-            ? await killScopeUnit(scopeUnit, { escalateAfterMs: 500 }) : null;
-          if (!scope || (!scope.ok && scope.error !== 'already_gone'))
-            throw new Error(`fresh worker task cleanup refused (${outcome.error}); isolated files retained`);
-        }
-      }
-      if (exited) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          const drained = await Promise.race([exited.then(() => true),
-            new Promise<boolean>(done => { timer = setTimeout(() => done(false), 10_000); })]);
-          if (!drained) {
-            // managedSpawn's child is the transient systemd-run client. Under load it
-            // can miss/withhold its `close` event even after killTask has reaped the
-            // confined payload. Prove the authoritative scope is gone before deleting
-            // the worker's private files instead of discarding an otherwise complete run.
-            const scope = scopeUnit ? await killScopeUnit(scopeUnit, { escalateAfterMs: 500 }) : null;
-            if (!scope || (!scope.ok && scope.error !== 'already_gone'))
-              throw new Error('fresh worker task failed to drain; isolated files retained');
-          }
-        } finally { clearTimeout(timer); }
-      }
-      await rm(owned, { recursive: true, force: true });
-    };
+    const stop = () => stopFairWorker({ taskId, scopeUnit, exited, owned });
     try {
       // Copy-on-write rather than hardlinks: freshness controls must never mutate
       // the frozen donor when they replace or delete original source bytes.

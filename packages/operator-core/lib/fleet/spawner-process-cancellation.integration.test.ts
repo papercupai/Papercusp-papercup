@@ -645,7 +645,9 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     expect(alive(descendantPid)).toBe(false);
     expect(descendantAliveAtSettlement).toBe(false);
     expect(h.finished).toHaveBeenCalledOnce();
-  }, 5000);
+    // The child has its own 5s startup deadline above. The test also owns
+    // cancellation, group-exit confirmation and settlement after startup.
+  }, 10_000);
 
   it('escalates an ignored abort and reports completion only after the child is dead', async () => {
     const controller = new AbortController();

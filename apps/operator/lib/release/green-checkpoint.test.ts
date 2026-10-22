@@ -17467,11 +17467,8 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
   });
 });
 
-// green-main-cycle-time-2026-10-08 P-021 / D-023: a frozen queue's life is bounded. A queue that
-// made no new failing-count low in 4 rounds, or is older than 24h, is retired (once per install
-// per 24h) and the same pass re-cuts at the newest known-good commit or the staging tip, with the
-// queue's admitted fixes carried and recorded.
-describe("P-021: bounded frozen-queue life — retire, re-cut and carry", () => {
+// D-090/P-041: no automatic candidate retirement, including historical bounded-life hooks.
+describe("P-041: automatic candidate retirement is forbidden", () => {
   const HOUR = 60 * 60 * 1_000;
 
   async function frozenLineage() {
@@ -17544,127 +17541,23 @@ describe("P-021: bounded frozen-queue life — retire, re-cut and carry", () => 
     return { deps, retired, escalations };
   }
 
-  it("retires a non-improving queue and re-cuts at the staging tip carrying the admitted fix", async () => {
+  it.each([
+    { failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR },
+    { failingCounts: [10, 8, 6], ageMs: 25 * HOUR },
+    { failingCounts: [1, 100, 1000, 10000, 100000], ageMs: 365 * 24 * HOUR },
+  ])('retains the selected candidate with age $ageMs and changed failure counts', async (basis) => {
     const lineage = await frozenLineage();
-    // 3 -> 5 -> 8 -> 12 -> 28: four rounds since the low of 3 (the ad82b273 shape).
-    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
-    const { deps, retired, escalations } = boundedLifeDeps(queue, null);
-
-    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    expect(retired).toHaveLength(1);
-    expect(retired[0]).toMatchObject({
-      trigger: "non-improving",
-      roundsSinceLow: 4,
-      lowestFailingCount: 3,
-      latestFailingCount: 28,
-      candidate: lineage.frozen,
-      recutTarget: lineage.tip,
-      recutTargetSource: "staging-tip",
-      carriedPaths: [{ path: "lib/fix.ts", status: "contained" }],
-      readmitPaths: [],
-    });
-    // The re-cut: this same pass judged the tip, not the frozen candidate.
-    expect(result.candidate).toBe(lineage.tip);
-    expect(result.green).toBe(true);
-    expect(escalations.some((line) => line.includes("retired by the bounded-life rule (non-improving)"))).toBe(true);
-  });
-
-  it("retires an over-24h queue that is still improving, re-cutting at a known-good point and listing the fix to re-admit", async () => {
-    const lineage = await frozenLineage();
-    const queue = queueWith({ ...lineage, failingCounts: [10, 8, 6], ageMs: 25 * HOUR });
+    const queue = queueWith({ ...lineage, ...basis });
     const { deps, retired } = boundedLifeDeps(queue, null);
     deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
-
+    const write = vi.fn(async (_queue: FrozenCandidateRepairQueue | null) => undefined);
+    deps.writeFrozenRepairQueue = write;
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    expect(retired).toHaveLength(1);
-    expect(retired[0]).toMatchObject({
-      trigger: "age",
-      roundsSinceLow: 0,
-      recutTarget: lineage.knownGood,
-      recutTargetSource: "known-good",
-      // The known-good point predates the fix, so the carry names it for re-admission.
-      carriedPaths: [{ path: "lib/fix.ts", status: "absent-at-target" }],
-      readmitPaths: ["lib/fix.ts"],
-    });
-    expect(result.candidate).toBe(lineage.knownGood);
-  });
-
-  it("never retires while the failing count still makes new lows inside 24h", async () => {
-    const lineage = await frozenLineage();
-    const queue = queueWith({ ...lineage, failingCounts: [10, 8, 9, 9, 6], ageMs: 23 * HOUR });
-    const { deps, retired } = boundedLifeDeps(queue, null);
-
-    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
     expect(deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
-    expect(retired).toHaveLength(0);
+    expect(retired).toEqual([]);
+    expect(write.mock.calls.some(([next]) => next === null)).toBe(false);
+    expect(result.candidate).toBe(lineage.frozen);
     expect(result.candidate).not.toBe(lineage.tip);
-  });
-
-  it("keeps the frozen queue when the locked retire refuses (live fixer) — no re-cut", async () => {
-    const lineage = await frozenLineage();
-    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
-    const { deps } = boundedLifeDeps(queue, null);
-    deps.retireFrozenRepairQueueForBoundedLife = vi.fn(async () => ({ retired: false, refusal: "live-fixer" }));
-
-    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    expect(deps.retireFrozenRepairQueueForBoundedLife).toHaveBeenCalledTimes(1);
-    expect(result.candidate).not.toBe(lineage.tip);
-  });
-
-  it("escalates instead of retiring a second time inside the 24h window, once per candidate", async () => {
-    const lineage = await frozenLineage();
-    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
-    const lastRetireAtMs = Date.now() - 2 * HOUR;
-    const lastRetire = {
-      schemaVersion: 1,
-      trigger: "age",
-      retiredAtMs: lastRetireAtMs,
-      candidate: "0".repeat(40),
-      repairHead: "0".repeat(40),
-      openedAtMs: lastRetireAtMs - 30 * HOUR,
-      ageMs: 30 * HOUR,
-      roundsRecorded: 2,
-      roundsSinceLow: 0,
-      lowestFailingCount: 1,
-      latestFailingCount: 1,
-      recutTarget: lineage.frozen,
-      recutTargetSource: "staging-tip",
-      carriedPaths: [],
-      readmitPaths: [],
-      carryTruncated: false,
-    } satisfies FrozenRepairBoundedLifeRecord;
-    const state: FrozenRepairBoundedLifeState = {
-      schemaVersion: 1,
-      lastRetire,
-      lastRateLimitedEscalation: null,
-      history: [lastRetire],
-    };
-    const first = boundedLifeDeps(queue, state);
-
-    await runGreenCheckpoint(cfg(), first.deps, { noPush: true });
-
-    expect(first.deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
-    expect(first.escalations.filter((line) => line.includes("bounded-life non-improving bound"))).toHaveLength(1);
-    expect(first.deps.recordFrozenRepairBoundedLifeEscalation).toHaveBeenCalledWith(
-      expect.objectContaining({ candidate: lineage.frozen, lastRetireAtMs }),
-    );
-
-    const second = boundedLifeDeps(queue, {
-      ...state,
-      lastRateLimitedEscalation: {
-        candidate: lineage.frozen,
-        trigger: "non-improving",
-        atMs: Date.now() - 1_000,
-        lastRetireAtMs,
-      },
-    });
-    await runGreenCheckpoint(cfg(), second.deps, { noPush: true });
-    expect(second.deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
-    expect(second.escalations.filter((line) => line.includes("bounded-life"))).toHaveLength(0);
   });
 });
 

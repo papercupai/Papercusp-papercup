@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "git-sync-phantom-path-reconciliation-v1",
+  "workItem": "EI-26193695444835160",
+  "canonicalFixWorkItem": "WI-6554700010018197",
+  "recordedAt": "2026-10-22T13:53:48.236583+00:00",
+  "scope": "Exact phantom-path defect reconciliation and two focused maintained real-Git regression cases. No production source edit, current live gate or shipment verification.",
+  "rootCause": "dirtyFiles observed an AD entry in the shared index for the vanished .live-inputs path. The HEAD-seeded private index and working tree both lacked it, so the residual explicit git add pathspec could not match. Ignoring that path does not clear the shared-index-only entry.",
+  "durableFix": "Existing WI-6554700010018197 adds dropVanishedPaths before every attributed/residual group add: omit only paths absent from both working tree and private index, retain real tracked deletions, and isolate unrelated group failures.",
+  "recurrenceGuard": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts > commitAttributedGroups failure isolation > a path staged only in the shared index (vanished from the tree) no longer voids every agent commit",
+  "historicalEvidence": {
+    "original": "2026-10-17T02:55:55.695Z exact pathspec failure with recovered catch-all",
+    "peerCommentRefs": [
+      1191158,
+      1191257
+    ],
+    "ignoreRuleCommit": "688eeab44276bd21b92a1bd393fdcfc8f373d551",
+    "fixRegressionCommit": "8ae2039e12b83ac83e69c442af027835fca66e3a",
+    "interpretation": "The ignore rule predates reported recurrences; the later private-index phantom-path filter addresses the originating layer."
+  },
+  "verification": {
+    "command": "npm run test:file -- packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts '--testNamePattern=commitAttributedGroups failure isolation.*(a path staged only in the shared index|keeps a real deletion)'",
+    "terminalExitCode": 0,
+    "testRunId": 21766804,
+    "recordedSha": "16b035a0006673bbd46f2c0d0c46f6454cc0035b",
+    "passed": 2,
+    "failed": 0,
+    "skipped": 21,
+    "passedCaseTitles": [
+      "commitAttributedGroups failure isolation (WI-6554700010018197, real git) > a path staged only in the shared index (vanished from the tree) no longer voids every agent commit",
+      "commitAttributedGroups failure isolation (WI-6554700010018197, real git) > keeps a real deletion (gone from the tree, present in HEAD) in its group"
+    ],
+    "unhandledErrors": 0,
+    "childSubstituted": 0,
+    "log": "/tmp/ei261936-vanished-regression-20261022.log",
+    "logSha256": "08ba085d07ea2103bf8fb5b729e2674914de8ae013075050f24fab94869a6a44",
+    "capture": "/tmp/ei261936-vanished-regression-20261022-source.json",
+    "captureSha256": "6fb0ba4fd70099e4f82069070e72aac02ef84bfe8d82b5186a398a258c6f5afe",
+    "sources": [
+      {
+        "path": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+        "sha256": "710e190268957d0d8c2077938091cb002f5c321baeec5bc636da20eee4810962",
+        "basis": "vite-pre-transform",
+        "currentSha256": "710e190268957d0d8c2077938091cb002f5c321baeec5bc636da20eee4810962",
+        "readbackSha256": "710e190268957d0d8c2077938091cb002f5c321baeec5bc636da20eee4810962"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+        "sha256": "243447824986019695cf3dbf9dd94dcdb1dadb36c66d4c8a0e43a83e878d7dcc",
+        "basis": "vite-pre-transform",
+        "currentSha256": "243447824986019695cf3dbf9dd94dcdb1dadb36c66d4c8a0e43a83e878d7dcc",
+        "readbackSha256": "586dccf153b37dfae084330683afa0e1143dd634a8f625cb95fa6ebe8754c6a2"
+      }
+    ],
+    "sourceRegions": {
+      "vanishedFilter": {
+        "capturedSha256": "4b1e1f0c5e43b04a1f5f924170b522621ccef719e6ba7c7f1be872caa5ccc951",
+        "currentSha256": "4b1e1f0c5e43b04a1f5f924170b522621ccef719e6ba7c7f1be872caa5ccc951",
+        "unchanged": true
+      },
+      "groupStaging": {
+        "capturedSha256": "091de31eac1e0e4a33976b3f094c92f5c715d65fee021efcc86441150539bece",
+        "currentSha256": "091de31eac1e0e4a33976b3f094c92f5c715d65fee021efcc86441150539bece",
+        "unchanged": true
+      }
+    }
+  },
+  "limits": [
+    "Two selected real-Git cases pass; 21 other cases were deliberately filtered. No full-suite verdict.",
+    "The named test source matches its captured Vite original. The full production module changed outside this fix during the run; the exact phantom filter and staging integration regions match the captured original.",
+    "One main-process committed-source substitution was reported for checkpoint-qualification-transaction.ts; no test-child substitution was reported. No complete execution-graph claim.",
+    "No live git-sync recovery, native-plan acceptance, mirror authorization, gate or shipment claim. The original fallback recovery is preserved as historical evidence."
+  ],
+  "disposition": "Confirmed duplicate of already-completed fix WI-6554700010018197; no new product implementation required."
+}

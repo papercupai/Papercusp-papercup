@@ -1653,7 +1653,7 @@ export function cancelQualificationTransaction(
 }
 
 export type RepairQueueReconciliation = {
-  status: 'none' | 'preserved' | 'retired' | 'blocked';
+  status: 'none' | 'preserved' | 'blocked';
   reason:
     | 'no-queue'
     | 'queue-malformed'
@@ -1680,16 +1680,9 @@ export type StoredQualificationCancellation =
   | { status: 'stop-failed'; transaction: CheckpointQualificationTransaction; error: string };
 
 /**
- * A terminal or provably abandoned logical attempt may leave its frozen queue behind. Retire it
- * only for an explicitly distinct successor and only while the queue is still the exact,
- * unstarted row created by that predecessor. Any legacy, mismatched, dispatched, repaired,
- * or otherwise advanced queue stays authoritative and blocks the successor fail-closed.
- *
- * A queue with a NULL `qualificationAttemptId` (schema v3 permits this — see WI-41667) is
- * judged the same way: null means the origin is unknown, not that it belongs to someone
- * else, so it is never fail-closed purely for that reason. It is retired when it is
- * otherwise exact/safe/unstarted, and blocked with the distinguishing `queue-origin-unknown`
- * reason only when the phase/attempts/fixer checks say it genuinely isn't idle (WI-2142947).
+ * A successor inherits the predecessor's exact frozen queue. An idle unstarted
+ * queue is still the selected candidate, never disposable runner bookkeeping.
+ * Unrelated, malformed or concurrently owned queues remain blocked fail-closed.
  */
 export function assessTerminalRepairQueueReconciliation(
   current: CheckpointQualificationTransaction,
@@ -1875,7 +1868,7 @@ export function assessTerminalRepairQueueReconciliation(
     };
   }
   return {
-    status: 'retired',
+    status: 'preserved',
     reason: 'exact-safe-unstarted',
     candidate: queue.candidate,
     ...base,
@@ -1993,43 +1986,6 @@ async function mutateStoredQualification(
           repairQueueReconciliation: reconciliation,
           ...(options.historicalRecovery ? { refusalReason: 'repair-queue-reconciliation' } : {}),
         };
-      }
-      if (reconciliation?.status === 'retired') {
-        const updatedRows = await tx<{ metadata: Record<string, unknown> }[]>`
-          UPDATE harness_shared.routines
-             SET metadata = jsonb_set(
-                   CASE
-                     WHEN metadata #>> '{gate_health,inconclusive,status}'
-                            IN ('repair-in-progress', 'repair-staging-mismatch')
-                       THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
-                            #- '{gate_health,inconclusive}'
-                     ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
-                   END,
-                   '{${tx.unsafe(CHECKPOINT_QUALIFICATION_METADATA_KEY)}}',
-                   ${JSON.stringify(transition.transaction)}::text::jsonb,
-                   true
-                 ),
-                 updated_at = now()
-           WHERE workspace_id = ${target.workspaceId}
-             AND install_slug = ${target.installSlug}
-             AND target_role = 'system:green-checkpoint'
-             AND metadata->'repair_queue' = ${JSON.stringify(metadata.repair_queue)}::text::jsonb
-             AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY} = ${JSON.stringify(raw)}::text::jsonb
-           RETURNING metadata`;
-        if (updatedRows.length === 0) {
-          return {
-            status: 'conflict' as const,
-            transaction: predecessor!,
-            repairQueueReconciliation: {
-              ...reconciliation,
-              status: 'blocked',
-              reason: 'cas-miss',
-            },
-            ...(options.historicalRecovery ? { refusalReason: 'repair-queue-cas-miss' } : {}),
-          };
-        }
-        await persistTerminalEvent();
-        return { ...transition, repairQueueReconciliation: reconciliation };
       }
       if (reconciliation?.status === 'preserved') {
         // Preservation is a queue handoff, not just permission to leave an old id behind.

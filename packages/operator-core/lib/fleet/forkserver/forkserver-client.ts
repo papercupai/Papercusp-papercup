@@ -187,10 +187,14 @@ function startForkserver(): Forkserver {
       server.pending.delete(m.id);
       entry.child.pid = typeof m.pid === 'number' ? m.pid : undefined;
       if (m.error) {
-        entry.child.receive({ t: 'error', error: m.error });
-      } else {
-        server.children.set(m.id, entry.child);
+        // spawn() threw before a ChildProcess existed. Keep that distinct from
+        // the child's later error event so execProcess preserves its thrown-
+        // spawn result and admission-cancellation contract.
+        refreshRef(server);
+        entry.reject(toError(m.error));
+        return;
       }
+      server.children.set(m.id, entry.child);
       refreshRef(server);
       entry.resolve(entry.child);
       return;

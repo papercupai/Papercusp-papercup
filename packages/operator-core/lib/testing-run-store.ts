@@ -1949,14 +1949,24 @@ async function withholdUnverifiedVitestPass(
 }
 
 /**
- * Async local-first reader for status surfaces. A worker that owns the child
- * returns immediately from `_runs`; a sibling worker falls through to the
- * shared snapshot ledger. Missing/expired/unreadable rows remain `null`.
+ * Async local-first reader for status surfaces. A cached running child still
+ * consults the shared lifecycle ledger: its close callback may have been lost
+ * even though the task manager has already observed the scope ending.
+ * Missing/expired/unreadable durable rows retain their existing semantics.
  */
 export async function getRunAsync(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
   evictOldRuns();
   const local = _runs.get(runId);
   if (local) {
+    if (local.snapshot.status === 'running' && local.snapshot.taskId) {
+      const persisted = await readPersistedRunSnapshot(runId, sqlOverride ?? local.snapshotSql, recoveryScope);
+      // Preserve fresher local progress while the task is live, and never
+      // overwrite a cancellation/close that completed during the durable read.
+      if (local.snapshot.status === 'running' && persisted && persisted.status !== 'running') {
+        Object.assign(local.snapshot, persisted);
+        stopProgressSnapshot(local);
+      }
+    }
     if (local.snapshot.finishedAt !== null && local.finalization) await local.finalization;
     const snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride);
     if ((local.snapshot.status === 'pass' && snapshot.status !== 'pass')

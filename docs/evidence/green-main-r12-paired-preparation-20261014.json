@@ -3683,10 +3683,155 @@
     "recurrenceGuard": "Run both existing maintained identity guards after future evidence appends; do not add exceptions."
   },
   "currentNativeNpmLifecycleDiagnostics20261022": {
+    "independentFixtureOracle20261022": {
+      "workItemId": "WI-6554700010020339",
+      "parentWorkItemId": "WI-6554700010010682",
+      "relatedProofWorkItemId": "WI-6554700010020304",
+      "status": "independent-fixture-oracle-guard-verified-current-local-clean-proof-pending",
+      "rootCause": "The argv assertion derived its expected script from the returned receipt. A coordinated relabelling of emitted script and argv therefore satisfied the old assertion.",
+      "fix": "Read the separately scaffolded fixture package manifest before invoking the receipt writer; compare emitted script and argv with that manifest, and cwd with the native fixture input. Fixture programs, lifecycle outcomes, rejection controls and sixteen-case selection are preserved.",
+      "subject": {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "canonicalAfterSha256": "65d6f63a2aba55475c498c35920b8d48ea653ad4098e41cf27b3f72d900489e7",
+        "derivedMutantSha256": "8fa4ef558233ba6e9c13194f50d2f215c63f42af25fd9509d8728a35a9f3e9d2",
+        "pinReadback": "Both source digests match the server-measured native mutation metadata before and after the assertion change."
+      },
+      "test": {
+        "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "beforeSha256": "8a0a012c3626c673071b5fc97f21665457c703ff27c463eb7ca9d3d64c1e9e0b",
+        "afterSha256": "ecf7688160eed7838abfd1e5a1159e0167fd943b42034a8073d5438f541d8a91",
+        "pinReadback": "Native mutation metadata records these exact testFileSha256 values for the before and after probes."
+      },
+      "before": {
+        "log": {
+          "ref": "~/.papercusp/scratch/c0523-lifecycle-oracle-before-20261022-v1.log",
+          "sha256": "ec043b08df2dfcd448ff7ffc73534929e72873c5a78e8abf9dab9da19295706b",
+          "byteLength": 343791
+        },
+        "runner": {
+          "path": "scripts/mutation-probe.sh",
+          "sha256": "ffb64b6dad3f3481546b77179b1c05ddc08e44726a69e5d4e45ddb60016f3e1e",
+          "reportedCommitAtProbeFinish": "6430ced5a641ddfa3cfcf9ad4820e92a0ca2aa57"
+        },
+        "result": {
+          "assertionEvidence": "exit-code-only",
+          "expected": "survived",
+          "guardExit": 0,
+          "baselineLedger": "test_runs:21766096",
+          "copyBaselineLedger": "test_runs:21766100",
+          "baselineExit": 0,
+          "mutantLedger": "test_runs:21766103",
+          "target": "copy-out",
+          "mutantParse": "ok",
+          "relocation": "overlay",
+          "verdict": "survived"
+        },
+        "nativePhases": [
+          {
+            "phase": "baseline",
+            "ledgerRowId": 21766096,
+            "passed": 16,
+            "failed": 0,
+            "explicitUnselected": 287,
+            "nativeResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=6430ced5a6 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-22T13:14:14.287Z childSubstituted=0 skippedTests=287"
+          },
+          {
+            "phase": "copy-baseline",
+            "ledgerRowId": 21766100,
+            "passed": 16,
+            "failed": 0,
+            "explicitUnselected": 287,
+            "nativeResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=6430ced5a6 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-22T13:15:26.530Z childSubstituted=0 skippedTests=287"
+          },
+          {
+            "phase": "mutant",
+            "ledgerRowId": 21766103,
+            "passed": 16,
+            "failed": 0,
+            "explicitUnselected": 287,
+            "nativeResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=6430ced5a6 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-22T13:16:26.144Z childSubstituted=0 skippedTests=287"
+          }
+        ],
+        "moduleLoadControlNativeResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=6430ced5a6 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-22T13:17:27.028Z childSubstituted=0 skippedTests=0",
+        "containment": "MUTATION_PROBE_CONTAINMENT status=partial overlays=58 uncovered=2079 failed=0",
+        "command": "npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native npm lifecycle diagnostics'",
+        "mutationExpression": "s/script: spawn\\.lifecycle\\.script,/script: \"unobserved command\",/g; s/argv: spawn\\.argv\\.slice\\(\\)/argv: [\"-c\", \"unobserved command\"]/g"
+      },
+      "after": {
+        "log": {
+          "ref": "~/.papercusp/scratch/c0523-lifecycle-oracle-after-20261022-v1.log",
+          "sha256": "a0b767f0628fd8f393d637347446f9ba7991612cc035f06b96465d3ee9dac8b2",
+          "byteLength": 364404
+        },
+        "runner": {
+          "path": "scripts/mutation-probe.sh",
+          "sha256": "ffb64b6dad3f3481546b77179b1c05ddc08e44726a69e5d4e45ddb60016f3e1e",
+          "reportedCommitAtProbeFinish": "47d430707e64eeaf772c05c764054a3c57ce7d05"
+        },
+        "result": {
+          "relocation": "overlay",
+          "mutantParse": "ok",
+          "baselineExit": 0,
+          "assertionEvidence": "test-file-assertion-failure",
+          "guardExit": 1,
+          "mutantLedger": "test_runs:21766148",
+          "copyBaselineLedger": "test_runs:21766137",
+          "baselineLedger": "test_runs:21766136",
+          "verdict": "caught",
+          "expected": "caught",
+          "target": "copy-out"
+        },
+        "nativePhases": [
+          {
+            "phase": "baseline",
+            "ledgerRowId": 21766136,
+            "passed": 16,
+            "failed": 0,
+            "explicitUnselected": 287,
+            "nativeResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=c4f4f7a8ae uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-22T13:21:30.724Z childSubstituted=0 skippedTests=287"
+          },
+          {
+            "phase": "copy-baseline",
+            "ledgerRowId": 21766137,
+            "passed": 16,
+            "failed": 0,
+            "explicitUnselected": 287,
+            "nativeResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=16b035a000 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-22T13:22:15.054Z childSubstituted=0 skippedTests=287"
+          },
+          {
+            "phase": "mutant",
+            "ledgerRowId": 21766148,
+            "passed": 12,
+            "failed": 4,
+            "explicitUnselected": 287,
+            "nativeResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=16b035a000 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-22T13:23:24.632Z childSubstituted=0 skippedTests=287"
+          }
+        ],
+        "moduleLoadControlNativeResult": null,
+        "containment": "MUTATION_PROBE_CONTAINMENT status=partial overlays=58 uncovered=2080 failed=0",
+        "command": "npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native npm lifecycle diagnostics'",
+        "mutationExpression": "s/script: spawn\\.lifecycle\\.script,/script: \"unobserved command\",/g; s/argv: spawn\\.argv\\.slice\\(\\)/argv: [\"-c\", \"unobserved command\"]/g"
+      },
+      "failedCaseScope": [
+        "native npm lifecycle diagnostics > native-npm-shell-identity: retains actual npm shells, inherited stdio and lifecycle failure null",
+        "native npm lifecycle diagnostics > native-npm-shell-identity: retains actual npm shells, inherited stdio and lifecycle failure pretest",
+        "native npm lifecycle diagnostics > native-npm-shell-identity: retains actual npm shells, inherited stdio and lifecycle failure test",
+        "native npm lifecycle diagnostics > native-npm-shell-identity: retains actual npm shells, inherited stdio and lifecycle failure posttest"
+      ],
+      "failedAssertion": "Canonical failed-case readback reports actual unobserved command versus the independently declared pretest fixture script. Four assertion failures, not a parse or module-load error.",
+      "limits": [
+        "Both probes are dirty current-local proof; isScratchConfig=false. No clean committed evidence bindings or shipment proof.",
+        "The overlay probe reports partial containment:58overlays,2079 then2080uncovered entries,zero failed overlays. No complete write-containment claim.",
+        "Every principal leg leaves287cases unselected. The pre-fix module-load control is a separate expected failure with no passing assertions; original twelve fixture skips and operational chains were not rerun.",
+        "Global HEAD moved during the after probe. Each native leg retains its own stamped HEAD; unchanged measured producer/test pins do not establish complete import/runtime/environment closure.",
+        "Historical clause@1 and0304 label-only runs retain original bodies and pins. This section supplies the current strengthened guard pin.",
+        "Clause@2 still needs clean committed baseline/mutation bindings and independent-oracle/l3/disclosed-gap evaluation; full plan remains unshipped."
+      ]
+    },
     "prospectiveScenarioVerification20261022": {
       "workItemId": "WI-6554700010020304",
       "parentWorkItemId": "WI-6554700010010682",
-      "status": "prospective-labels-verified-current-local-clean-committed-mutation-pending",
+      "status": "prospective-labels-verified-historical-local-oracle-guard-renewed",
       "clause": {
         "specId": "adhoc.WI-6554700010020188.native-npm-lifecycle-diagnostics",
         "revision": 2,
@@ -4064,5 +4209,5 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Prospective child0304 adds canonical shell-identity scenario labels for diagnostics clause@2; local run21763628 passes16 with287unselected and dirty provenance. End the editing turn, verify automatic committed-content settlement, then measure retained clean baseline and contained mutation before binding new proof. Preserve historical clause@1 identities and all original per-step stdout/stderr/report and ordered-reader compatibility gaps. This does not resolve EI-26674110593853508 or satisfy runtime/operational/full-plan shipment acceptance. Preserve engine review, D020/P006, six forms, P018, P028 and P031/D045."
+  "next": "Child0339 strengthens the native script/argv/cwd oracle using the independent fixture manifest. The paired current-local probe changes the same mutant from survived to caught; both baselines retain16selected passes and287unselected. End the editing turn and verify automatic committed-content settlement before child0304 measures clean retained clause@2 baseline/mutation and binds new proof. Preserve historical clause@1 and label-only proof identities, partial containment and dirty-source limits, and all original per-step stdout/stderr/report and ordered-reader gaps. This does not resolve EI-26674110593853508 or satisfy runtime/operational/full-plan shipment acceptance. Preserve engine review, D020/P006, six forms, P018, P028 and P031/D045."
 }

@@ -52,6 +52,75 @@ describe('git-sync:run', () => {
     expect(tool.args.safeParse({ definitelyNotAnArg: 'x' }).success).toBe(false);
   });
 
+  it('returns a result-backed receipt for late commits and fails closed on ambiguous outcomes', async () => {
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => undefined) }));
+
+    const { default: tool } = await import('./run');
+    const receipt = tool.abortCompletionReceipt;
+    expect(receipt).toBeTypeOf('function');
+    const attempt = { callId: 'git-sync-call-1', toolName: 'git-sync:run' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    }) as never;
+    const commitSha = 'a'.repeat(40);
+
+    expect(receipt!({}, result({
+      ok: true,
+      fired: true,
+      slug: 'papercusp',
+      status: 'synced',
+      outcome: {
+        status: 'synced',
+        localCommitSha: commitSha,
+        headSha: commitSha,
+        committedCount: 1,
+      },
+    }), attempt)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'git-sync-run:git-sync-call-1:commit:' + commitSha,
+      diagnostics: {
+        slug: 'papercusp',
+        resultStatus: 'synced',
+        outcomeStatus: 'synced',
+        committedCount: 1,
+        localCommitSha: commitSha,
+      },
+    });
+
+    expect(receipt!({}, result({
+      ok: true,
+      fired: true,
+      slug: 'papercusp',
+      status: 'nothing',
+      outcome: { status: 'nothing', committedCount: 0 },
+    }), attempt)).toMatchObject({ status: 'not-recorded' });
+
+    expect(receipt!({}, result({
+      ok: false,
+      fired: true,
+      slug: 'papercusp',
+      status: 'in_progress',
+      degraded: true,
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['fire-not-terminal'],
+    });
+
+    expect(receipt!({}, result({
+      ok: true,
+      fired: true,
+      slug: 'papercusp',
+      status: 'error',
+      outcome: { status: 'error', committedCount: 1 },
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-completed-effect-identity'],
+    });
+  });
+
   it('records a clamped fire reason once while preserving the existing response', async () => {
     const fireSpy = vi.fn(async () => undefined);
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));

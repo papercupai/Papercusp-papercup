@@ -36,6 +36,7 @@ import {
   ROUTINES_LOOP_QUEUE,
   ROUTINES_RELEASE_QUEUE,
   ROUTINES_DEPLOY_QUEUE,
+  ROUTINES_SYNC_GUARDS_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
   queueForRoutine,
   shouldFireUnderPoolShed,
@@ -208,6 +209,13 @@ const routinesDeployQueue = idempotentWorkflowQueue(
   ROUTINES_DEPLOY_QUEUE,
   () => new WorkflowQueue(ROUTINES_DEPLOY_QUEUE, { concurrency: queueConcurrency(1) }),
 );
+// P-028 sync-batch lint guards: the five-minute routine has a 15-minute red-finding target,
+// while individual repo-wide lint probes can run much longer. Its own serial lane keeps the
+// admission credit independent of the ordinary due-routine FIFO and other multi-hour work.
+const routinesSyncGuardsQueue = idempotentWorkflowQueue(
+  ROUTINES_SYNC_GUARDS_QUEUE,
+  () => new WorkflowQueue(ROUTINES_SYNC_GUARDS_QUEUE, { concurrency: queueConcurrency(1) }),
+);
 export const ROUTINE_FIRE_QUEUES = [
   routinesQueue.name,
   routinesHeavyQueue.name,
@@ -217,6 +225,7 @@ export const ROUTINE_FIRE_QUEUES = [
   routinesTriggersQueue.name,
   routinesReleaseQueue.name,
   routinesDeployQueue.name,
+  routinesSyncGuardsQueue.name,
 ] as const;
 
 type DueRoutine = {

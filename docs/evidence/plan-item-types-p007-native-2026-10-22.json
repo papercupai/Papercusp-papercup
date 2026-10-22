@@ -1,0 +1,40 @@
+{
+  "workItem": "WI-6554700010018629",
+  "plan": "plan-item-types-registry-cupboard-2026-10-20",
+  "runId": "20261022T132140Z-1521370",
+  "harness": "verify-tauri-headless",
+  "sourceCommit": "c4f4f7a8aef1427998b489c17f1a7541f4bd960e",
+  "result": "pass",
+  "retainedHarnessResult": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261022T132140Z-1521370/result.json",
+  "sourceReceipt": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261022T132140Z-1521370/phases/prepare/verifier-source-receipt.json",
+  "assertionScript": ".papercusp/scratch/su94bf/p007-headless.sh",
+  "navigation": {"path": "/adv", "pdash": "papercusp::plan-item-types-registry-cupboard-2026-10-20"},
+  "planType": {"planType": "", "profile": "coding", "text": "coding"},
+  "itemBadges": [
+    {"id": "plan-dash-item-type-P-008", "type": "papercusp/code", "rev": "1", "builtin": "true"},
+    {"id": "plan-dash-item-type-P-007", "type": "papercusp/code", "rev": "1", "builtin": "true"},
+    {"id": "plan-dash-item-type-P-001", "type": "papercusp/code", "rev": "1", "builtin": "true"},
+    {"id": "plan-dash-item-type-P-002", "type": "papercusp/code", "rev": "1", "builtin": "true"},
+    {"id": "plan-dash-item-type-P-003", "type": "papercusp/code", "rev": "1", "builtin": "true"},
+    {"id": "plan-dash-item-type-P-004", "type": "papercusp/code", "rev": "1", "builtin": "true"},
+    {"id": "plan-dash-item-type-P-005", "type": "papercusp/code", "rev": "1", "builtin": "true"},
+    {"id": "plan-dash-item-type-P-006", "type": "papercusp/code", "rev": "1", "builtin": "true"},
+    {"id": "plan-dash-item-type-P-009", "type": "papercusp/code", "rev": "1", "builtin": "true"}
+  ],
+  "panel": {"modules": ["generic-core", "code"], "criteria": [], "formFields": []},
+  "urlAfterBadgeClick": "?tab=harnesses&pdash=papercusp%3A%3Aplan-item-types-registry-cupboard-2026-10-20&pdtype=P-007",
+  "reloadFromUrl": {"url": "/adv?tab=harnesses&pdash=papercusp::plan-item-types-registry-cupboard-2026-10-20&pdtype=P-007", "selector": "[data-testid=\"plan-dash-type-panel-P-007\"]", "passed": true},
+  "finalCheck": {"passed": true, "checks": [
+    {"type": "selector", "passed": true, "selector": "[data-testid=\"plan-dash-type-panel-P-007\"]"},
+    {"type": "no-errors", "passed": true, "errors": []}
+  ]},
+  "scope": "Native Tauri run covers the legacy coding plan badge, built-in item badges, opening the resolved module panel, URL state after clicking, and reopening the panel from the URL. This built-in type has no completion schema, so it correctly has no form fields. Custom completion fields and validation are covered by the separately bound component and server tests, not by this native run.",
+  "limitations": ["Screenshot capture reported No window found matching: Papercusp Operator. No screenshot is claimed; the retained native evidence is DOM and runtime provenance."],
+  "relatedProof": {
+    "badgeBaseline": 21636270,
+    "completionFormBaseline": 21636272,
+    "moduleChecklistBaseline": 21636273,
+    "dashboardBaseline": 21636275,
+    "mutationRuns": [21636283, 21636289, 21636306, 21636297]
+  }
+}

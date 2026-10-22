@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   scorecardRows: [] as Array<Record<string, unknown>>,
   queries: [] as Array<{ sql: string; values: unknown[] }>,
   workspaceScopes: [] as string[],
+  completedWorkspaceTransactions: 0,
   planScopeOptions: [] as Array<{ harnessSlug?: string; workspaceId?: string }>,
   measurementRoot: '',
   fixtureMeasurementRoot: '',
@@ -37,7 +38,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
         if (sql.includes('FROM harness_shared.test_case_runs')) return Promise.resolve(h.caseRows ?? []);
         return Promise.resolve(sql.includes('provisional') ? h.scorecardRows : h.rows);
       }) as unknown;
-      return fn(tx);
+      const result = await fn(tx);
+      h.completedWorkspaceTransactions += 1;
+      return result;
     },
   };
 });
@@ -3235,6 +3238,7 @@ describe('ledger-state server measurement', () => {
 
 describe('spec evidence retraction and grading-audit cancellation', () => {
   beforeEach(() => {
+    h.completedWorkspaceTransactions = 0;
     h.rows = [{
       id: 30308,
       work_item_id: 'WI-101',
@@ -3252,14 +3256,26 @@ describe('spec evidence retraction and grading-audit cancellation', () => {
   });
 
   it('cancels pending grading audits in the retraction transaction before notifying readers', async () => {
+    // Keep this store fixture on its existing notification seam. Calling the
+    // production notifier here opens coordination/database services after the
+    // mocked transaction and can strand this otherwise isolated unit test.
+    const notifyCancelledAuditors = vi.fn(async () => {
+      expect(h.completedWorkspaceTransactions).toBe(1);
+    });
     const result = await retractSpecEvidence({
       harnessSlug: 'papercusp',
       bindingId: 30308,
       reason: 'withdrawn fixture evidence',
       actorId: 'su-retractor',
-    });
+    }, { notifyCancelledAuditors });
 
     expect(result).toMatchObject({ status: 'retracted', bindingId: 30308 });
+    expect(notifyCancelledAuditors).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'workspace-test',
+      harness: 'papercusp',
+      issueIds: ['EI-TARGET'],
+      reason: 'binding 30308 was retracted: withdrawn fixture evidence',
+    });
     const bindingUpdateIndex = h.queries.findIndex(({ sql }) => sql.includes('UPDATE harness_shared.spec_evidence_bindings'));
     const auditCancellationIndex = h.queries.findIndex(({ sql }) => sql.includes('UPDATE harness_shared.work_items'));
     expect(bindingUpdateIndex).toBeGreaterThanOrEqual(0);

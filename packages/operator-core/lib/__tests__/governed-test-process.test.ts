@@ -1,8 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
+import { observeForkStartup } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 
 // The bridge is intentionally a plain-Node `.mjs` module so both repository
 // test CLIs remain executable with `node scripts/*.mjs`.
@@ -366,6 +368,57 @@ describe('demand construction', () => {
 });
 
 describe('worker-exit classification', () => {
+  function shutdownTrace() {
+    const worker = Object.assign(new EventEmitter(), {
+      pid: 42,
+      send: (_message: unknown) => true,
+      kill: (_signal: string) => true,
+    });
+    const rows: string[] = [];
+    observeForkStartup(worker, (row: Record<string, unknown>) => {
+      rows.push(`TEST_FILE_STARTUP_TRACE ${JSON.stringify({ pid: 11, ...row })}`);
+    }, () => 0);
+    worker.send({ type: 'stop' });
+    worker.emit('message', { type: 'stopped', error: null });
+    worker.kill('SIGTERM');
+    worker.emit('exit', null, 'SIGTERM');
+    worker.emit('close', null, 'SIGTERM');
+    return rows;
+  }
+
+  it.each([0, 1])('preserves exit %s after an acknowledged worker shutdown', code => {
+    const actualDemand = { memoryBytes: 3 };
+    for (const channel of ['stdout', 'stderr', 'output']) {
+      expect(classifyGovernedTestProcessOutcome({
+        code, signal: null, actualDemand,
+        [channel]: shutdownTrace().join('\n'),
+      })).toEqual({ kind: 'release', actualDemand });
+    }
+  });
+
+  it.each([
+    ['missing stop request', (rows: string[]) => rows.filter(row => !row.includes('stop-sent'))],
+    ['missing stop acknowledgement', (rows: string[]) => rows.filter(row => !row.includes('stopped-received'))],
+    ['failed stop acknowledgement', (rows: string[]) => rows.map(row => row.replace('"error":false', '"error":true'))],
+    ['another worker acknowledgement', (rows: string[]) => rows.map(row => row.includes('stopped-received') ? row.replace('"childPid":42', '"childPid":43') : row)],
+    ['malformed signal record', (rows: string[]) => rows.map(row => row.includes('worker-signal') ? row.slice(0, -1) : row)],
+    ['unknown diagnostic text', (rows: string[]) => rows.map(row => row.includes('worker-signal') ? row.replace('"sent":true', '"sent":true,"detail":"Worker exited unexpectedly"') : row)],
+  ] as const)('still cancels with %s', (_label, alter) => {
+    expect(classifyGovernedTestProcessOutcome({
+      code: 0, signal: null, stderr: alter(shutdownTrace()).join('\n'),
+    }).kind).toBe('cancel');
+  });
+
+  it('keeps fatal output and typed failures authoritative beside an acknowledged shutdown', () => {
+    const stderr = shutdownTrace().join('\n');
+    for (const failure of [
+      { timedOut: true }, { aborted: true }, { spawnError: 'failed' }, { signal: 'SIGKILL' },
+      { stdout: 'Worker exited unexpectedly' }, { stdout: 'TEST_FILE_WATCHDOG fired' },
+    ]) {
+      expect(classifyGovernedTestProcessOutcome({ code: 0, stderr, ...failure }).kind).toBe('cancel');
+    }
+  });
+
   // One case per token in the untrustworthy-output pattern, so removing a token
   // fails HERE rather than silently widening `release`. Each carries code 0 —
   // the false-green shape, where the child claims success while its own output

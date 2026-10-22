@@ -249,8 +249,10 @@ describe('service request phase correlation', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tsc-service-trace-'));
     const socketPath = join(dir, 'service.sock');
     const project = join(dir, 'tsconfig.json');
-    writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, strict: true, types: [] }, files: ['a.ts'] }));
+    writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, strict: true, types: [] }, files: ['a.ts', 'other.ts', 'caller.ts'] }));
     writeFileSync(join(dir, 'a.ts'), 'export const a: number = "wrong";\n');
+    writeFileSync(join(dir, 'other.ts'), 'export const other = 1;\n');
+    writeFileSync(join(dir, 'caller.ts'), "import { a } from './a.js';\nexport const caller = a;\n");
     const serverPath = fileURLToPath(new URL('../../../scripts/tsc-service/server.mjs', import.meta.url));
     const child = spawn(process.execPath, [serverPath], {
       env: { ...process.env, PAPERCUSP_TSC_SERVICE_ROOT: dir, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
@@ -279,6 +281,19 @@ describe('service request phase correlation', () => {
       if (response.ok) {
         expect(response.errorCount).toBe(1);
         expect(response.output).toContain('TS2322');
+        expect(response.checked).toContain('caller.ts');
+      }
+      // The next request refreshes the snapshot. Its dependency graph must reflect the edit.
+      writeFileSync(join(dir, 'caller.ts'), "import { other } from './other.js';\nexport const caller = other;\n");
+      const refreshed = await requestTscService({
+        socketPath,
+        request: { v: 1, requestId: 'trace-test-refresh', root: dir, project, files: ['other.ts'] },
+        timeoutMs: 10_000,
+      });
+      expect(refreshed.ok).toBe(true);
+      if (refreshed.ok) {
+        expect(refreshed.errorCount).toBe(0);
+        expect(refreshed.checked.sort()).toEqual(['caller.ts', 'other.ts']);
       }
       // Drain stdout before inspecting the trace and assert that the compiler child also exits.
       child.kill('SIGTERM');
@@ -529,6 +544,59 @@ describe('checkedSetFor', () => {
     expect(scope.importers).toBe(callers.length + 1);
     expect([...reads.keys()].sort()).toEqual([...callers, 'changed.ts', 'cycle.ts', 'barrel.ts'].map(abs).sort());
     expect([...reads.values()].every((count) => count === 1)).toBe(true);
+  });
+
+  it('reuses a snapshot dependency census across named scopes and rebuilds after refresh', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-service-scope-cache-'));
+    const abs = (name: string) => join(dir, name);
+    writeFileSync(abs('changed.ts'), 'export const value = 1;\n');
+    writeFileSync(abs('other.ts'), 'export const value = 2;\n');
+    writeFileSync(abs('caller.ts'), "import { value } from './changed.js';\n");
+    const reads = new Map<string, number>();
+    const dependencyCache = new Map<string, Map<string, Set<string>>>();
+    const options = {
+      root: dir,
+      programFiles: ['changed.ts', 'other.ts', 'caller.ts'].map(abs),
+      readText: (file: string) => {
+        reads.set(file, (reads.get(file) ?? 0) + 1);
+        return readTextOrNull(file);
+      },
+      dependencyCache,
+    };
+    expect(checkedSetFor({ ...options, named: ['changed.ts'] }).files.sort())
+      .toEqual(['caller.ts', 'changed.ts'].map(abs).sort());
+    expect(checkedSetFor({ ...options, named: ['other.ts'] }).files).toEqual([abs('other.ts')]);
+    expect([...reads.values()]).toEqual([1, 1, 1]);
+
+    // A new compiler snapshot invalidates the census even when its file list is unchanged.
+    writeFileSync(abs('caller.ts'), "import { value } from './other.js';\n");
+    dependencyCache.clear();
+    expect(checkedSetFor({ ...options, named: ['other.ts'] }).files.sort())
+      .toEqual(['caller.ts', 'other.ts'].map(abs).sort());
+    expect(checkedSetFor({ ...options, named: ['changed.ts'] }).files).toEqual([abs('changed.ts')]);
+    expect([...reads.values()]).toEqual([2, 2, 2]);
+  });
+
+  it('stops an overwide service scope after proving its limit without caching an incomplete graph', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-service-wide-scope-'));
+    const abs = (name: string) => join(dir, name);
+    writeFileSync(abs('changed.ts'), 'export const value = 1;\n');
+    const callers = Array.from({ length: 40 }, (_, i) => `caller-${i}.ts`);
+    for (const caller of callers) writeFileSync(abs(caller), "import { value } from './changed.js';\n");
+    let reads = 0;
+    const dependencyCache = new Map<string, Map<string, Set<string>>>();
+    const options = {
+      root: dir, named: ['changed.ts'], programFiles: ['changed.ts', ...callers].map(abs),
+      dependencyCache, readText: (file: string) => { reads += 1; return readTextOrNull(file); },
+    };
+    const limited = checkedSetFor({ ...options, maxFiles: 5 });
+    expect(limited.files).toHaveLength(6);
+    expect(reads).toBeLessThan(options.programFiles.length);
+    expect(dependencyCache.size).toBe(0);
+    const complete = checkedSetFor(options);
+    expect(complete.files).toHaveLength(41);
+    expect(limited.files.every((file) => complete.files.includes(file))).toBe(true);
+    expect(dependencyCache.size).toBe(1);
   });
 });
 

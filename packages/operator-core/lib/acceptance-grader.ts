@@ -10,7 +10,7 @@ import { readPlanBySlug } from './agent-tools/plans/source';
 import { resolveAggregatedVettingCritics } from './agent-tools/scorecards/grader-eligibility';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { readAcceptanceGradingSettlement, type AcceptanceGradingSettlement } from './acceptance-grading-authority';
-import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
+import { getEffectiveItemAudits, getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
 import { commentWorkItem, getWorkItemThreadWindow, listWorkItems, type WorkItem } from './work-items';
 import { reserveAcceptanceReviewTarget, type AcceptanceReviewReservationRef } from './coord/condition-upsert';
@@ -37,6 +37,17 @@ import { buildOrderingItems, openBuildItems } from './agent-tools/plans/acceptan
 import { recordExpertiseRoutingInvocation } from './endpoint-route/telemetry';
 import { ACCEPTANCE_GRADING_POLICY } from './consult/selection-policies';
 import { ACCEPTANCE_JUDGE_STACK } from './judge-identity-stack';
+
+async function openGradingBuildItems(
+  plan: NonNullable<Awaited<ReturnType<typeof readPlanBySlug>>>,
+  readAudits: typeof getEffectiveItemAudits,
+) {
+  const items = buildOrderingItems(plan);
+  const open = openBuildItems(items);
+  if (open.length === 0) return open;
+  const effectiveAudits = await readAudits(plan.row.planSlug).catch(() => []);
+  return openBuildItems(items, { verificationProfile: plan.row.verificationProfile, effectiveAudits });
+}
 
 /**
  * WI-10002156: a REAPED session wears a healthy costume at grader selection.
@@ -3012,7 +3023,7 @@ export async function resolveAcceptanceGrader(
       ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
     });
-    const openBuild = plan ? openBuildItems(buildOrderingItems(plan)) : [];
+    const openBuild = plan ? await openGradingBuildItems(plan, deps.readEffectiveAudits ?? getEffectiveItemAudits) : [];
     if (openBuild.length > 0) {
       return { state: 'failed', idempotencyKey: '', label: '',
         error: `build_items_open: finish ${openBuild.map(item => item.id).join(', ')} before acceptance grading`,
@@ -3266,6 +3277,7 @@ export async function launchAcceptanceGrader(
     readPlan?: typeof readPlanBySlug;
     getRubric?: typeof getAcceptanceRubricForPlan;
     getAudit?: typeof getLatestPlanAudit;
+    readEffectiveAudits?: typeof getEffectiveItemAudits;
     listWork?: typeof listWorkItems;
     /** Injectable for unit tests; production uses the canonical lineage reader. */
     lineageRelated?: typeof areAcceptanceLineageRelated;
@@ -3289,7 +3301,7 @@ export async function launchAcceptanceGrader(
     ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
   });
   if (!plan) return { state: 'failed', idempotencyKey: '', label: '', error: `plan '${planSlug}' not found` };
-  const openBuild = openBuildItems(buildOrderingItems(plan));
+  const openBuild = await openGradingBuildItems(plan, deps.readEffectiveAudits ?? getEffectiveItemAudits);
   if (openBuild.length > 0) {
     return { state: 'failed', idempotencyKey: '', label: '',
       error: `build_items_open: finish ${openBuild.map(item => item.id).join(', ')} before acceptance grading`,

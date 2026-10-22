@@ -24,6 +24,8 @@ Ask one question at a time, or at most two tightly related ones. Do not ask all 
 
 ## Cross-tool patterns
 
+Before writing a code plan item, run `graph:query { op: 'impact', name: '<symbol>' }` on the symbols it changes; pass symbols or paths as `anchors` (code links).
+
 ### Consult a peer instead of re-deriving — but not by default
 
 If `consult:get_feedback` is in your permitted tool catalog, reach for it at the

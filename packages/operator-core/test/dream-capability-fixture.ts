@@ -1,5 +1,5 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getPilotCapabilityManifest } from '../lib/dream/capability-catalog';
 import { capabilityHash, capabilityUnitHash, type CapabilityPacket } from '../lib/dream/capability-contracts';
@@ -24,7 +24,8 @@ import type { DreamRun } from '../lib/dream/dream-run-store';
 
 /** Real source bytes with a fixed reviewed proposal. No model or provider calls. */
 export async function createDreamCapabilityFixture(workspaceId = 'ws-capability-sink', potSlug = 'papercusp', includeThird = false) {
-  const packs = join(homedir(), '.papercusp', 'scratch', 'packs');
+  // Match the production reader's workspace-scoped artifact boundary.
+  const packs = papercuspPath('scratch', 'packs');
   await mkdir(packs, { recursive: true });
   const root = await mkdtemp(join(packs, 'dream-capability-ledger-'));
   await mkdir(join(root, 'evidence'));

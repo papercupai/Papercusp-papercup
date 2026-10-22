@@ -91,8 +91,9 @@ export function foregroundClampDisclosure(requestedMs: number, effectiveMs: numb
     `${(effectiveMs / 1000).toFixed(0)}s, the foreground ceiling kept below the ~${(
       MCP_TRANSPORT_CAP_MS / 1000
     ).toFixed(0)}s MCP transport cap so this returns a real error instead of an opaque ` +
-    `request_timeout. The deadline you set was never in force — do not read this as your budget ` +
-    `being exhausted, and re-running with a larger timeoutSec will NOT buy more time.`
+    `request_timeout. This cap limits the foreground phase. Any separately supplied task deadline ` +
+    `remains in force; this response does not mean that overall budget was exhausted. ` +
+    `Re-running with a larger timeout will NOT buy more foreground time.`
   );
 }
 

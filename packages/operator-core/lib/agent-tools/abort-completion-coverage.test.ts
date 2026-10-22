@@ -24,6 +24,8 @@ import bindSpecEvidence from './plans/bind-spec-evidence';
 import plansSetSpecs, { SET_SPECS_MAX_CONCURRENCY, setSpecsAbortCompletionReceipt } from './plans/set-specs';
 import buildTypecheck, { buildTypecheckAbortCompletionReceipt } from './build/typecheck';
 import { bulkRunReport } from './inbox/bulk-run';
+import gitSyncRun from './git_sync/run';
+import plansAudit from './plans/audit';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -41,6 +43,7 @@ import { bulkRunReport } from './inbox/bulk-run';
  * resolver over its own result (see consult/abort-completion.ts, abort-completion-payload.ts).
  */
 const LATE_RETURN_MUTATORS = {
+  'plans:audit': plansAudit,
   'blender:grade-idea': gradeIdea,
   // EI-24923632103429261: the p95 budget detector measured an over-budget tail.
   'consult:get_feedback': consultGetFeedback,
@@ -81,6 +84,8 @@ const LATE_RETURN_MUTATORS = {
   'build:typecheck': buildTypecheck,
   // EI-26207329377923256: a late report must name its exact updated run rows.
   'inbox:bulk-run-report': bulkRunReport,
+  // EI-26678535936174570: near-budget git-sync calls must expose their completed commit identity.
+  'git-sync:run': gitSyncRun,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */

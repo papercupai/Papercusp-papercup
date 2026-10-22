@@ -127,14 +127,14 @@ describe('foregroundClampDisclosure — the clamp must SAY it clamped (EI-215700
     expect(d).toContain(`${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s`); // what was actually in force
   });
 
-  // Both items were filed as "I requested 120 and was killed at the foreground ceiling". The specific dead end
-  // was concluding the deadline had been honoured and the SCRIPT was simply too slow. Say the
-  // opposite out loud, and say that retrying bigger is futile — otherwise the natural next move
-  // is timeoutSec:120 again, which changes nothing.
-  it('states the requested deadline was never in force, and that raising it will not help', () => {
+  // testing:run can preserve an absolute task cutoff through detached recovery.
+  // The shared disclosure must not negate it when explaining the foreground cap.
+  it('distinguishes the foreground cap from a separately enforced task deadline', () => {
     const d = foregroundClampDisclosure(REQUESTED, FOREGROUND_TIMEOUT_CEILING_MS);
-    expect(d).toMatch(/never in force/i);
-    expect(d).toMatch(/will NOT buy more time/i);
+    expect(d).toMatch(/cap limits the foreground phase/i);
+    expect(d).toMatch(/separately supplied task deadline remains in force/i);
+    expect(d).not.toMatch(/never in force/i);
+    expect(d).toMatch(/will NOT buy more foreground time/i);
   });
 
   // The disposition claim that would have been WRONG here. capability:bash/inspect own their
@@ -165,7 +165,7 @@ describe('foregroundClampDisclosure — the clamp must SAY it clamped (EI-215700
     const effectiveOnly = 'script_timeout after 45000ms';
     expect(effectiveOnly).toContain('45'); // passes — this is what shipped
     expect(effectiveOnly).not.toContain('120s'); // ← the real guard would fail here
-    expect(effectiveOnly).not.toMatch(/never in force/i); // ← and here
+    expect(effectiveOnly).not.toMatch(/cap limits the foreground phase/i); // ← and here
   });
 });
 

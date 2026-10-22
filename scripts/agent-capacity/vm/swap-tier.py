@@ -92,6 +92,20 @@ LAUNCH_DELAY_SEC = launch_delay_seconds()
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def same_build_sha(observed, expected):
+    """Match packaged short SHAs to full pins, as the platform's sameBuildSha does.
+
+    The dossier still binds the full commit and artifact digest independently.
+    Only hexadecimal Git identities of at least seven characters may abbreviate.
+    """
+    if not isinstance(observed, str) or not isinstance(expected, str):
+        return False
+    observed, expected = observed.strip().lower(), expected.strip().lower()
+    if not all(re.fullmatch(r"[a-f0-9]{7,40}", value) for value in (observed, expected)):
+        return False
+    return observed.startswith(expected) or expected.startswith(observed)
+
+
 def wait_for_operator_health(ports, timeout=120, interval=0.2, expected_sha=None):
     """A listening socket or successful HTML response is not application readiness."""
     if (not ports or any(type(p) is not int or not 1 <= p <= 65535 for p in ports) or
@@ -117,7 +131,7 @@ def wait_for_operator_health(ports, timeout=120, interval=0.2, expected_sha=None
                     health = json.loads(raw)
                     if (isinstance(health, dict) and health.get("ok") is True and
                             health.get("service") == "papercusp-operator" and
-                            (expected_sha is None or health.get("sha") == expected_sha)):
+                            (expected_sha is None or same_build_sha(health.get("sha"), expected_sha))):
                         return {"ready": True, "port": port, "health": health,
                                 "seconds": time.monotonic() - started, "attempts": attempts}
             except (OSError, ValueError, http.client.HTTPException):
@@ -1462,7 +1476,7 @@ def evaluate_native_qualification(rows, probe, evidence, expected_sha, expected_
             failures.append("cold-wake:application-ready")
         health = operation.get("health", {})
         if (not isinstance(health, dict) or health.get("ok") is not True or
-                health.get("service") != "papercusp-operator" or health.get("sha") != expected_sha):
+                health.get("service") != "papercusp-operator" or not same_build_sha(health.get("sha"), expected_sha)):
             gaps.append(str(kind) + ":candidate-api-readiness")
         before, after = operation.get("witnessBefore", {}), operation.get("witnessAfter", {})
         if (not isinstance(before, dict) or not isinstance(after, dict) or before.get("created") is not True or

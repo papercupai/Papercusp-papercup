@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { executeOperationalRun } from '../agent-tools/testing/record-run';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const enabled = process.env.PAPERCUSP_DREAM_CONTROL_OBSERVATIONS_LIVE === '1';
@@ -46,65 +47,97 @@ describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
     expect(profile.workspaceId).toBe('papercusp-workspace');
     expect(profile.potSlug).toBe('papercusp');
     expect(profile.runtimeUnits).toEqual(['hono-host:3170', 'hono-host:3271']);
-    const until = new Date().toISOString();
-    const since = new Date(Date.parse(until) - 15 * 60_000).toISOString();
-    const base = { potSlug: profile.potSlug, view: 'observations', since, until };
-    const unverified = { host: 'unverified', processId: 'unverified', buildSha: 'unverified' };
-    const discovery = await observe(profile.origin, { ...base, expectedRuntime: unverified });
-    const background = await observe(profile.backgroundOrigin, { ...base, expectedRuntime: unverified });
-    for (const [snapshot, host] of [[discovery, 'port-3170'], [background, 'port-3271']] as const) {
-      expect(snapshot.status).toBe('unknown');
-      expect(snapshot.reason).toBe('wrong-or-unproven-serving-runtime');
-      expect(snapshot.runtime.host).toBe(host);
-      expect(snapshot.runtime.processId).toMatch(/^linux:[0-9a-f-]+:\d+$/);
-      expect(snapshot.runtime.buildSha).toMatch(/^[0-9a-f]{7,64}$/);
-      expect(snapshot.r2Assertions.healthy).toBe(false);
-      expect(snapshot.r2Assertions.clauses.map(c => c.id)).toEqual(clauseIds);
-      expect(snapshot.r2Assertions.clauses.every(c => c.status === 'unknown' && !c.healthy)).toBe(true);
-    }
-    // Compare the actually loaded source objects, not merely branch distance.
-    const sourcePaths = ['packages/operator-core/lib/dream/dream-control-observations.ts',
-      'packages/operator-core/lib/sync-resolver/index.ts'];
-    for (const path of sourcePaths) {
-      const loaded = execFileSync('git', ['show', `${discovery.runtime.buildSha}:${path}`],
-        { cwd: root, maxBuffer: 4 * 1024 * 1024 });
-      expect(loaded.equals(readFileSync(resolve(root, path))), `${path} differs from loaded source`).toBe(true);
-    }
-    const observation = await observe(profile.origin, { ...base, expectedRuntime: discovery.runtime,
-      actionJournalUnit: 'papercusp-bg-host.service', expectedActionRuntime: background.runtime,
-      gymJournalUnit: 'papercusp-bg-host.service', expectedGymRuntime: background.runtime });
-    const consumedAt = new Date().toISOString();
-    expect(observation.schemaVersion).toBe('dream-control-observations-v1');
-    expect(observation.status).toBe('observed');
-    expect(observation.runtime).toEqual(discovery.runtime);
-    expect(observation.scope).toMatchObject({ workspaceId: profile.workspaceId,
-      potSlug: profile.potSlug, since, until, expectedRuntime: discovery.runtime,
-      expectedActionRuntime: background.runtime, expectedGymRuntime: background.runtime });
-    expect(Date.parse(consumedAt)).toBeGreaterThanOrEqual(Date.parse(observation.capturedAt));
-    expect(Date.parse(consumedAt)).toBeLessThan(Date.parse(observation.expiresAt));
-    expect(Date.parse(observation.expiresAt) - Date.parse(observation.capturedAt)).toBe(60_000);
-    expect(Object.keys(observation.observations ?? {}).sort()).toEqual(
-      ['activity', 'dream', 'flags', 'governors', 'gym', 'rollingSpend']);
-    expect(observation.r2Assertions.clauses.map(c => c.id)).toEqual(clauseIds);
-    for (const clause of observation.r2Assertions.clauses) {
-      expect(['pass', 'fail', 'unknown']).toContain(clause.status);
-      expect(clause.healthy).toBe(clause.status === 'pass');
-      expect(clause.reason.length).toBeGreaterThan(0);
-      expect(clause.sourceRefs.length).toBeGreaterThan(0);
-      expect(clause.rawRefs.length).toBeGreaterThan(0);
-      for (const ref of clause.rawRefs) {
-        expect(ref.startsWith('/')).toBe(true);
-        let raw: unknown = observation;
-        for (const key of ref.slice(1).split('/')) {
-          expect(raw !== null && typeof raw === 'object' && Object.hasOwn(raw, key), ref).toBe(true);
-          raw = (raw as Record<string, unknown>)[key];
+    // Record this fresh execution through the existing native operational
+    // instrument. Its own source snapshots and runtime witnesses remain
+    // distinct from the surrounding e2e reporter and historical receipts.
+    const filePath = 'packages/operator-core/lib/dream/dream-control-observations.live.e2e.test.ts';
+    const measured = await executeOperationalRun({
+      filePath, name: 'Dream control observation fresh operational METHOD', framework: 'operational',
+      command: ['env', 'PAPERCUSP_DREAM_CONTROL_OBSERVATIONS_LIVE=1',
+        `PAPERCUSP_APP_OPERATION_LIVE_PROFILE=${profilePath}`, 'npm', 'run', 'test:file', '--', filePath],
+      runtimeUnits: profile.runtimeUnits,
+      run: async () => {
+        const until = new Date().toISOString();
+        const since = new Date(Date.parse(until) - 15 * 60_000).toISOString();
+        const base = { potSlug: profile.potSlug, view: 'observations', since, until };
+        const unverified = { host: 'unverified', processId: 'unverified', buildSha: 'unverified' };
+        const discovery = await observe(profile.origin, { ...base, expectedRuntime: unverified });
+        const background = await observe(profile.backgroundOrigin, { ...base, expectedRuntime: unverified });
+        for (const [snapshot, host] of [[discovery, 'port-3170'], [background, 'port-3271']] as const) {
+          expect(snapshot.status).toBe('unknown');
+          expect(snapshot.reason).toBe('wrong-or-unproven-serving-runtime');
+          expect(snapshot.runtime.host).toBe(host);
+          expect(snapshot.runtime.processId).toMatch(/^linux:[0-9a-f-]+:\d+$/);
+          expect(snapshot.runtime.buildSha).toMatch(/^[0-9a-f]{7,64}$/);
+          expect(snapshot.r2Assertions.healthy).toBe(false);
+          expect(snapshot.r2Assertions.clauses.map(c => c.id)).toEqual(clauseIds);
+          expect(snapshot.r2Assertions.clauses.every(c => c.status === 'unknown' && !c.healthy)).toBe(true);
         }
-      }
-    }
-    expect(observation.r2Assertions.healthy).toBe(observation.r2Assertions.clauses.every(c => c.healthy));
-    // Preserve the one raw edition in the test log for durable artifact capture.
-    // A METHOD pass is not a product-health assertion or independent acceptance.
-    console.info('DREAM_CONTROL_OBSERVATION_EDITION', JSON.stringify({ consumedAt, observation,
-      productR2Healthy: observation.r2Assertions.healthy, sourcePaths, methodOnly: true }));
+        // Compare the actually loaded source objects, not merely branch distance.
+        const sourcePaths = ['packages/operator-core/lib/dream/dream-control-observations.ts',
+          'packages/operator-core/lib/sync-resolver/index.ts'];
+        for (const path of sourcePaths) {
+          const loaded = execFileSync('git', ['show', `${discovery.runtime.buildSha}:${path}`],
+            { cwd: root, maxBuffer: 4 * 1024 * 1024 });
+          expect(loaded.equals(readFileSync(resolve(root, path))), `${path} differs from loaded source`).toBe(true);
+        }
+        const observation = await observe(profile.origin, { ...base, expectedRuntime: discovery.runtime,
+          actionJournalUnit: 'papercusp-bg-host.service', expectedActionRuntime: background.runtime,
+          gymJournalUnit: 'papercusp-bg-host.service', expectedGymRuntime: background.runtime });
+        const consumedAt = new Date().toISOString();
+        expect(observation.schemaVersion).toBe('dream-control-observations-v1');
+        expect(observation.status).toBe('observed');
+        expect(observation.runtime).toEqual(discovery.runtime);
+        expect(observation.scope).toMatchObject({ workspaceId: profile.workspaceId,
+          potSlug: profile.potSlug, since, until, expectedRuntime: discovery.runtime,
+          expectedActionRuntime: background.runtime, expectedGymRuntime: background.runtime });
+        expect(Date.parse(consumedAt)).toBeGreaterThanOrEqual(Date.parse(observation.capturedAt));
+        expect(Date.parse(consumedAt)).toBeLessThan(Date.parse(observation.expiresAt));
+        expect(Date.parse(observation.expiresAt) - Date.parse(observation.capturedAt)).toBe(60_000);
+        expect(Object.keys(observation.observations ?? {}).sort()).toEqual(
+          ['activity', 'dream', 'flags', 'governors', 'gym', 'rollingSpend']);
+        expect(observation.r2Assertions.clauses.map(c => c.id)).toEqual(clauseIds);
+        for (const clause of observation.r2Assertions.clauses) {
+          expect(['pass', 'fail', 'unknown']).toContain(clause.status);
+          expect(clause.healthy).toBe(clause.status === 'pass');
+          expect(clause.reason.length).toBeGreaterThan(0);
+          expect(clause.sourceRefs.length).toBeGreaterThan(0);
+          expect(clause.rawRefs.length).toBeGreaterThan(0);
+          for (const ref of clause.rawRefs) {
+            expect(ref.startsWith('/')).toBe(true);
+            let raw: unknown = observation;
+            for (const key of ref.slice(1).split('/')) {
+              expect(raw !== null && typeof raw === 'object' && Object.hasOwn(raw, key), ref).toBe(true);
+              raw = (raw as Record<string, unknown>)[key];
+            }
+          }
+        }
+        expect(observation.r2Assertions.healthy).toBe(observation.r2Assertions.clauses.every(c => c.healthy));
+        // Preserve the one raw edition in the test log for durable artifact capture.
+        // A METHOD pass is not a product-health assertion or independent acceptance.
+        console.info('DREAM_CONTROL_OBSERVATION_EDITION', JSON.stringify({ consumedAt, observation,
+          productR2Healthy: observation.r2Assertions.healthy, sourcePaths, methodOnly: true }));
+        return { exitCode: 0,
+          summary: 'Fresh read-only Dream observation METHOD passed; product health and acceptance remain separate.',
+          assertions: [
+            { id: 'method:wrong-runtime-refuses', passed: true,
+              evidence: 'Both selected hosts refused the unproven runtime before observations were exposed.' },
+            { id: 'method:containing-source', passed: true, evidence: JSON.stringify(sourcePaths) },
+            { id: 'method:exact-runtime-and-scope', passed: true,
+              evidence: JSON.stringify({ runtime: observation.runtime, scope: observation.scope }) },
+            { id: 'method:consumer-within-ttl', passed: true,
+              evidence: JSON.stringify({ consumedAt, capturedAt: observation.capturedAt, expiresAt: observation.expiresAt }) },
+            ...observation.r2Assertions.clauses.map(clause => ({ id: `method:${clause.id}`, passed: true,
+              evidence: JSON.stringify({ status: clause.status, healthy: clause.healthy,
+                reason: clause.reason, rawRefs: clause.rawRefs, sourceRefs: clause.sourceRefs }) })),
+            { id: 'method:unknown-is-unhealthy', passed: true,
+              evidence: JSON.stringify({ productR2Healthy: observation.r2Assertions.healthy,
+                statuses: observation.r2Assertions.clauses.map(clause => ({ id: clause.id, status: clause.status })) }) },
+          ] };
+      },
+    }, { workspaceId: profile.workspaceId, harnessSlug: profile.potSlug, projectDir: root });
+    expect(measured).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
+    expect(measured.testRunIds).toHaveLength(1);
+    console.info('DREAM_CONTROL_OPERATIONAL_RUN', JSON.stringify(measured));
   }, 90_000);
 });

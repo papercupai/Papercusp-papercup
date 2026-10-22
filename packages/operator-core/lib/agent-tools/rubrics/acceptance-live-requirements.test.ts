@@ -239,6 +239,42 @@ describe('readLiveAcceptanceCriteria (the acceptance read)', () => {
     });
   });
 
+  it('overlays named cases when a stored title retains the heading terminal period', async () => {
+    const seeded = parseRequirementBars(fixturePlan(requirementBlock()));
+    if (!seeded.ok) throw new Error('fixture must parse');
+    const storedCriteria = seeded.bars.map((bar) => ({
+      ...bar.criterion!, barKey: bar.barKey, title: `${bar.title}.`,
+    }));
+    const block = JSON.parse(requirementBlock({ file: NEW_TEST }));
+    const check = {
+      kind: 'tests', files: [NEW_TEST],
+      cases: [{ file: NEW_TEST, testName: 'the required named case' }],
+    };
+    block.verification.check = check;
+    const edited = fixturePlan(JSON.stringify(block));
+    const read = await readLiveAcceptanceCriteria(
+      { kind: 'acceptance', subjectPlan: 'live-view-fixture', criteria: storedCriteria },
+      { readSubjectPlanContent: async () => ({ content: edited }), parseRequirementBars: realParser },
+    );
+    expect(read.criteria[0]!.check).toEqual(check);
+    expect(read.criteria[0]!.title).toBe('Live view.');
+    expect(read.status).toMatchObject({ live: ['R-1'], changed: ['R-1'], kept: [] });
+
+    const renamed = await readLiveAcceptanceCriteria(
+      { kind: 'acceptance', subjectPlan: 'live-view-fixture', criteria: storedCriteria },
+      {
+        readSubjectPlanContent: async () => ({
+          content: edited.replace('**R-1 — Live view.**', '**R-1 — Changed view.**'),
+        }),
+        parseRequirementBars: realParser,
+      },
+    );
+    expect(renamed.criteria[0]!.check).toEqual(storedCriteria[0]!.check);
+    expect(renamed.status).toMatchObject({
+      live: [], kept: [{ barKey: 'R-1', reason: 'meaning-changed' }],
+    });
+  });
+
   it('falls back to the stored criteria, naming why, when the subject plan cannot be read', async () => {
     const criteria = [{ barKey: 'R-1', check: { kind: 'tests', files: [OLD_TEST] } }];
     const unreadable = await readLiveAcceptanceCriteria(

@@ -41,6 +41,9 @@ const log = (line) => console.log(`[tsc-service] ${line}`);
 
 /** @type {{ api: any, snapshot: any, snapshotAt: number, open: string[] }} */
 const state = { api: null, snapshot: null, snapshotAt: 0, open: [] };
+// A reverse-module census is shared only by requests on the same refreshed snapshot.
+/** @type {Map<string, Map<string, Set<string>>>} */
+const dependencyCache = new Map();
 /** @type {{ request: any, reply: (response: object) => void, arrivedAt: number, cancelled: boolean, trace: (phase: string) => void }[]} */
 const queue = [];
 let draining = false;
@@ -90,6 +93,7 @@ async function resetApi(why) {
   state.api = null;
   state.snapshot = null;
   state.open = [];
+  dependencyCache.clear();
   try {
     await api?.close();
   } catch {
@@ -120,6 +124,7 @@ async function refresh(projects) {
   previous?.dispose();
   state.snapshot = snapshot;
   state.snapshotAt = Date.now();
+  dependencyCache.clear();
 }
 
 async function serve({ request, arrivedAt, trace }) {
@@ -144,12 +149,14 @@ async function serve({ request, arrivedAt, trace }) {
         programFiles,
         configFile: request.project,
         readText: cachedText,
+        dependencyCache,
+        maxFiles: TSC_SERVICE_MAX_CHECKED_FILES,
       });
   if (scope.files.length > TSC_SERVICE_MAX_CHECKED_FILES) {
     return {
       ok: false,
       reason: 'scope-too-wide',
-      detail: `${scope.files.length} files (limit ${TSC_SERVICE_MAX_CHECKED_FILES}); a full compile is cheaper`,
+      detail: `at least ${scope.files.length} files (limit ${TSC_SERVICE_MAX_CHECKED_FILES}); a full compile is cheaper`,
     };
   }
 

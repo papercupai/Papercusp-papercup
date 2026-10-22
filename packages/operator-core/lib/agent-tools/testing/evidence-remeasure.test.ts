@@ -36,6 +36,7 @@ function row(id: number, opts: {
   runId?: string;
   originRunId?: string;
   observedAt?: string;
+  framework?: string;
 }) {
   const specId = opts.specId ?? 'S-1';
   const testPath = opts.testPath ?? 'src/subject.test.ts';
@@ -62,6 +63,7 @@ function row(id: number, opts: {
       adequacy: { outcome: opts.outcome ?? 'pass', ...(handBound ? { testLayer: 'unit' } : {}), ...opts.adequacy },
     },
     testRunId: null,
+    ...(opts.framework ? { testRunProvenance: { framework: opts.framework } } : {}),
     observedAt: opts.observedAt ?? '2026-10-06T00:00:00.000Z',
     currentness,
     ...(opts.moved ? { serverMeasurement: { status: 'measured', movedPaths: opts.moved } } : {}),
@@ -230,6 +232,39 @@ describe('planTestEvidenceRemeasure', () => {
 });
 
 describe('buildTestEvidenceRemeasure', () => {
+  it.each([true, false])('keeps non-Vitest proofs out of a mixed remeasure batch (hand-bound: %s)', async (handBound) => {
+    const browserPath = 'apps/operator/e2e/cloud-tutorial.spec.ts';
+    const list = vi.fn().mockResolvedValue([
+      row(1, { handBound, testPath: browserPath, currentness: sourceStale, framework: 'playwright' }),
+      // A retry without a ledger result must retain the last measured runner.
+      row(2, { testPath: browserPath, currentness: sourceStale, outcome: 'error' }),
+      row(3, { specId: 'S-2', currentness: sourceStale, framework: 'vitest' }),
+    ]);
+    const built = await buildTestEvidenceRemeasure(
+      { workItemId: 'WI-1', planSlug: 'p' }, { harnessSlug: 'h' }, { list },
+    );
+
+    expect(built.files).toEqual(['src/subject.test.ts']);
+    expect(built.request?.bindings).toEqual([recipe('S-2', 'src/subject.test.ts')]);
+    expect(built.plan.skipped).toEqual([expect.objectContaining({
+      specId: 'S-1', testPath: browserPath, bindingId: 2, reason: 'unsupported-runner',
+      detail: expect.stringMatching(/playwright.*re-bind/),
+    })]);
+  });
+
+  it('uses the latest measured framework when a proof migrated to Vitest', async () => {
+    const list = vi.fn().mockResolvedValue([
+      row(1, { currentness: sourceStale, framework: 'playwright' }),
+      row(2, { currentness: sourceStale, framework: 'vitest' }),
+    ]);
+    const built = await buildTestEvidenceRemeasure(
+      { workItemId: 'WI-1', planSlug: 'p' }, { harnessSlug: 'h' }, { list },
+    );
+
+    expect(built.files).toEqual(['src/subject.test.ts']);
+    expect(built.plan.skipped).toEqual([]);
+  });
+
   it('starts nothing when no proof is stale by drift', async () => {
     const list = vi.fn().mockResolvedValue([row(1, {})]);
     const built = await buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' }, { harnessSlug: 'h' }, { list });

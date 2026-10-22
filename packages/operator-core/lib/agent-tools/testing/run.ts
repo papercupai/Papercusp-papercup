@@ -78,7 +78,7 @@ import {
   statSync,
   type Dirent,
 } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { cp, readdir, readFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -3485,11 +3485,6 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   const foregroundCutoffAtMs = Math.min(foregroundTransportAtMs, deadline.childCutoffAtMs);
   const packet = new TestRunArtifactPacket(runId, resolve(opts.root), deadline, deps.artifactBaseDir);
   const reportDirectory = deps.reportDirectories?.[resolve(opts.root)];
-  if (reportDirectory) {
-    packet.paths.reports = reportDirectory;
-    packet.write('manifest.json', { schemaVersion: 1, runId, root: resolve(opts.root), deadline,
-      state: 'running', paths: packet.paths });
-  }
   let result: TestFilesCoreResult | undefined;
   let cleanup: OwnedTestDbCleanupResult | undefined;
   let error: string | undefined;
@@ -3527,7 +3522,23 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
       harness: opts.harnessSlug ?? null, workItem: opts.workItemId ?? null,
       lookup: { tool: 'testing:runs', runGroup: runId, source: 'local', latestPerFile: false },
       status: 'reference-only; presence and verdict require ledger readback' });
-    packet.finish({ result, error, cleanup, executedRoot: result?.root ?? null, phaseTimings: opts.phaseTimings ?? null });
+    try {
+      // The detached store consumes its reporter sinks after ledger ingestion.
+      // Retain the original bytes before this child exits; public artifact paths
+      // must keep pointing at this packet, never at the disposable ingestion sink.
+      if (reportDirectory && resolve(reportDirectory) !== resolve(packet.paths.reports)) {
+        for (const name of await readdir(reportDirectory)) {
+          await cp(join(reportDirectory, name), join(packet.paths.reports, name),
+            { recursive: true, force: false, errorOnExist: true });
+        }
+        packet.stage('reports-retained', { source: reportDirectory, destination: packet.paths.reports });
+      }
+    } catch (cause) {
+      error = `report retention failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      throw cause;
+    } finally {
+      packet.finish({ result, error, cleanup, executedRoot: result?.root ?? null, phaseTimings: opts.phaseTimings ?? null });
+    }
   }
 }
 
@@ -3681,8 +3692,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
   packet.captureSelectedSources(pathResolution.files, sourceSnapshot, root);
   const ledgerWorktreeBefore = ingestLedgerInProcess ? sourceSnapshot : null;
 
-  // Reports, raw channels and receipts share a retained directory outside disposable TMPDIR.
-  const dir = packet.paths.reports;
+  // A detached store may require its own ingestion sink. The outer core retains
+  // a separate copy in the packet before the store can consume that sink.
+  const dir = deps.reportDirectories?.[resolve(opts.root)] ?? packet.paths.reports;
   const reportPath = join(dir, 'report.json');
   const failureDetailsPath = join(dir, TEST_FAILURE_DETAILS_FILENAME);
   let outputLogPaths: string[] = [];

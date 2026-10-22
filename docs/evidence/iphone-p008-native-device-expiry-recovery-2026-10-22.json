@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "kind": "artifact-recovery-evidence",
+  "workItemId": "EI-26532466315996074",
+  "parentWorkItemId": "WI-10004735",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "verifiedOn": "2026-10-22",
+  "scope": "Read-only integrity verification of recovered original native artifacts; no native job was replayed and no new P-008 acceptance or shipment verdict is claimed.",
+  "originalEvidence": {
+    "receipt": "docs/evidence/iphone-p008-native-device-expiry-2026-10-15.json",
+    "receiptSha256": "087fe7a22cd2ac725cee04f442e5ecb451e8d3b73e371655d7ac1d10fd1e6233",
+    "archiveSha256": "3b6eb338a23345f17541999c900d00ba7070b8c48af9a832bbe85555ba28fa5e",
+    "nativeJobId": "0mv9x2ouz1tgjh3k1kv",
+    "sourceCommit": "38c7e990e948ac0e59d52dd32c47b60483150179",
+    "sourceFingerprint": "bbd4d59cd8b04abea4e1432e67b818212e0778b7adb3cc1c87c138256bd34551",
+    "sourceDirty": false
+  },
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/EI-26532466315996074-recovery-20261020",
+    "pathBase": "Operating account home directory; retained evidence is outside the staging checkout",
+    "archive": "recovered-native-artifacts.tar.gz",
+    "archiveBytes": 6942720,
+    "archiveSha256": "5123e8ce8add8d04b9dfef69a49f6fd4fc3feace634fac87cb68f04c8ad1acc1",
+    "resultPath": "result.json",
+    "resultSha256": "864633b6c8bf8daadac1935e0abc350d3b7ccf2a8397f7d891b03119e335ce02",
+    "verificationFile": "recovery-verification.json",
+    "verificationSha256": "bbce0d40a5f5d096b80b86eece4ee32721848ae2270f47967beca7938c3e5a93",
+    "declaredArtifactCount": 279,
+    "verifiedArtifactCount": 279,
+    "mismatches": []
+  },
+  "verification": {
+    "procedure": "Read the recovered result.json artifact manifest. For each declared artifact, locate exactly one matching member in the recovered tar archive and compare its byte length and SHA-256 with the original result manifest. Independently hash the archive, result and retained recovery-verification file.",
+    "originalResultMatchesReceipt": true,
+    "allDeclaredMemberBytesMatchOriginalResult": true,
+    "originalResultStatus": "passed",
+    "archiveDisposition": "Replacement archive container with a distinct SHA-256; original declared member bytes were recovered, not the original archive container.",
+    "nativeJobReplayed": false
+  },
+  "recurrenceGuard": {
+    "workItemId": "WI-6554700010018427",
+    "mechanism": "Existing finite retention pins renewed from nonterminal work-item evidence bindings, plus pin-before-binding intake validation.",
+    "tests": [
+      "packages/operator-core/lib/storage/retention-pins.test.ts",
+      "packages/operator-core/lib/storage/disk-reclaim.integration.test.ts",
+      "packages/operator-core/lib/storage/disk-reclaim-background-runtime.integration.test.ts"
+    ],
+    "status": "Current-source verification is in progress; this receipt alone does not attest that a binding or renewed pin has been installed."
+  },
+  "limits": [
+    "The original receipt and its original archive identity remain historical and unchanged.",
+    "This recovery does not establish production-hostname native acceptance, hosted/account acceptance, or whole-candidate shipment.",
+    "No public provider route, shared runtime, Android lifecycle, or release gate was changed during this integrity verification."
+  ]
+}

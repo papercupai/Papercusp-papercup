@@ -21,6 +21,8 @@
 import { z } from 'zod';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { getOrgPg } from '@papercusp/db-org';
 import { isNonCodeAuditVerdict, resolveVerification, withVerificationResolver } from '../../plan-verification-profile';
 import { isGenericCitationKind, resolveGenericCitation } from '../../plan-audits-generic-citations';
@@ -357,6 +359,67 @@ function resolveHeadSha(repoRoot: string): string | null {
   }
 }
 
+/** Recover a returned audit's identity without making append-only audits idempotent. */
+export function auditAbortCompletionReceipt(
+  args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const incomplete = (): AbortCompletionReceipt => ({
+    status: 'recovery-incomplete',
+    reason: 'plans:audit result did not prove the completed attempt and its persisted audit identity',
+    failures: ['missing-or-mismatched-audit-identity'],
+  });
+  if (context.toolName !== 'plans:audit' || !context.callId.trim() || result.isError) return incomplete();
+  const input = asRecord(args);
+  const payload = completedResultPayload(result);
+  if (!input || !payload || payload.ok !== true) return incomplete();
+
+  // Only successful, explicitly read-only previews prove that no audit was appended.
+  // A failed envelope can follow an audit write, so never infer no-write from failure.
+  if (input.dryRun === true || input.proposeCitations === true || input.phase === 'shaping') {
+    return payload.auditSeq == null && (payload.preview === true || payload.dryRun === true)
+      ? { status: 'not-recorded', reason: 'plans:audit completed a read-only preview' }
+      : incomplete();
+  }
+
+  const phase = input.phase ?? 'completion';
+  const slug = payload.slug;
+  const harness = payload.harness;
+  const auditSeq = payload.auditSeq;
+  if (
+    (phase !== 'activation' && phase !== 'completion') ||
+    typeof slug !== 'string' || !slug.trim() || slug !== input.slug ||
+    typeof harness !== 'string' || !harness.trim() ||
+    (input.harness != null && input.harness !== harness) ||
+    (payload.phase != null && payload.phase !== phase) ||
+    payload.preview === true || payload.dryRun === true ||
+    typeof auditSeq !== 'number' || !Number.isSafeInteger(auditSeq) || auditSeq < 1
+  ) return incomplete();
+
+  const revision = asRecord(payload.auditedPlanRevision);
+  if (phase === 'activation') {
+    if (
+      !revision || !Number.isSafeInteger(revision.id) || Number(revision.id) < 1 ||
+      !Number.isSafeInteger(revision.seq) || Number(revision.seq) < 1 ||
+      typeof revision.contentHash !== 'string' || !/^[a-f0-9]{64}$/.test(revision.contentHash)
+    ) return incomplete();
+  } else if (typeof payload.auditedSha !== 'string' && payload.auditedSha !== null) {
+    return incomplete();
+  }
+
+  return {
+    status: 'recorded',
+    effectRef: `plan-audit:${context.callId}:${encodeURIComponent(harness)}:${encodeURIComponent(slug)}:${phase}:${auditSeq}`,
+    diagnostics: {
+      harness, slug, phase, auditSeq,
+      ...(phase === 'activation' ? { auditedPlanRevision: revision } : { auditedSha: payload.auditedSha }),
+      // A partial audit is still a persisted audit; its acceptance verdict stays partial.
+      partial: payload.partial === true,
+    },
+  };
+}
+
 export default defineTool({
   name: 'plans:audit',
   description:
@@ -374,6 +437,7 @@ export default defineTool({
     ],
   },
   capability: 'plans:write',
+  abortCompletionReceipt: auditAbortCompletionReceipt,
   skipWorkspaceTx: true,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
@@ -423,6 +487,7 @@ export default defineTool({
         .optional(),
       sourceRefsResolved: z.number().int().nonnegative().optional(),
       slug: z.string().optional(),
+      harness: z.string().optional(),
       itemsAuditedThisPass: z.number().int().nonnegative().optional(),
       itemsCarriedForward: z.number().int().nonnegative().optional(),
       coverage: z.unknown().optional(),
@@ -1267,6 +1332,7 @@ export default defineTool({
         autoStart,
         phase: 'activation' as const,
         auditSeq: recorded.audit.auditSeq,
+        harness: harnessSlug,
         auditedPlanRevision: recorded.auditedPlanRevision,
         sourceRanges: sourceRanges.length,
         mappings: mappings.length,
@@ -1842,6 +1908,7 @@ export default defineTool({
       ok: true as const,
       slug: args.slug,
       auditSeq: audit.auditSeq,
+      harness: harnessSlug,
       auditedSha: audit.auditedSha,
       auditedAt,
       // WI-41365: which tree the citations were verified against, and why. Derivable

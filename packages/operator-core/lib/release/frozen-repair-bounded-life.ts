@@ -1,47 +1,19 @@
 /**
- * P-021 (green-main-cycle-time-2026-10-08, D-023): a BOUNDED LIFE for a frozen repair queue.
- *
- * WHY. Freeze-and-converge holds one candidate until it is green. That is right while repair is
- * converging and wrong when it is not: queue ad82b273 ran 24 rounds over 161h with its failing
- * count going 3 -> ... -> 28 and never reaching 0, holding `main` the whole time (audit
- * rpt_c1597a17 rec 4). This module decides when such a queue has stopped earning its pin.
- *
- * THE RULE (all PURE here; the gate and the store apply it):
- *  - retire when the failing count has made no new low in
- *    `FROZEN_REPAIR_BOUNDED_LIFE_ROUNDS_WITHOUT_LOW` consecutive rounds (`non-improving`), or the
- *    queue is older than `FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS` (`age`);
- *  - first settle any verification the current repair head still owes; an admission must
- *    not be retired against verdicts measured only at its predecessor;
- *  - never retire while the count is still making new lows inside 24h (both bounds unmet);
- *  - at most ONE automatic retirement per install per `FROZEN_REPAIR_BOUNDED_LIFE_RETIRE_WINDOW_MS`;
- *    a second trigger inside that window ESCALATES (once per candidate) instead of retiring;
- *  - every retirement records its trigger, rounds-since-low, the re-cut target and the CARRIED
- *    paths (the queue's admitted fixes and whether the re-cut target contains them).
- *
- * WHAT IT DOES NOT CHANGE. The owner-only `release:repair-queue { op:'retire' }` verb, the 8h age
- * escalation cadence (`FROZEN_REPAIR_AGE_ESCALATION_INTERVAL_MS`) and every hold in
- * `decideFrozenCandidateRepairQueue` are untouched. This is a separate, bounded automatic rule;
- * D-023 records why it supersedes "age is never an input" from
- * frozen-candidate-stays-frozen-through-all-fixes-2026-09-03#D-005/#D-011, and the three limits
- * above are the anti-treadmill protections that rule existed for.
- *
- * RE-CUT TARGET. The newest known-good staging commit (P-012) when the caller can name one;
- * until P-012 ships, the current staging tip. CARRY (the P-010 seam): every admission is taken
- * FROM staging, so a staging-tip re-cut contains each admitted fix or a newer staging version of
- * the same file by construction; only a known-good target OLDER than a fix can lack it, and those
- * paths are listed in `readmitPaths` for re-admission onto the new candidate.
+ * Historical bounded-life records and convergence telemetry.
+ * Owner correction D-090/P-041: automatic candidate retirement is forbidden.
+ * Age, failure counts and stalled rounds are diagnostic inputs only. A frozen
+ * lineage survives until it is green or an explicit owner retirement occurs.
  */
 import {
   FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
-  frozenRepairHeadOwesVerification,
   type FrozenCandidateRepairQueue,
   type FrozenRepairConvergenceRound,
 } from './frozen-candidate-repair-queue';
 import { likeForLikeTrajectory } from './round-one-measurement';
 
-/** Consecutive rounds without a new failing-count low that end a queue's life. */
+/** Historical threshold retained for diagnostics and old record readers only. */
 export const FROZEN_REPAIR_BOUNDED_LIFE_ROUNDS_WITHOUT_LOW = 4;
-/** A queue strictly older than this is retired even while it is still improving. */
+/** Historical age threshold; it grants no retirement authority. */
 export const FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 /** At most one automatic retirement per install inside this window (D-023 #2). */
 export const FROZEN_REPAIR_BOUNDED_LIFE_RETIRE_WINDOW_MS = 24 * 60 * 60 * 1_000;
@@ -134,6 +106,7 @@ interface BoundedLifeBasis {
 }
 
 export type FrozenRepairBoundedLifeDecision =
+  | ({ kind: 'disabled' } & BoundedLifeBasis)
   | ({ kind: 'within-bounds' } & BoundedLifeBasis)
   | ({
       kind: 'deferred';
@@ -154,8 +127,8 @@ export type FrozenRepairBoundedLifeDecision =
  * PURE: the shape of a queue's convergence so far. Rounds are ordered by their stable `round`
  * number. The persisted list keeps the first round plus the newest 23 (cap-trimming), so a
  * minimum in the trimmed middle can make a later retained round look like a new low: that only
- * SHORTENS `roundsSinceLow` (delays a retirement), never lengthens it — a real new low is below
- * every retained value too — and the age bound still ends the queue.
+ * SHORTENS `roundsSinceLow`, never lengthens it. These values describe convergence;
+ * neither this telemetry nor candidate age grants automatic retirement authority.
  */
 export function frozenRepairConvergenceTrajectory(
   rounds: readonly FrozenRepairConvergenceRound[] | undefined,
@@ -186,53 +159,17 @@ export function frozenRepairBoundedLifeTrigger(
   return null;
 }
 
-/**
- * PURE: should this queue be retired now? `state` is the install's bounded-life state (null when
- * none was ever recorded). The store re-checks identity, liveness and the rate limit under the
- * routine row lock; this decision is what the gate acts on and what tests drive.
- */
+/** Current policy: candidate retirement always requires an explicit owner action. */
 export function decideFrozenRepairBoundedLife(
   queue: FrozenCandidateRepairQueue,
   input: { nowMs: number; state: FrozenRepairBoundedLifeState | null },
 ): FrozenRepairBoundedLifeDecision {
-  const basis: BoundedLifeBasis = {
+  // No automatic retirement, including callers replaying pre-D-090 metadata.
+  return {
+    kind: 'disabled',
     trajectory: frozenRepairConvergenceTrajectory(queue.convergenceRounds),
     ageMs: Math.max(0, input.nowMs - queue.openedAtMs),
   };
-  const trigger = frozenRepairBoundedLifeTrigger(basis);
-  if (!trigger) return { kind: 'within-bounds', ...basis };
-  // A promotion is already in flight: main is moving to this lineage. Never cut under it.
-  if (queue.phase === 'ready-to-promote') {
-    return { kind: 'deferred', trigger, reason: 'promoting', ...basis };
-  }
-  // D-084 / EI-26652045828502628: a newly admitted head must receive the
-  // verification it already owes before the old queue's age/history can retire
-  // it. The shared predicate also covers an explicitly requested same-head retest.
-  if (frozenRepairHeadOwesVerification(queue)) {
-    return { kind: 'deferred', trigger, reason: 'repair-verification-pending', ...basis };
-  }
-  const precheck = queue.admissionPrecheck;
-  if (precheck && precheck.status === 'running' && precheck.expiresAtMs > input.nowMs) {
-    return { kind: 'deferred', trigger, reason: 'admission-precheck-running', ...basis };
-  }
-  if (queue.dispatchReservation && queue.dispatchReservation.expiresAtMs > input.nowMs) {
-    return { kind: 'deferred', trigger, reason: 'dispatch-reserved', ...basis };
-  }
-  const last = input.state?.lastRetire ?? null;
-  if (last && input.nowMs - last.retiredAtMs < FROZEN_REPAIR_BOUNDED_LIFE_RETIRE_WINDOW_MS) {
-    const prior = input.state?.lastRateLimitedEscalation ?? null;
-    const escalate =
-      !prior || prior.candidate !== queue.candidate || prior.lastRetireAtMs !== last.retiredAtMs;
-    return {
-      kind: 'rate-limited',
-      trigger,
-      lastRetireAtMs: last.retiredAtMs,
-      retryAfterMs: last.retiredAtMs + FROZEN_REPAIR_BOUNDED_LIFE_RETIRE_WINDOW_MS - input.nowMs,
-      escalate,
-      ...basis,
-    };
-  }
-  return { kind: 'retire', trigger, ...basis };
 }
 
 /**

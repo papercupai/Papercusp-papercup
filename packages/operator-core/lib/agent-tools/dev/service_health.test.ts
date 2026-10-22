@@ -125,6 +125,64 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("dev:service_health handler", () => {
+  function unobservedUnits() {
+    return Array.from({ length: 10 }, (_, i) => ({
+      name: `unit-${i}`,
+      layer: "systemd-user" as const,
+      autoRestart: true,
+      criticality: "important" as const,
+      consecutiveProbeFailures: 0,
+      lastRestartAt: null,
+      restartsLast10m: 0,
+      flapState: "ok" as const,
+      flapObserved: false,
+      healthy: true,
+      activeState: "active",
+      nRestarts: i,
+      secondsSinceStart: 114,
+      flapCountersNote: `restartsLast10m/lastRestartAt/flapState for unit-${i} measured NOTHING in this process and are zero-defaults — the supervision reconciler populates them only inside papercusp-bg-host. Do NOT read flapState:'ok' here as healthy. Use nRestarts (systemd ground truth) with secondsSinceStart instead.`,
+    }));
+  }
+
+  it("defaults to a compact snapshot with one shared caveat and no unmeasured healthy-looking counters", async () => {
+    probeM.mockResolvedValue(Array.from({ length: 12 }, (_, i) => ({
+      name: `service-${i}`, up: true, status: 200, latencyMs: i,
+      url: `http://127.0.0.1:${3000 + i}/health`,
+    })));
+    supervisionM.mockReturnValueOnce(unobservedUnits());
+
+    const result = (await tool.handler({} as never, {} as never)) as Out;
+    const b = body(result);
+
+    expect(b.snapshotMode).toBe("summary");
+    expect(b.services).toHaveLength(12);
+    expect(b.supervision).toHaveLength(10);
+    expect(b.supervision[4]).toMatchObject({ name: "unit-4", healthy: true, flapObserved: false, nRestarts: 4, secondsSinceStart: 114 });
+    expect(b.supervision[4]).not.toHaveProperty("flapState");
+    expect(b.supervision[4]).not.toHaveProperty("restartsLast10m");
+    expect(b.flapCountersNote).toContain("measured NOTHING");
+    expect(result.content[0].text.match(/measured NOTHING/g)).toHaveLength(1);
+    expect(result.content[0].text.length).toBeLessThan(6000);
+    expect(b.details).toMatchObject({ tool: "dev:service_health", args: { detail: "full" } });
+    expect(b).not.toHaveProperty("configured");
+    expect(b).not.toHaveProperty("evidence");
+  });
+
+  it("keeps the complete diagnostic snapshot available through detail full", async () => {
+    const services = [{ name: "operator", up: false, status: null, latencyMs: 2, wedged: true, note: "listener is not accepting", url: "http://127.0.0.1:3070/health" }];
+    probeM.mockResolvedValue(services);
+    supervisionM.mockReturnValueOnce(unobservedUnits());
+
+    const b = body((await tool.handler({ detail: "full" } as never, {} as never)) as Out);
+
+    expect(b.services).toEqual(services);
+    expect(b.supervision[4]).toMatchObject({ name: "unit-4", flapState: "ok", flapObserved: false, restartsLast10m: 0 });
+    expect(b.supervision[4].flapCountersNote).toContain("unit-4 measured NOTHING");
+    expect(b.evidence.failures).toEqual(services);
+    expect(b.configured.services).toEqual(["operator"]);
+    expect(b.nextVerb).toContain("capture evidence FIRST");
+  });
+
   it("starts fixed and supervision probes while a requested unit read is still pending", async () => {
     let resolveUnits!: (value: Awaited<ReturnType<typeof probeUnitStates>>) => void;
     unitM.mockReturnValueOnce(new Promise((resolve) => { resolveUnits = resolve; }));
@@ -197,7 +255,7 @@ describe("dev:service_health handler", () => {
       { name: "operator", up: true, latencyMs: 12 },
       { name: "desktop", present: false },
     ] as never);
-    const b = body((await tool.handler({} as never, {} as never)) as Out);
+    const b = body((await tool.handler({ detail: "full" } as never, {} as never)) as Out);
     expect(b).toMatchObject({
       ok: true,
       mcpHandshake: {
@@ -281,7 +339,7 @@ describe("dev:service_health handler", () => {
 
   it("does not report a stale local spawner give-up on a request-only host without the sidecar opt-in", async () => {
     mockResolvedTyped(probeM, [{ name: "operator", up: true, status: 200, latencyMs: 5 }]);
-    const b = body((await tool.handler({} as never, {} as never)) as Out);
+    const b = body((await tool.handler({ detail: "full" } as never, {} as never)) as Out);
 
     expect(b.supervision.find((entry: { name: string }) => entry.name === "spawner-sidecar")).toMatchObject({
       flapState: "ok",

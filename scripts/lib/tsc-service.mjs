@@ -440,13 +440,19 @@ export async function refreshProjectRootFiles({ api, snapshot, projects }) {
  *   programFiles: readonly string[],
  *   readText: (absFile: string) => string | null,
  *   configFile?: string,
+ *   dependencyCache?: Map<string, Map<string, Set<string>>>,
+ *   maxFiles?: number,
  * }} opts
  * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
  */
-export function checkedSetFor({ root, named, programFiles, readText, configFile }) {
+export function checkedSetFor({ root, named, programFiles, readText, configFile, dependencyCache, maxFiles }) {
   const rootPrefix = `${resolve(root)}/`;
   const namedAbs = new Set([...named].map((file) => resolve(root, file)));
-  const dependent = filesDependingOnChangedModules({ root, named: namedAbs, candidates: programFiles, readText, configFile });
+  const namedMembers = programFiles.filter((file) => file.startsWith(rootPrefix) && !file.includes('/node_modules/') && namedAbs.has(file)).length;
+  const dependent = filesDependingOnChangedModules({
+    root, named: namedAbs, candidates: programFiles, readText, configFile, dependencyCache,
+    ...(Number.isFinite(maxFiles) ? { stopAfter: Math.max(0, maxFiles - namedMembers) } : {}),
+  });
 
   const files = [];
   let namedCount = 0;
@@ -506,48 +512,82 @@ export function namedSetFor({ root, named, programFiles }) {
  * Companion declarations and their executable source share a module identity.
  *
  * @param {{ root: string, named: Iterable<string>, candidates: Iterable<string>,
- *   readText?: (absFile: string) => string | null, configFile?: string }} opts
+ *   readText?: (absFile: string) => string | null, configFile?: string,
+ *   dependencyCache?: Map<string, Map<string, Set<string>>>, stopAfter?: number }} opts
  * @returns {Set<string>} Absolute candidate paths depending on a named module.
  */
-export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile }) {
+export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile, dependencyCache, stopAfter = Infinity }) {
   const base = resolve(root);
   const inside = (file) => file.startsWith(`${base}/`) && !file.includes('/node_modules/');
   const identity = (file) => file.replace(SOURCE_EXTENSION, '');
   const targets = new Set([...named].map((file) => identity(resolve(base, file))));
   const candidateAbs = [...candidates].map((file) => resolve(base, file)).filter(inside);
   if (targets.size === 0) return new Set();
-  const optionsByConfig = new Map();
-  const configsByDir = new Map();
-  const optionsFor = (file) => {
-    const dir = dirname(file);
-    if (!configsByDir.has(dir)) configsByDir.set(dir, configFile
-      ? resolve(base, configFile) : ts.findConfigFile(dir, ts.sys.fileExists));
-    const config = configsByDir.get(dir);
-    if (!optionsByConfig.has(config)) {
-      const options = config
-        ? ts.parseJsonConfigFileContent(ts.readConfigFile(config, ts.sys.readFile).config ?? {},
-          { ...ts.sys, readDirectory: () => [] }, dirname(config), undefined, config).options
-        : { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, allowJs: true };
-      optionsByConfig.set(config, { options, cache: ts.createModuleResolutionCache(base, (s) => s, options) });
+  // The service owns this cache for ONE compiler snapshot, invalidating it on every refresh.
+  // Different named scopes share the expensive census, never their reachable-file verdicts.
+  const cacheKey = dependencyCache
+    ? JSON.stringify([base, configFile ? resolve(base, configFile) : null, candidateAbs])
+    : '';
+  let reverse = dependencyCache?.get(cacheKey);
+  if (!reverse) {
+    // An overwide service request needs only a sound lower bound to decline. Propagate proven
+    // reverse edges as they arrive instead of scanning the remaining program after that bound.
+    const proven = new Set(targets);
+    const memberCounts = new Map();
+    for (const file of new Set(candidateAbs)) {
+      const module = identity(file);
+      if (!targets.has(module)) memberCounts.set(module, (memberCounts.get(module) ?? 0) + 1);
     }
-    return optionsByConfig.get(config);
-  };
-  const reverse = new Map();
-  // This request-local module census grows only once per resolved repository file.
-  // Set iteration visits newly resolved modules without retaining duplicate import edges.
-  const moduleFiles = new Set(candidateAbs);
-  for (const file of moduleFiles) {
-    const text = readText ? readText(file) : ts.sys.readFile(file);
-    if (text == null) continue;
-    const { options, cache } = optionsFor(file);
-    for (const imp of ts.preProcessFile(text, true, true).importedFiles) {
-      const resolved = ts.resolveModuleName(imp.fileName, file, options, ts.sys, cache).resolvedModule;
-      if (!resolved || !inside(resolved.resolvedFileName)) continue;
-      const key = identity(resolved.resolvedFileName);
-      if (!reverse.has(key)) reverse.set(key, new Set());
-      reverse.get(key).add(identity(file));
-      moduleFiles.add(resolved.resolvedFileName);
+    let provenCount = 0;
+    const propagate = (module) => {
+      const pending = [module];
+      for (let i = 0; i < pending.length; i += 1) {
+        const next = pending[i];
+        if (proven.has(next)) continue;
+        proven.add(next);
+        provenCount += memberCounts.get(next) ?? 0;
+        for (const importer of reverse.get(next) ?? []) pending.push(importer);
+      }
+    };
+    const optionsByConfig = new Map();
+    const configsByDir = new Map();
+    const optionsFor = (file) => {
+      const dir = dirname(file);
+      if (!configsByDir.has(dir)) configsByDir.set(dir, configFile
+        ? resolve(base, configFile) : ts.findConfigFile(dir, ts.sys.fileExists));
+      const config = configsByDir.get(dir);
+      if (!optionsByConfig.has(config)) {
+        const options = config
+          ? ts.parseJsonConfigFileContent(ts.readConfigFile(config, ts.sys.readFile).config ?? {},
+            { ...ts.sys, readDirectory: () => [] }, dirname(config), undefined, config).options
+          : { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, allowJs: true };
+        optionsByConfig.set(config, { options, cache: ts.createModuleResolutionCache(base, (s) => s, options) });
+      }
+      return optionsByConfig.get(config);
+    };
+    reverse = new Map();
+    // The census grows only once per resolved repository file, including shared barrels.
+    const moduleFiles = new Set(candidateAbs);
+    for (const file of moduleFiles) {
+      const text = readText ? readText(file) : ts.sys.readFile(file);
+      if (text == null) continue;
+      const { options, cache } = optionsFor(file);
+      for (const imp of ts.preProcessFile(text, true, true).importedFiles) {
+        const resolved = ts.resolveModuleName(imp.fileName, file, options, ts.sys, cache).resolvedModule;
+        if (!resolved || !inside(resolved.resolvedFileName)) continue;
+        const key = identity(resolved.resolvedFileName);
+        if (!reverse.has(key)) reverse.set(key, new Set());
+        reverse.get(key).add(identity(file));
+        if (Number.isFinite(stopAfter) && proven.has(key)) propagate(identity(file));
+        moduleFiles.add(resolved.resolvedFileName);
+        if (provenCount > stopAfter) {
+          // This graph is incomplete: only the proven over-limit refusal is valid, never a
+          // reusable dependency index or a successful scoped diagnostic verdict.
+          return new Set(candidateAbs.filter((path) => proven.has(identity(path)) && !targets.has(identity(path))));
+        }
+      }
     }
+    dependencyCache?.set(cacheKey, reverse);
   }
   const reachable = new Set(targets);
   for (const module of reachable) {

@@ -158,7 +158,7 @@ it('R5 keeps the replay cutoff fixed after preparation and refuses an exhausted 
     deadline: callerDeadline, allowDetachedRecovery: false };
   const replayResult = await runTestFilesCore(replay, { runRouterFn, artifactBaseDir: root,
     reportDirectories: { [root]: reportDirectory } });
-  expect(replayResult.artifacts?.reports).toBe(reportDirectory);
+  expect(replayResult.artifacts?.reports).toBe(join(replayResult.artifacts!.directory, 'reports'));
   expect(runRouterFn.mock.calls[0]![0]).toContain(`--outputFile=${reportArtifact!.reportPath}`);
   expect(runRouterFn.mock.calls[0]![2]).toMatchObject(request.env!);
   expect(runRouterFn.mock.calls[0]![3]).toBe(26_000);
@@ -200,6 +200,34 @@ it('R5 writes both checkout reports at the paths retained by caller-bound detach
       .toBe(join(artifact.root, 'feature.test.ts'));
   }
   expect(phases.detach).not.toHaveBeenCalled();
+});
+
+it('retains replay report bytes after the detached store consumes its temporary sink', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(10_000);
+  const root = await makeTestRoot(true);
+  const sink = await mkdtemp(join(tmpdir(), 'testing-run-replay-retention-'));
+  roots.push(sink);
+  const report = JSON.stringify({ success: true, numPassedTests: 1, numFailedTests: 0,
+    numPendingTests: 0, testResults: [{ name: join(root, 'feature.test.ts'), status: 'passed',
+      assertionResults: [{ title: 'noop', fullName: 'noop', status: 'passed' }] }] });
+  const sidecar = JSON.stringify({ details: [] });
+  const runRouterFn = vi.fn(async (args: string[]) => {
+    expect(args).toContain(`--outputFile=${join(sink, 'report.json')}`);
+    await writeFile(join(sink, 'report.json'), report);
+    await writeFile(join(sink, 'report-sidecar.txt'), sidecar);
+    return { code: 0, signal: null, timedOut: false, aborted: false, output: '' };
+  });
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'],
+    timeoutMs: 45_000, deadline: callerDeadline, allowDetachedRecovery: false },
+  { runRouterFn, artifactBaseDir: root, reportDirectories: { [root]: sink } });
+  expect(result).toMatchObject({ ok: true, passed: 1 });
+  await rm(sink, { recursive: true, force: true });
+  const manifest = JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'));
+  expect(manifest.paths.reports).toBe(result.artifacts!.reports);
+  expect(manifest.childState).toBe('closed');
+  expect(manifest.cleanup.complete).toBe(true);
+  await expect(readFile(join(result.artifacts!.reports, 'report.json'), 'utf8')).resolves.toBe(report);
+  await expect(readFile(join(result.artifacts!.reports, 'report-sidecar.txt'), 'utf8')).resolves.toBe(sidecar);
 });
 
 it('R5 keeps a caller deadline within the foreground cap unchanged and foreground-only', async () => {

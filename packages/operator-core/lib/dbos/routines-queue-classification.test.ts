@@ -8,6 +8,7 @@ import {
   ROUTINES_DEPLOY_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
   ROUTINES_HEAVY_QUEUE,
+  ROUTINES_SYNC_GUARDS_QUEUE,
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
   FLEET_CONTROL_ACTIONS,
@@ -15,6 +16,7 @@ import {
   TRIGGERS_QUEUE_ACTIONS,
   HEAVY_ROUTINE_ACTIONS,
   DEPLOY_TRIGGER_ACTIONS,
+  SYNC_GUARD_ACTIONS,
   queueForRoutine,
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
@@ -266,6 +268,22 @@ describe('queueForRoutine — bounded trigger and import handlers', () => {
     expect(queueForRoutine('system:external-trigger-dispatch-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:personal-vault-import-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:blueprint-run')).toBe(ROUTINES_QUEUE);
+  });
+});
+
+describe('queueForRoutine — sync-batch lint-guard lane (P-028)', () => {
+  it('isolates the five-minute guard from the shared FIFO without widening the critical floor', () => {
+    expect([...SYNC_GUARD_ACTIONS]).toEqual(['sync-batch-lint-guards']);
+    expect(queueForRoutine('system:sync-batch-lint-guards')).toBe(ROUTINES_SYNC_GUARDS_QUEUE);
+    expect(queueForRoutine('system:sync-batch-lint-guards')).not.toBe(ROUTINES_QUEUE);
+    expect(shouldFireUnderPoolShed('system:sync-batch-lint-guards')).toBe(false);
+    expect(CRITICAL_ROUTINE_ACTIONS.has('sync-batch-lint-guards')).toBe(false);
+  });
+
+  it('keeps near-miss action names on the shared queue', () => {
+    expect(queueForRoutine('system:sync-batch-lint-guards-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:pre-sync-batch-lint-guards')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('sync-batch-lint-guards')).toBe(ROUTINES_QUEUE);
   });
 });
 

@@ -256,11 +256,32 @@ describe('shared snapshot-backed push channel', () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const d = deps();
-      const context = vi.fn(() => new Promise<FirstTouchContext>(() => {}));
+      const context = vi.fn((_input: PushInput, _paths: string[],
+        diagnostics: Parameters<NonNullable<PushChannelDeps['context']>>[2]) => {
+        if (diagnostics) {
+          diagnostics.phaseOutcomes['context.sourceLinks'] = 'running';
+          diagnostics.phaseOutcomes['context.liveLockHoldings'] = 'running';
+        }
+        return new Promise<FirstTouchContext>(() => {});
+      });
       d.context = context;
       expect(await codeIntelPushText(input, 0, d)).toContain('Static consumer');
       expect(d.commit).toHaveBeenCalledOnce();
-      expect(warning).toHaveBeenCalledWith(expect.stringContaining('code-intel-first-touch-context exceeded'));
+      const warningLine = warning.mock.calls.map(([line]) => String(line))
+        .find(line => line.startsWith('[code-intel-first-touch-context]'));
+      expect(warningLine).toBeDefined();
+      const diagnostic = JSON.parse(warningLine!.slice(warningLine!.indexOf(']') + 2));
+      expect(diagnostic).toMatchObject({
+        event: 'wait-timeout',
+        timeoutMs: 100,
+        phaseOutcomes: {
+          outerContext: 'timeout',
+          underlyingCancellation: 'not-supported',
+          'context.sourceLinks': 'running',
+          'context.liveLockHoldings': 'running',
+        },
+      });
+      expect(diagnostic.readId).toBe(context.mock.calls[0]?.[2]?.readId);
       vi.mocked(d.enabled).mockResolvedValue(false);
       context.mockClear();
       expect(await codeIntelPushText(input, 0, d)).toBe('');

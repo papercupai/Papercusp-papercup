@@ -1612,8 +1612,8 @@ describe('runGitSync (real git, no submodule)', () => {
       refreshLiveLockHoldings,
     });
 
-    // Pre-stage census + the EI-24712906810240170 post-stage census (normal.txt was staged).
-    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
+    // Pre-stage census + post-stage census + post-pass check for the still-held path.
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(3);
     expect(out.status).toBe('synced');
     expect(out.skippedPaths).toEqual([{
       scope: 'superproject',
@@ -1886,6 +1886,32 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(readFileSync(join(repo, 'new-lock.txt'), 'utf8')).toBe('still being edited\n');
   });
 
+  it('WI-6554700010018790: commits a live-held path released after the pre-stage census in the same pass', async () => {
+    writeFileSync(join(repo, 'file.txt'), 'completed edit released during preparation\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const releasedHold = { path: 'file.txt', owner: 'su-finished', intent: 'turn-scoped hold' };
+    let refreshCount = 0;
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      refreshCount += 1;
+      // The pre-stage snapshot still sees the hold. The post-stage guard and the
+      // post-pass census see the release, but file.txt was excluded from every add.
+      return refreshCount === 1 ? [releasedHold] : [];
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      refreshLiveLockHoldings,
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('completed edit released during preparation');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toBe('');
+    expect(out.skippedPaths).not.toContainEqual(expect.objectContaining({ path: 'file.txt' }));
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(5);
+  });
+
   it('EI-22435583452728403: fails closed when the commit-time live-lock refresh rejects', async () => {
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
     const refreshLiveLockHoldings = vi.fn(async () => {
@@ -1929,7 +1955,7 @@ describe('runGitSync (real git, no submodule)', () => {
 
     const out = await runGitSync('test', { repoPath: repo, config: cfg, refreshLiveLockHoldings });
 
-    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(3);
     expect(out.status).toBe('synced');
     expect(git(originDir, 'show', 'main:file.txt')).toBe(original.trimEnd());
     expect(git(originDir, 'log', '-p', 'main')).not.toContain('MUTANT');
@@ -2487,7 +2513,7 @@ describe('runGitSync (real git, no submodule)', () => {
       log: (message) => logs.push(message),
     });
 
-    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(3);
     expect(out.status).toBe('synced');
     expect(out.skippedPaths).toContainEqual({ scope: 'superproject', ...lockedMain });
     expect(git(originDir, 'show', 'main:normal.txt')).toBe('unrelated work');
@@ -2765,7 +2791,7 @@ describe('runGitSync (real git, no submodule)', () => {
       log: (message) => logs.push(message),
     });
 
-    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(3);
     expect(out.status).toBe('synced');
     const committed = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
     expect(committed).toContain(controlPath);
@@ -5459,10 +5485,9 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
       refreshLiveLockHoldings,
     });
 
-    // One pre-stage census per repo (subA, subB, superproject), plus the EI-24712906810240170
-    // post-stage census in each repo that staged something (subB, superproject; subA's only
-    // dirty path was locked, so it staged nothing).
-    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(5);
+    // One pre-stage census per repo (subA, subB, superproject), post-stage census in the two
+    // repos that staged, and a post-pass release check for subA's only held dirty path.
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(6);
     expect(out.status).toBe('synced');
     expect(out.skippedPaths).toContainEqual({
       scope: 'libs/subA',

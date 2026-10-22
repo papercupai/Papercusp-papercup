@@ -30,7 +30,7 @@ import {
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
 } from './frozen-candidate-repair-queue';
-import { buildFrozenRepairBoundedLifeRecord, decideFrozenRepairBoundedLife } from './frozen-repair-bounded-life';
+import { buildFrozenRepairBoundedLifeRecord, frozenRepairConvergenceTrajectory } from './frozen-repair-bounded-life';
 import { retireFrozenRepairQueueForBoundedLife } from './frozen-repair-bounded-life-store';
 import {
   FROZEN_REPAIR_CARRY_LAST_METADATA_KEY,
@@ -106,8 +106,9 @@ function queue(extra: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidate
 }
 
 function boundedLifeRecord(q: FrozenCandidateRepairQueue) {
-  const decision = decideFrozenRepairBoundedLife(q, { nowMs: NOW, state: null });
-  if (decision.kind !== 'retire') throw new Error(`fixture must retire, got ${decision.kind}`);
+  // Historical carry fixture; automatic retirement is no longer permitted.
+  const decision = { kind: 'retire' as const, trigger: 'non-improving' as const,
+    trajectory: frozenRepairConvergenceTrajectory(q.convergenceRounds), ageMs: NOW - q.openedAtMs };
   return buildFrozenRepairBoundedLifeRecord({
     queue: q,
     decision,
@@ -151,27 +152,15 @@ describe('P-010 frozen repair carry store (real Postgres)', () => {
     expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue())))?.admissions).toHaveLength(1);
   });
 
-  it('a bounded-life retire writes the pending carry in the SAME write that deletes the queue', async () => {
+  it('a legacy bounded-life request preserves the queue and creates no carry', async () => {
     const q = queue();
-    await seed({ repair_queue: q, unrelated_key: { keep: 'me' } });
+    const original = { repair_queue: q, unrelated_key: { keep: 'me' } };
+    await seed(original);
     await expect(retireFrozenRepairQueueForBoundedLife(target, q, boundedLifeRecord(q))).resolves.toEqual({
-      retired: true,
+      retired: false, refusal: 'automatic-retirement-disabled',
     });
-    const after = await metadata();
-    expect(after.repair_queue).toBeUndefined();
-    expect(after.unrelated_key).toEqual({ keep: 'me' });
-    await expect(readFrozenRepairPendingCarry(target)).resolves.toEqual({
-      schemaVersion: 1,
-      fromCandidate: C,
-      fromRepairHead: H,
-      reason: 'bounded-life',
-      retiredAtMs: NOW,
-      admitted: [
-        { path: 'a.ts', blob: 'blob-a' },
-        { path: 'b.ts', blob: 'blob-b' },
-      ],
-      truncated: false,
-    });
+    expect(await metadata()).toEqual(original);
+    await expect(readFrozenRepairPendingCarry(target)).resolves.toBeNull();
   });
 
   it('a refused bounded-life retire writes no carry', async () => {
@@ -179,15 +168,15 @@ describe('P-010 frozen repair carry store (real Postgres)', () => {
     await seed({ repair_queue: { ...decidedOn, repairHead: H2, updatedAtMs: NOW } });
     await expect(
       retireFrozenRepairQueueForBoundedLife(target, decidedOn, boundedLifeRecord(decidedOn)),
-    ).resolves.toEqual({ retired: false, refusal: 'identity-mismatch' });
+    ).resolves.toEqual({ retired: false, refusal: 'automatic-retirement-disabled' });
     expect((await metadata())[FROZEN_REPAIR_CARRY_METADATA_KEY]).toBeUndefined();
   });
 
-  it('a retired queue that admitted nothing writes no carry key at all', async () => {
+  it('an automatic retire remains forbidden even when the queue admitted nothing', async () => {
     const q = queue({ admissions: [] });
     await seed({ repair_queue: q });
     await expect(retireFrozenRepairQueueForBoundedLife(target, q, boundedLifeRecord(q))).resolves.toEqual({
-      retired: true,
+      retired: false, refusal: 'automatic-retirement-disabled',
     });
     expect(Object.keys(await metadata())).not.toContain(FROZEN_REPAIR_CARRY_METADATA_KEY);
     await expect(readFrozenRepairPendingCarry(target)).resolves.toBeNull();
@@ -196,7 +185,7 @@ describe('P-010 frozen repair carry store (real Postgres)', () => {
   it('the owner retire writes the pending carry too, unioned with an unconsumed one', async () => {
     const first = queue();
     await seed({ repair_queue: first });
-    await retireFrozenRepairQueueForBoundedLife(target, first, boundedLifeRecord(first));
+    await expect(retireFrozenCandidateRepairQueue(target, first)).resolves.toMatchObject({ retired: true });
 
     // A queue opened on an explicit candidate before any fresh cut consumed the first carry.
     const second = queue({
@@ -223,7 +212,7 @@ describe('P-010 frozen repair carry store (real Postgres)', () => {
   it('consume swaps exactly the assessed carry for its record; a replaced carry is left for the next cut', async () => {
     const q = queue();
     await seed({ repair_queue: q });
-    await retireFrozenRepairQueueForBoundedLife(target, q, boundedLifeRecord(q));
+    await expect(retireFrozenCandidateRepairQueue(target, q)).resolves.toMatchObject({ retired: true });
     const pending = await readFrozenRepairPendingCarry(target);
     if (!pending) throw new Error('fixture must leave a pending carry');
     const record = buildFrozenRepairCarryRecord({

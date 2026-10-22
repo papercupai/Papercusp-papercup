@@ -1519,6 +1519,58 @@ describe('durable detached snapshot lifecycle', () => {
     await expect(store.getTestRunLedgerRecoveryAsync('unreadable-ledger-run', unavailableSql)).resolves.toBeNull();
   });
 
+  it.each(['exited', 'ended_unobserved', 'killed', 'timed_out'])(
+    'reconciles a locally cached running snapshot when its linked task is %s', async (taskState) => {
+      const run = store.startRun(req());
+      const updates: unknown[][] = [];
+      const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+          return [{
+            run_id: run.runId, task_id: run.taskId, kind: run.kind, label: run.label,
+            file_path: null, command: run.command, status: 'running', exit_code: null,
+            started_at: new Date(run.startedAt), finished_at: null,
+            output: 'retained partial output', truncated: false,
+            task_state: taskState, task_deadline_at: null,
+          }];
+        }
+        if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+          updates.push(values);
+          return [{ run_id: run.runId }];
+        }
+        return [];
+      }) as unknown as Sql;
+
+      await expect(store.getRunAsync(run.runId, sql)).resolves.toMatchObject({
+        status: 'error', exitCode: null, finishedAt: expect.any(Number),
+        output: expect.stringContaining('no test verdict was observed'),
+      });
+      expect(store.getRun(run.runId)?.status).toBe('error');
+      await expect(store.getRunAsync(run.runId, sql)).resolves.toMatchObject({ status: 'error' });
+      expect(updates).toHaveLength(1);
+      // A delayed child notification must not replace the reconciled unknown verdict.
+      lastChild._emitClose(0);
+      expect(store.getRun(run.runId)?.status).toBe('error');
+    },
+  );
+
+  it('preserves newer local output while the linked durable task is still running', async () => {
+    const run = store.startRun(req());
+    lastChild._emitStdout('newer local progress');
+    const sql = vi.fn(async (strings: TemplateStringsArray) => strings.join(' ').includes(
+      'FROM harness_shared.testing_run_snapshots AS snapshot',
+    ) ? [{
+      run_id: run.runId, task_id: run.taskId, kind: run.kind, label: run.label,
+      file_path: null, command: run.command, status: 'running', exit_code: null,
+      started_at: new Date(run.startedAt), finished_at: null,
+      output: 'older durable progress', truncated: false,
+      task_state: 'running', task_deadline_at: null,
+    }] : []) as unknown as Sql;
+    await expect(store.getRunAsync(run.runId, sql)).resolves.toMatchObject({
+      status: 'running', output: 'newer local progress', finishedAt: null,
+    });
+  });
+
   it('reconciles a persisted running snapshot when its linked task is terminal', async () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {

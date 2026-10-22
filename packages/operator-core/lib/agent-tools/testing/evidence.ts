@@ -604,6 +604,8 @@ export type RemeasureSkip = { specId: string; testPath: string; bindingId: numbe
   reason: 'current' | 'clause-moved' | 'run-in-flight' | 'unmeasurable' | 'not-remeasurable' | 'cap'
     /** A test proof bound by hand (plans:bind-spec-evidence): no stored recipe to re-run. */
     | 'no-recipe'
+    /** The recorded runner cannot execute through testing:run's Vitest route. */
+    | 'unsupported-runner'
     /** A mutation proof: curing it means re-running the mutation probe, not a test file. */
     | 'probe-required';
   detail?: string };
@@ -717,6 +719,7 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[],
   const members = new Map<string, number[]>();
   const judgments = new Map<string, { fields: Set<string>; bindingIds: number[] }>();
   const clean = new Map<string, number[]>();
+  const frameworks = new Map<string, string>();
   for (const row of [...rows].sort((a, b) => b.id - a.id)) {
     // Counterexample proofs assert a SPECIFIC failure against a deliberately broken
     // subject; re-running them against moved code is not the same claim.
@@ -741,6 +744,10 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[],
     if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase });
     if (row.specRevision === latest.get(key)!.row.specRevision) {
       members.set(key, [...(members.get(key) ?? []), row.id]);
+      // New pending/failed attempts may have no ledger row. Preserve the latest
+      // measured framework at this revision instead of guessing from testLayer.
+      const framework = row.testRunProvenance?.framework;
+      if (framework && !frameworks.has(key)) frameworks.set(key, framework);
       if (row.testRunProvenance?.worktreeDirty === false) clean.set(key, [...(clean.get(key) ?? []), row.id]);
       const fields = reviewerJudgmentFields(row.details);
       if (fields.length > 0) {
@@ -787,6 +794,12 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[],
       // A completed run whose sources moved WHILE it ran is the same drift, observed early.
       (overall !== 'unknown' && phase === 'source-changed' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason)))
     ) {
+      const framework = frameworks.get(key);
+      if (framework && framework !== 'vitest') {
+        skipped.push({ ...base, reason: 'unsupported-runner',
+          detail: `Recorded runner is ${framework}; testing:run remeasures Vitest only. Re-run with the maintained ${framework} runner and re-bind the ledger proof with plans:bind-spec-evidence.` });
+        continue;
+      }
       const judgment = judgments.get(key);
       const cleanIds = clean.get(key);
       selected.push({ ...base, staleReasons, ...(moved !== undefined ? { movedPaths: moved } : {}),

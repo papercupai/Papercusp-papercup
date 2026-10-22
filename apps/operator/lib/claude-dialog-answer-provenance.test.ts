@@ -33,7 +33,7 @@ function attachment(context: string, sessionId = SESSION) {
 }
 
 describe('Claude dialog answer provenance', () => {
-  it.each(['automatic', 'human'] as const)('keeps %s submissions attributable through live context and both history readers', async (source) => {
+  it.each(['automatic', 'human'] as const)('%s-source-receipt: keeps submissions attributable through live context and both history readers', async (source) => {
     const f = fixture();
     openClaudeDialog(OWNER, SESSION, TOOL, f.env);
     expect(source === 'automatic' ? f.child.write('\r') : f.humanWrite('\r')).toBe('written');

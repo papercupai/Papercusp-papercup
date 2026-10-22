@@ -784,6 +784,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       'routines-triggers',
       'routines-release',
       'routines-deploy',
+      'routines-sync-guards',
     ]);
   });
 
@@ -800,6 +801,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       ...[...FLEET_CONTROL_ACTIONS].map((a) => `system:${a}`),
       ...[...HEAVY_ROUTINE_ACTIONS].map((a) => `system:${a}`),
       ...[...TRIGGERS_QUEUE_ACTIONS].map((a) => `system:${a}`),
+      'system:sync-batch-lint-guards',
       'system:green-checkpoint',
       'mug',
       '',

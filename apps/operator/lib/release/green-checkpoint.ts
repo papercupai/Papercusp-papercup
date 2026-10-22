@@ -109,16 +109,9 @@ import {
   shouldRunSuiteAfterEarlyTypecheckFailure,
 } from "@papercusp/operator-core/lib/release/round-one-measurement";
 import {
-  buildFrozenRepairBoundedLifeRecord,
-  decideFrozenRepairBoundedLife,
-  frozenRepairBoundedLifeRateLimitedBody,
-  frozenRepairBoundedLifeRetireBody,
-  frozenRepairBoundedLifeSummary,
-  planFrozenRepairCarry,
   type FrozenRepairBoundedLifeEscalation,
   type FrozenRepairBoundedLifeRecord,
   type FrozenRepairBoundedLifeState,
-  type FrozenRepairRecutTarget,
 } from "@papercusp/operator-core/lib/release/frozen-repair-bounded-life";
 import {
   assessFrozenRepairCarryAtCut,
@@ -12419,104 +12412,6 @@ async function gitBlobAt(repo: string, sha: string, path: string): Promise<strin
 }
 
 /**
- * P-021 (green-main-cycle-time-2026-10-08, D-023): apply the frozen queue's bounded life for
- * this pass. Returns the retirement record when this pass retired the queue — the caller then
- * re-cuts at `record.recutTarget` — and null otherwise. Fail-safe: any error KEEPS the queue.
- */
-async function applyFrozenRepairBoundedLife(
-  cfg: ReleaseConfig,
-  deps: CheckpointDeps,
-  queue: FrozenCandidateRepairQueue,
-  tip: string,
-  lastReady: string | null,
-): Promise<FrozenRepairBoundedLifeRecord | null> {
-  if (!deps.readFrozenRepairBoundedLifeState || !deps.retireFrozenRepairQueueForBoundedLife) {
-    return null;
-  }
-  const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-  const short = queue.candidate.slice(0, 8);
-  try {
-    const nowMs = Date.now();
-    const state = await deps.readFrozenRepairBoundedLifeState();
-    const decision = decideFrozenRepairBoundedLife(queue, { nowMs, state });
-    if (decision.kind === "within-bounds") return null;
-    if (decision.kind === "deferred") {
-      deps.log(
-        `P-021 bounded queue life: frozen candidate ${short} crossed its ${decision.trigger} ` +
-          `bound; retirement deferred (${decision.reason})`,
-      );
-      return null;
-    }
-    if (decision.kind === "rate-limited") {
-      deps.log(
-        `P-021 bounded queue life: frozen candidate ${short} crossed its ${decision.trigger} ` +
-          `bound inside the 24h automatic-retire window; ${decision.escalate ? "escalating" : "already escalated"}, not retiring`,
-      );
-      if (decision.escalate) {
-        try {
-          await deps.escalate?.(
-            `frozen candidate ${short} crossed its bounded-life ${decision.trigger} bound, but an automatic retirement already ran in the last 24h`,
-            frozenRepairBoundedLifeRateLimitedBody(queue, decision),
-          );
-          await deps.recordFrozenRepairBoundedLifeEscalation?.({
-            candidate: queue.candidate,
-            trigger: decision.trigger,
-            atMs: nowMs,
-            lastRetireAtMs: decision.lastRetireAtMs,
-          });
-        } catch (e) {
-          deps.log(`warn: P-021 rate-limited escalation failed: ${errorText(e)}`);
-        }
-      }
-      return null;
-    }
-    let offered: string | null = null;
-    try {
-      offered = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
-    } catch (e) {
-      deps.log(`warn: P-021 known-good re-cut target unavailable, using the staging tip: ${errorText(e)}`);
-    }
-    // P-012: the same lineage + ahead-of-green rules as the fresh cut, so a retire never re-cuts
-    // at a commit off the tip's lineage or at (or behind) the green pin.
-    const cut = await decideKnownGoodFreezeCut({
-      tip,
-      candidate: tip,
-      lastReady,
-      knownGood: offered,
-      isAncestor: (a, b) => isAncestor(cfg.integrationRoot, a, b),
-    });
-    const knownGood = cut.source === "known-good" ? cut.candidate : null;
-    const target: FrozenRepairRecutTarget = knownGood
-      ? { sha: knownGood, source: "known-good" }
-      : { sha: tip, source: "staging-tip" };
-    const blobAt =
-      deps.frozenRepairBlobAt ??
-      ((sha: string, path: string) => gitBlobAt(cfg.integrationRoot, sha, path));
-    const carry = await planFrozenRepairCarry({ queue, target, blobAt });
-    const record = buildFrozenRepairBoundedLifeRecord({ queue, decision, nowMs, target, carry });
-    const outcome = await deps.retireFrozenRepairQueueForBoundedLife(queue, record);
-    if (!outcome.retired) {
-      deps.log(
-        `P-021 bounded queue life: retirement of frozen candidate ${short} refused ` +
-          `(${outcome.refusal ?? "unknown"}); keeping the frozen queue`,
-      );
-      return null;
-    }
-    deps.log(frozenRepairBoundedLifeSummary(record));
-    await deps
-      .escalate?.(
-        `frozen candidate ${short} retired by the bounded-life rule (${record.trigger}); re-cut at ${record.recutTarget.slice(0, 8)}`,
-        frozenRepairBoundedLifeRetireBody(record),
-      )
-      .catch((e) => deps.log(`warn: P-021 retirement escalation failed: ${errorText(e)}`));
-    return record;
-  } catch (e) {
-    deps.log(`warn: P-021 bounded queue life check failed; keeping the frozen queue: ${errorText(e)}`);
-    return null;
-  }
-}
-
-/**
  * Assess a captured carry without consuming it. Preflight can use the selected candidate
  * for dependency preparation; the caller retains the pending identity for a later CAS.
  * Authority reads and writes deliberately stay outside this helper.
@@ -13139,19 +13034,8 @@ async function runGreenCheckpointInner(
       repairQueue: pendingQueue,
     });
   }
-  // P-021 (green-main-cycle-time-2026-10-08, D-023): the ONE bounded automatic exception to the
-  // rule below. A queue that made no new failing-count low in 4 rounds, or is older than 24h, is
-  // retired (at most once per install per 24h; a second trigger escalates instead) and this pass
-  // re-cuts at the newest known-good staging commit (P-012) or the staging tip, with the queue's
-  // admitted fixes carried and recorded. See frozen-repair-bounded-life.ts.
-  let boundedLifeRetire: FrozenRepairBoundedLifeRecord | null = null;
-  if (repairQueue && !diagnosticOnly) {
-    boundedLifeRetire = await applyFrozenRepairBoundedLife(cfg, deps, repairQueue, candidate, lastReady);
-    if (boundedLifeRetire) {
-      repairQueue = null;
-      candidate = boundedLifeRetire.recutTarget;
-    }
-  }
+  // D-090/P-041: no automatic retirement or re-cut. Keep the frozen identity
+  // through age, failure-count, round-count and resource-pressure changes.
   // D-004 / P-009 / P-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): there is
   // deliberately NO age-, stall- or "fossil"-based release of a pinned candidate here. The
   // WI-42207 block that used to live at this point released any pin older than
@@ -13498,37 +13382,22 @@ async function runGreenCheckpointInner(
           dispatchInfeasible &&
           dispatchInfeasible.kind === "test-candidate"
         ) {
-          // WI-2141347: the repairHead already converged past the frozen candidate (an
-          // ancestor of staging — already vetted, never unpushed fixer content), so it is
-          // a structurally sound candidate to test even though no fixer can be dispatched.
-          // Abandon this queue's own bookkeeping but test the CONVERGED repairHead — a sha on
-          // the frozen lineage, never the staging tip (D-005: the resolver reads the tip only
-          // when NO queue row exists).
-          const abandonedQueue = repairQueue;
-          const testedRepairHead = dispatchInfeasible.candidate;
-          await deps.writeFrozenRepairQueue?.(null, {
-            expectedUpdatedAtMs: abandonedQueue.updatedAtMs,
-          });
-          repairQueue = null;
-          candidate = await revParse(cfg.integrationRoot, testedRepairHead);
-          initialCandidateVerification = true;
-          deps.log(
-            `frozen candidate ${abandonedQueue.candidate.slice(0, 8)} retired after measured ` +
-              `provider-capacity infeasibility (attempts=0), but its repairHead ${testedRepairHead.slice(0, 8)} ` +
-              `had already converged past it — testing the converged repairHead instead of the ` +
-              `current staging tip`,
+          // Capacity cannot retire a candidate. Verify its admitted repair head
+          // while preserving the queue, failure signature and admission history.
+          repairQueue = await commitFrozenRepairQueueTransition(
+            deps, repairQueue,
+            (fresh) => ({ ...fresh, phase: "ready-to-verify",
+              updatedAtMs: Math.max(Date.now(), fresh.updatedAtMs + 1) }),
+            "verify admitted head under capacity hold",
           );
-          // P-004: a retire CLEARS the queue, so this is precisely the disposition no
-          // `repairQueue` reader can ever see. Record it before the run moves on.
+          candidate = await revParse(cfg.integrationRoot, repairQueue.repairHead);
+          initialCandidateVerification = false;
+          deps.log(`frozen candidate ${repairQueue.candidate.slice(0, 8)} retained under provider-capacity ` +
+            `infeasibility; verifying admitted repairHead ${candidate.slice(0, 8)}`);
           await deps.recordFreezeDisposition?.({
-            ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue: abandonedQueue }),
-            enabled: true,
-            state: "retired",
-            reason:
-              `retired after measured provider-capacity infeasibility (attempts=0), but its ` +
-              `repairHead ${testedRepairHead.slice(0, 12)} had already converged past it — ` +
-              `testing that converged head rather than falling back to the staging tip`,
-            candidate: abandonedQueue.candidate,
+            ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
+            enabled: true, state: "held", candidate: repairQueue.candidate,
+            reason: "capacity cannot retire the frozen candidate; verifying its admitted repair head",
           });
         } else if (
           dispatchInfeasible &&
@@ -13549,7 +13418,7 @@ async function runGreenCheckpointInner(
           // see WHY the candidate is being held without going log-archaeology.
           const summary = dispatchInfeasible.zeroAttemptStalled
             ? `${baseSummary} Held for convergence: the wall outlasts the ${dispatchInfeasible.zeroAttemptStallMs}ms stall window, so the freeze is kept and agent/human convergence is the repair path (${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.convergenceHoldMs}ms).`
-            : `${baseSummary} Zero-attempt, not yet stalled: ${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.zeroAttemptStallMs}ms before this queue is retired.`;
+            : `${baseSummary} Zero-attempt, not yet stalled: ${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.zeroAttemptStallMs}ms before this queue is held for convergence.`;
           deps.log(
             dispatchInfeasible.zeroAttemptStalled
               ? // The LONG-WALL hold: the stall window HAS elapsed, but the measured wall
@@ -14035,7 +13904,6 @@ async function runGreenCheckpointInner(
     !repairVerification &&
     !initialCandidateVerification &&
     // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
-    !boundedLifeRetire &&
     quietCutSecFromEnv() > 0
   ) {
     try {
@@ -14084,7 +13952,6 @@ async function runGreenCheckpointInner(
     !repairVerification &&
     !initialCandidateVerification &&
     !diagnosticOnly &&
-    !boundedLifeRetire &&
     repairQueue === null
   ) {
     let knownGood: string | null = null;
@@ -14122,7 +13989,7 @@ async function runGreenCheckpointInner(
     !diagnosticOnly &&
     repairQueue === null
   ) {
-    const carried = await applyFrozenRepairCarryAtCut(cfg, deps, candidate, boundedLifeRetire);
+    const carried = await applyFrozenRepairCarryAtCut(cfg, deps, candidate, null);
     if (carried !== candidate) {
       candidate = carried;
       // The judged commit is the tip now; the quiet cut's excluded window no longer applies.

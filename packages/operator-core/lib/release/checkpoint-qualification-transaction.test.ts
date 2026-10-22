@@ -1069,7 +1069,7 @@ describe('logical checkpoint qualification transaction', () => {
     ).toBeNull();
   });
 
-  it('retires only the predecessor-linked safe unstarted queue for a distinct successor', () => {
+  it('preserves the predecessor-linked unstarted candidate for a distinct successor', () => {
     const terminal = settleQualificationTransaction(begin(), {
       attemptId: 'attempt-1',
       reason: 'not-green',
@@ -1091,7 +1091,7 @@ describe('logical checkpoint qualification transaction', () => {
     };
 
     expect(assessTerminalRepairQueueReconciliation(terminal, successor, safeQueue)).toMatchObject({
-      status: 'retired',
+      status: 'preserved',
       reason: 'exact-safe-unstarted',
       predecessorAttemptId: 'attempt-1',
       successorAttemptId: 'attempt-2',
@@ -1792,7 +1792,7 @@ describe('logical checkpoint qualification transaction', () => {
       nowMs: 500,
     };
 
-    // Null-origin AND exact/safe/unstarted -> retired, same as a known-matching origin. This
+    // Null-origin AND exact/safe/unstarted -> preserved, same as a known-matching origin. This
     // is the concrete case that used to permanently fail-close manual release:checkpoint-run.
     expect(
       assessTerminalRepairQueueReconciliation(terminal, successor, {
@@ -1800,7 +1800,7 @@ describe('logical checkpoint qualification transaction', () => {
         qualificationAttemptId: undefined,
       }),
     ).toMatchObject({
-      status: 'retired',
+      status: 'preserved',
       reason: 'exact-safe-unstarted',
       predecessorAttemptId: 'attempt-1',
       successorAttemptId: 'attempt-2',

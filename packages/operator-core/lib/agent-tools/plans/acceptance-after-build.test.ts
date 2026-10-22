@@ -28,4 +28,18 @@ describe('acceptance after build', () => {
     expect(buildOrderingItems({ row: { items }, parsed: { items: [] } })).toBe(items);
     expect(openBuildItems(buildOrderingItems({ row: { items: [] }, parsed: { items } }))).toEqual(items);
   });
+
+  it('admits an audited non-code certification tail without changing its unfinished status', () => {
+    const item = { id: 'P-004', text: 'Repair acceptance evidence and obtain certification',
+      phase: 'Certified shipment', status: 'wip' };
+    const effectiveAudits = [{ entry: { itemId: 'P-004', verdict: 'not-code' } }];
+    expect(openBuildItems([item], { effectiveAudits, verificationProfile: 'coding' })).toEqual([]);
+    expect(item.status).toBe('wip');
+    expect(openBuildItems([{ ...item, deliverable: 'code' }], { effectiveAudits })).toEqual([
+      { ...item, deliverable: 'code' },
+    ]);
+    expect(openBuildItems([item], { effectiveAudits: [] })).toEqual([item]);
+    expect(openBuildItems([item], { effectiveAudits: [{ entry: { itemId: 'P-004', verdict: 'implemented' } }] }))
+      .toEqual([item]);
+  });
 });

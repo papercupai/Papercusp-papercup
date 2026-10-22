@@ -33,6 +33,7 @@ export const ROUTINES_TRIGGERS_QUEUE = 'routines-triggers';
 export const ROUTINES_RELEASE_QUEUE = 'routines-release';
 export const ROUTINES_DEPLOY_QUEUE = 'routines-deploy';
 export const ROUTINES_HEAVY_QUEUE = 'routines-heavy';
+export const ROUTINES_SYNC_GUARDS_QUEUE = 'routines-sync-guards';
 
 /** Mirrors loop.ts's materialized target_role without importing that stateful module here. */
 export const LOOP_WAKE_TARGET_ROLE = `${SYSTEM_TARGET_PREFIX}loop-wake`;
@@ -153,6 +154,14 @@ export const HEAVY_ROUTINE_ACTIONS = new Set<string>([
 export const DEPLOY_TRIGGER_ACTIONS = new Set<string>(['release-trigger']);
 
 /**
+ * The sync-batch lint guard runs every five minutes and has a 15-minute red-finding target, but its
+ * repo-wide lint work can run for up to 45 minutes. Keep it serial and isolated from both the ordinary
+ * overdue-routine FIFO and the multi-hour heavy-job lane. It remains noncritical: pool-pressure shedding
+ * still protects the database when the physical pool is critical.
+ */
+export const SYNC_GUARD_ACTIONS = new Set<string>(['sync-batch-lint-guards']);
+
+/**
  * The queue NAME a routine fire should enqueue on, by its target role and (when
  * needed) install slug. The operator-home green-checkpoint is the workspace's
  * release finalizer: if it waits behind four long subject-hive gates, a frozen
@@ -164,7 +173,8 @@ export const DEPLOY_TRIGGER_ACTIONS = new Set<string>(['release-trigger']);
  * actions → the dedicated `routines-fleet-control` lane; a critical quick SYSTEM action →
  * `routines-critical`; a source poll or bounded trigger/import drain → `routines-triggers`; the
  * operator-home green-checkpoint → `routines-release`; the deploy launcher →
- * `routines-deploy`; a known heavy/background action → `routines-heavy`;
+ * `routines-deploy`; the sync-batch lint guard → `routines-sync-guards`; a known
+ * heavy/background action → `routines-heavy`;
  * everything else → `routines`.
  */
 export function queueForRoutine(targetRole: string, installSlug?: string | null): string {
@@ -178,6 +188,7 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
     if (FLEET_CONTROL_ACTIONS.has(action)) return ROUTINES_FLEET_CONTROL_QUEUE;
     if (CRITICAL_ROUTINE_ACTIONS.has(action)) return ROUTINES_CRITICAL_QUEUE;
     if (DEPLOY_TRIGGER_ACTIONS.has(action)) return ROUTINES_DEPLOY_QUEUE;
+    if (SYNC_GUARD_ACTIONS.has(action)) return ROUTINES_SYNC_GUARDS_QUEUE;
     if (TRIGGERS_QUEUE_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
   }
   return ROUTINES_QUEUE;

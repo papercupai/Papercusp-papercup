@@ -145,7 +145,7 @@ const FAILING_RESULT_RE = /\b[1-9]\d*\s+(?:failed|failing|failures?)\b|\bFAIL\b/
 /** The live operator database on this box: a migration applied there is not disposable. */
 const LIVE_OPERATOR_DB_RE = /^papercusp$|(?:127\.0\.0\.1|localhost):5432\/papercusp\b/i;
 /** The shared operator runtimes: a job run there is not isolated. */
-const SHARED_RUNTIME_RE = /(?:127\.0\.0\.1|localhost)?:(?:3070|3170)\b/;
+const SHARED_RUNTIME_RE = /(?:127\.0\.0\.1|localhost):(?:3070|3170)\b/;
 
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
 

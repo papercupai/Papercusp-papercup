@@ -207,6 +207,25 @@ describe('R-2 — a successful close lacking a declared kind\'s catalog proof is
     expect(missingFor(shared, 'background-job')).toContain('is a shared operator');
   });
 
+  it('a background-job runtime may mention a shared port without claiming to run there', async () => {
+    const isolated = await evaluateChangeKindGate(
+      input({
+        kinds: ['background-job'],
+        kindEvidence: [{ ...FULL_PROOF['background-job'], runtime: 'isolated test worker, not :3070/:3170' }],
+      }),
+    );
+    expect(isolated.applicable).toBe(true);
+    if (!isolated.applicable) throw new Error('not applicable');
+    expect(isolated.outcome).toBe('pass');
+
+    const shared = expectRefused(
+      await evaluateChangeKindGate(
+        input({ kinds: ['background-job'], kindEvidence: [{ ...FULL_PROOF['background-job'], runtime: '127.0.0.1:3170' }] }),
+      ),
+    );
+    expect(missingFor(shared, 'background-job')).toContain('is a shared operator');
+  });
+
   it.each(['logic', 'test-only'] as const)('a %s close without a test run is refused', async (kind) => {
     const r = expectRefused(
       await evaluateChangeKindGate(input({ kinds: [kind], root: { testsRun: 'read the code carefully', testResult: 'looks right' } })),

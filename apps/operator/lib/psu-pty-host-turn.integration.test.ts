@@ -856,6 +856,7 @@ it(
       while (mintedAddenda.length === 0 && Date.now() < respawnDeadline) await sleep(20);
       expect(mintedAddenda).toEqual([freshAddendum]);
       await vi.waitFor(() => {
+        expect(existsSync(freshNativeFile), hostTestDiagnostics(ownerId, captured)).toBe(true);
         const row = JSON.parse(readFileSync(freshNativeFile, 'utf8').trim());
         const delivered = row.payload.content[0].text;
         expect(delivered).toContain(freshText);

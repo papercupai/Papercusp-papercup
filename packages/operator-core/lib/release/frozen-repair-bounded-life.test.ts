@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { settleFrozenRepairRetestRequest, type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import {
   FROZEN_REPAIR_BOUNDED_LIFE_HISTORY_CAP,
-  FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS,
-  FROZEN_REPAIR_BOUNDED_LIFE_RETIRE_WINDOW_MS,
   buildFrozenRepairBoundedLifeRecord,
   decideFrozenRepairBoundedLife,
   frozenRepairBoundedLifeStateAfterEscalation,
@@ -38,8 +36,9 @@ function queue(counts: number[], ageMs: number, extra: Partial<FrozenCandidateRe
 }
 
 function record(retiredAtMs: number, candidate = C): FrozenRepairBoundedLifeRecord {
-  const decision = decideFrozenRepairBoundedLife(queue([3, 5, 8, 12, 28], HOUR), { nowMs: NOW, state: null });
-  if (decision.kind !== 'retire') throw new Error('fixture must retire');
+  // Historical record fixture; current policy never returns a retirement.
+  const decision = { kind: 'retire' as const, trigger: 'non-improving' as const,
+    trajectory: frozenRepairConvergenceTrajectory(queue([3, 5, 8, 12, 28], HOUR).convergenceRounds), ageMs: HOUR };
   return {
     ...buildFrozenRepairBoundedLifeRecord({
       queue: queue([3, 5, 8, 12, 28], HOUR, { candidate }),
@@ -75,131 +74,31 @@ describe('P-021 convergence trajectory', () => {
   });
 });
 
-describe('P-021 bounded-life decision', () => {
-  it('stays within bounds at 3 rounds without a low and at exactly 24h', () => {
-    expect(decideFrozenRepairBoundedLife(queue([3, 5, 8, 12], HOUR), { nowMs: NOW, state: null }).kind).toBe('within-bounds');
-    expect(
-      decideFrozenRepairBoundedLife(queue([10, 8], FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS), { nowMs: NOW, state: null }).kind,
-    ).toBe('within-bounds');
-  });
-
-  it('retires on 4 rounds without a new low, and on age past 24h even while improving', () => {
-    expect(decideFrozenRepairBoundedLife(queue([3, 5, 8, 12, 28], HOUR), { nowMs: NOW, state: null })).toMatchObject({
-      kind: 'retire',
-      trigger: 'non-improving',
-    });
-    expect(
-      decideFrozenRepairBoundedLife(queue([10, 8, 6], FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS + 1), { nowMs: NOW, state: null }),
-    ).toMatchObject({ kind: 'retire', trigger: 'age' });
-  });
-
-  it('defers while promoting, while an admission pre-check runs, or under a live dispatch reservation', () => {
-    const stuck = [3, 5, 8, 12, 28];
-    expect(decideFrozenRepairBoundedLife(queue(stuck, HOUR, { phase: 'ready-to-promote' }), { nowMs: NOW, state: null })).toMatchObject({
-      kind: 'deferred',
-      reason: 'promoting',
-    });
-    const precheck = {
-      schemaVersion: 1 as const, operationId: 'op', status: 'running' as const, candidate: C, repairHead: H,
-      builtCommit: H, files: [], actor: 'a', startedAtMs: NOW - 1, updatedAtMs: NOW - 1, expiresAtMs: NOW + HOUR,
-    };
-    expect(decideFrozenRepairBoundedLife(queue(stuck, HOUR, { admissionPrecheck: precheck }), { nowMs: NOW, state: null })).toMatchObject({
-      kind: 'deferred',
-      reason: 'admission-precheck-running',
-    });
-    expect(
-      decideFrozenRepairBoundedLife(queue(stuck, HOUR, { admissionPrecheck: { ...precheck, expiresAtMs: NOW - 1 } }), { nowMs: NOW, state: null }).kind,
-    ).toBe('retire');
-    expect(
-      decideFrozenRepairBoundedLife(
-        queue(stuck, HOUR, { dispatchReservation: { token: 't', claimedAtMs: NOW - 1, expiresAtMs: NOW + 1 } }),
-        { nowMs: NOW, state: null },
-      ),
-    ).toMatchObject({ kind: 'deferred', reason: 'dispatch-reserved' });
-  });
-
+describe('P-041: automatic retirement is disabled', () => {
   it.each([
-    { counts: [3, 5, 8, 12, 28], ageMs: HOUR, trigger: 'non-improving' },
-    { counts: [10, 8, 6], ageMs: FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS + 1, trigger: 'age' },
-  ])('measures an admitted repair before applying the $trigger retirement bound', ({ counts, ageMs, trigger }) => {
-    const pending = queue(counts, ageMs, { phase: 'ready-to-verify' });
-    // These verdicts belong to the old candidate. The newly admitted repair head
-    // must get its own verdict before the old history can retire the lineage.
-    pending.convergenceRounds = pending.convergenceRounds!.map((round) => ({ ...round, head: C }));
-    expect(decideFrozenRepairBoundedLife(pending, { nowMs: NOW, state: null })).toMatchObject({
-      kind: 'deferred',
-      reason: 'repair-verification-pending',
-    });
-
-    const measured = {
-      ...pending,
-      phase: 'awaiting-fixer' as const,
-      convergenceRounds: [
-        ...pending.convergenceRounds,
-        { round: counts.length + 1, head: H, failingCount: counts[counts.length - 1]!, atMs: NOW },
-      ],
-    };
-    // Deferral is sequencing, not an exemption: the unchanged bound applies
-    // again once this head has actually been measured.
-    expect(decideFrozenRepairBoundedLife(measured, { nowMs: NOW, state: null })).toMatchObject({
-      kind: 'retire',
-      trigger,
-    });
+    { counts: [], ageMs: 0 },
+    { counts: [3, 5, 8, 12, 28], ageMs: HOUR },
+    { counts: [10, 8, 6], ageMs: 25 * HOUR },
+    { counts: [1, 100, 1000, 10000, 100000], ageMs: 365 * 24 * HOUR },
+  ])('retains the candidate regardless of age or failures: $ageMs', ({ counts, ageMs }) => {
+    for (const phase of ['ready-to-test', 'awaiting-fixer', 'ready-to-verify', 'ready-to-promote', 'blocked'] as const) {
+      const q = queue(counts, ageMs, { phase });
+      const before = JSON.stringify(q);
+      expect(decideFrozenRepairBoundedLife(q, { nowMs: NOW, state: null }).kind).toBe('disabled');
+      expect(decideFrozenRepairBoundedLife(q, {
+        nowMs: NOW, state: frozenRepairBoundedLifeStateAfterRetire(null, record(NOW - HOUR)),
+      }).kind).toBe('disabled');
+      expect(JSON.stringify(q)).toBe(before);
+    }
   });
 
-  it('preserves an owed same-head retest until its matching request is settled', () => {
-    const pending = queue([3, 5, 8, 12, 28], HOUR, {
-      phase: 'ready-to-verify',
-      unmeasuredRetestHead: H,
-      retestRequested: { candidate: C, repairHead: H, requestedAtMs: NOW - 1 },
-    });
-    // H already has a recorded verdict. Only the explicit retest marker makes
-    // this head still owe verification; a never-judged-head check is insufficient.
-    expect(decideFrozenRepairBoundedLife(pending, { nowMs: NOW, state: null })).toMatchObject({
-      kind: 'deferred', reason: 'repair-verification-pending',
-    });
-    const olderHead = settleFrozenRepairRetestRequest(pending, C);
-    expect(olderHead.kind).toBe('refire');
-    expect(decideFrozenRepairBoundedLife(olderHead.queue, { nowMs: NOW, state: null })).toMatchObject({
-      kind: 'deferred', reason: 'repair-verification-pending',
-    });
-
-    const settled = settleFrozenRepairRetestRequest(pending, H);
+  it('keeps a same-head retest pinned both before and after it settles', () => {
+    const q = queue([3, 5, 8, 12, 28], 100 * HOUR, { phase: 'ready-to-verify',
+      unmeasuredRetestHead: H, retestRequested: { candidate: C, repairHead: H, requestedAtMs: NOW - 1 } });
+    expect(decideFrozenRepairBoundedLife(q, { nowMs: NOW, state: null }).kind).toBe('disabled');
+    const settled = settleFrozenRepairRetestRequest(q, H);
     expect(settled.kind).toBe('settled');
-    expect(settled.queue.retestRequested).toBeUndefined();
-    expect(decideFrozenRepairBoundedLife(settled.queue, { nowMs: NOW, state: null })).toMatchObject({
-      kind: 'retire', trigger: 'non-improving',
-    });
-  });
-
-  it('does not invent a pending repair when the head is still the original candidate', () => {
-    expect(decideFrozenRepairBoundedLife(
-      queue([], FROZEN_REPAIR_BOUNDED_LIFE_MAX_AGE_MS + 1, { repairHead: C }),
-      { nowMs: NOW, state: null },
-    )).toMatchObject({ kind: 'retire', trigger: 'age' });
-  });
-
-  it('rate-limits a second retirement inside 24h and escalates once per candidate', () => {
-    const last = record(NOW - 2 * HOUR, 'f'.repeat(40));
-    const state = frozenRepairBoundedLifeStateAfterRetire(null, last);
-    expect(decideFrozenRepairBoundedLife(queue([3, 5, 8, 12, 28], HOUR), { nowMs: NOW, state })).toMatchObject({
-      kind: 'rate-limited',
-      escalate: true,
-      lastRetireAtMs: NOW - 2 * HOUR,
-      retryAfterMs: FROZEN_REPAIR_BOUNDED_LIFE_RETIRE_WINDOW_MS - 2 * HOUR,
-    });
-    const escalated = frozenRepairBoundedLifeStateAfterEscalation(state, {
-      candidate: C,
-      trigger: 'non-improving',
-      atMs: NOW - 1,
-      lastRetireAtMs: last.retiredAtMs,
-    });
-    expect(decideFrozenRepairBoundedLife(queue([3, 5, 8, 12, 28], HOUR), { nowMs: NOW, state: escalated })).toMatchObject({
-      kind: 'rate-limited',
-      escalate: false,
-    });
-    const expired = frozenRepairBoundedLifeStateAfterRetire(null, record(NOW - FROZEN_REPAIR_BOUNDED_LIFE_RETIRE_WINDOW_MS));
-    expect(decideFrozenRepairBoundedLife(queue([3, 5, 8, 12, 28], HOUR), { nowMs: NOW, state: expired }).kind).toBe('retire');
+    expect(decideFrozenRepairBoundedLife(settled.queue, { nowMs: NOW, state: null }).kind).toBe('disabled');
   });
 });
 

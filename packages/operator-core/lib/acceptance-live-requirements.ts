@@ -137,7 +137,11 @@ const VERIFICATION_FIELDS = ['method', 'check', 'replication'] as const;
 
 /** A criterion's promise: its meaning projection with the whole check removed. */
 function promiseProjection(criterion: LiveVerificationFields): Record<string, unknown> {
-  const { check: _check, ...promise } = verificationNeutralCriterion(criterion);
+  const { check: _check, ...promise }: Record<string, unknown> = verificationNeutralCriterion(criterion);
+  // Requirement headings consume their final period as Markdown syntax, while
+  // stored rubric titles can retain it. Compare the same label in both forms
+  // without changing the persisted title or accepting a different promise.
+  if (typeof promise.title === 'string') promise.title = promise.title.trim().replace(/\.$/, '');
   return promise;
 }
 

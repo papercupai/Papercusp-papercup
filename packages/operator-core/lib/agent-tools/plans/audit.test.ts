@@ -5,6 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
+import type { ToolResult } from '@papercusp/tooldef';
 
 const { mockOrgSql, mockOrgSqlArray } = vi.hoisted(() => {
   const mockOrgSql = vi.fn();
@@ -53,6 +54,11 @@ vi.mock('../../plan-audits', async (orig) => {
 });
 vi.mock('./activation-audit-repair', () => ({
   ensureActivationAuditRepairFiling: vi.fn(),
+}));
+// These writer fixtures use the conventional verification profile, without a live pin store.
+vi.mock('../../plan-types/pins', async (orig) => ({
+  ...(await orig<typeof import('../../plan-types/pins')>()),
+  pinnedPlanTypeResolver: vi.fn(async () => null),
 }));
 // `./source` is mocked wholesale, so the factory must cover EVERY export this
 // test's import graph reaches — not just the ones audit.ts itself calls.
@@ -136,7 +142,7 @@ import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listScorecards } from '../../scorecards';
 import { SPEC_QUALITY_RUBRIC_REF, specQualitySubjectRef } from './spec-quality';
 import type { PlanClassRubricRef } from './spec-test-adequacy';
-import tool from './audit';
+import tool, { auditAbortCompletionReceipt } from './audit';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
 const mockResolveHome = vi.mocked(resolvePlanItemHomeHarness);
@@ -220,6 +226,101 @@ beforeEach(() => {
   resolvePlanContent(
     `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n- **P-001** \`todo\` Implement the audit gate on staging.\n`,
   );
+});
+
+describe('plans:audit abort completion receipts', () => {
+  const attempt = { callId: 'audit-attempt-1', toolName: 'plans:audit' };
+  const completionArgs = { slug: 'plan-a', harness: 'papercusp' };
+  const completion = {
+    ok: true, slug: 'plan-a', harness: 'papercusp', phase: 'completion', auditSeq: 1, auditedSha: 'head-1',
+  };
+  const result = (payload: unknown): ToolResult => ({ content: [{ type: 'text', text: JSON.stringify(payload) }] });
+  const receipt = (args: unknown, payload: unknown) => auditAbortCompletionReceipt(args, result(payload), attempt);
+
+  it('recovers the exact completion audit when the parent aborts after the write', async () => {
+    const parent = new AbortController();
+    mockEmitPlanEvent.mockImplementationOnce(async () => { parent.abort(); return null; });
+    const args = {
+      ...completionArgs,
+      items: [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+    };
+    const output = await tool.handler(args as never, Object.assign({}, ctx, { signal: parent.signal }) as never);
+    expect(parent.signal.aborted).toBe(true);
+    expect(mockRecord).toHaveBeenCalledTimes(1);
+    expect(tool.abortCompletionReceipt).toBe(auditAbortCompletionReceipt);
+    expect(receipt(args, output)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'plan-audit:audit-attempt-1:papercusp:plan-a:completion:1',
+      diagnostics: { harness: 'papercusp', slug: 'plan-a', phase: 'completion', auditSeq: 1, auditedSha: 'head-1' },
+    });
+    expect(tool.idempotent).not.toBe(true);
+  });
+
+  it('retains activation revision identity, including when auto-start refuses', () => {
+    expect(receipt({ ...completionArgs, phase: 'activation' }, {
+      ok: true, slug: 'plan-a', harness: 'papercusp', phase: 'activation', auditSeq: 2,
+      auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
+      autoStart: { started: false, reason: 'start-gate-refused' },
+    })).toMatchObject({
+      status: 'recorded', effectRef: 'plan-audit:audit-attempt-1:papercusp:plan-a:activation:2',
+      diagnostics: { auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) } },
+    });
+  });
+
+  it('uses returned scope when the owning harness was recovered', () => {
+    expect(receipt({ slug: 'plan-a' }, completion)).toMatchObject({ status: 'recorded' });
+  });
+
+  it('identifies persisted partial completion audits without promoting their verdict', () => {
+    expect(receipt(completionArgs, { ...completion, partial: true, problems: ['bad citation'] }))
+      .toMatchObject({ status: 'recorded', diagnostics: { partial: true } });
+  });
+
+  it.each([
+    [{ ...completionArgs, dryRun: true }, { ok: true, dryRun: true, preview: true }],
+    [{ ...completionArgs, phase: 'shaping' }, { ok: true, phase: 'shaping', dryRun: true, preview: true }],
+    [{ ...completionArgs, proposeCitations: true }, { ok: true, preview: true }],
+  ])('does not report a preview as a recorded audit (%j)', (args, payload) => {
+    expect(receipt(args, payload)).toMatchObject({ status: 'not-recorded' });
+  });
+
+  it.each([
+    { ...completion, ok: false, error: 'refused' },
+    { ...completion, slug: 'other-plan' },
+    { ...completion, harness: 'other-harness' },
+    { ...completion, phase: 'activation' },
+    { ...completion, auditSeq: 0 },
+    { ...completion, auditSeq: -1 },
+    { ...completion, auditSeq: 1.5 },
+    { ...completion, auditSeq: '1' },
+    { ...completion, auditedSha: undefined },
+    { ...completion, harness: undefined },
+    { ...completion, preview: true },
+    { ok: true },
+    null,
+  ])('fails closed for incomplete or mismatched audit evidence (%j)', (payload) => {
+    expect(receipt(completionArgs, payload)).toMatchObject({ status: 'recovery-incomplete' });
+  });
+
+  it.each([
+    undefined,
+    { id: 41, seq: 6 },
+    { id: 41, seq: 0, contentHash: 'a'.repeat(64) },
+    { id: 41, seq: 6, contentHash: 'wrong-hash' },
+  ])('requires an exact activation revision (%j)', (revision) => {
+    expect(receipt({ ...completionArgs, phase: 'activation' }, {
+      ...completion, phase: 'activation', auditedPlanRevision: revision,
+    })).toMatchObject({ status: 'recovery-incomplete' });
+  });
+
+  it('preserves explicit tool errors and absent attempt identity as uncertain', () => {
+    expect(auditAbortCompletionReceipt(completionArgs, { ...result(completion), isError: true }, attempt))
+      .toMatchObject({ status: 'recovery-incomplete' });
+    expect(auditAbortCompletionReceipt(completionArgs, result(completion), { ...attempt, callId: '' }))
+      .toMatchObject({ status: 'recovery-incomplete' });
+    expect(auditAbortCompletionReceipt(completionArgs, result(completion), { ...attempt, toolName: 'other:tool' }))
+      .toMatchObject({ status: 'recovery-incomplete' });
+  });
 });
 
 describe('plans:audit exact-slug scope recovery', () => {

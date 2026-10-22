@@ -542,7 +542,7 @@ export default defineTool({
     notWhen:
       "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
     chaining:
-      'plans:add-item → plans:set-status to flip newly added items off `todo` when work starts.',
+      'Before writing a code item, run graph:query impact on the symbols it changes; pass symbols or paths as anchors (code links). plans:add-item → plans:set-status when work starts.',
     seeAlso: [
       'plans:set-status (advance an item you just added off todo)',
       'plans:set-importance (re-rank the new item vs its siblings)',

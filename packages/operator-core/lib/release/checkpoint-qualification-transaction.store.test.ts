@@ -246,7 +246,7 @@ describe('stored qualification acquisition retry policy', () => {
 });
 
 describe('beginStoredQualification terminal repair-queue reconciliation', () => {
-  it('atomically clears the exact predecessor queue and repair inconclusive while installing the successor', async () => {
+  it('atomically preserves the exact predecessor queue while installing the successor', async () => {
     const current = terminalQualification();
     const queue = safeQueue();
     const { statements } = transactionHarness({
@@ -268,7 +268,7 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
         candidate: 'candidate-2',
       },
       repairQueueReconciliation: {
-        status: 'retired',
+        status: 'preserved',
         reason: 'exact-safe-unstarted',
         predecessorAttemptId: 'attempt-1',
         successorAttemptId: 'attempt-2',
@@ -276,8 +276,8 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
       },
     });
     const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
-    expect(update.text).toContain("- 'repair_queue'");
-    expect(update.text).toContain("#- '{gate_health,inconclusive}'");
+    expect(update.text).not.toContain("- 'repair_queue'");
+    expect(update.text).not.toContain("#- '{gate_health,inconclusive}'");
     expect(update.text).toContain("metadata->'repair_queue' =");
     expect(update.text).toContain('metadata->? =');
     expect(update.values).toContain(JSON.stringify(queue));
