@@ -1420,6 +1420,74 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  it.each(['pass', 'fail'] as const)(
+    'corroborates a failed rerun against the historical card when distribution is %s',
+    async (distributionRating) => {
+      getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+      getIssue.mockResolvedValue(replayConsistencyGradedCard());
+      readRunningGeneration.mockResolvedValue(runningGeneration('a'.repeat(40)));
+
+      const res = await emitScorecard(
+        {
+          ...auditArgs,
+          ratings: {
+            ...REPLAY_SPLIT_RATINGS,
+            're-runnable-evidence': {
+              rating: 'fail',
+              evidence: 'Live freshness is unknown, while the recorded card says pass.',
+            },
+            'degenerate-distribution': {
+              ...REPLAY_SPLIT_RATINGS['degenerate-distribution'],
+              rating: distributionRating,
+            },
+          },
+        },
+        { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      );
+
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+      expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledOnce();
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(recordGradingAudit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['surface:reconnect', false],
+    ['test-run:20852939', true],
+  ] as const)('checks a failed rerun citation against the historical selection (%s)', async (evidenceRef, allowed) => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    readRunningGeneration.mockResolvedValue(runningGeneration('a'.repeat(40)));
+
+    const res = await emitScorecard(
+      {
+        ...auditArgs,
+        ratings: {
+          ...REPLAY_SPLIT_RATINGS,
+          're-runnable-evidence': {
+            rating: 'fail',
+            evidence: 'Independent execution contradicts the selected proof.',
+            evidenceKind: 'test-run',
+            evidenceRef,
+          },
+          'degenerate-distribution': { rating: 'pass', evidence: 'The distribution is not the disputed finding.' },
+        },
+      },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(allowed);
+    expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledOnce();
+    if (allowed) {
+      expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
+    } else {
+      expect(res).toMatchObject({ code: 'grading_audit_replay_consistent' });
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(recordGradingAudit).not.toHaveBeenCalled();
+    }
+  });
+
   it('passes exact binding ids and the graded fingerprint tuple to the historical replay', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(exactReplayConsistencyGradedCard());

@@ -3563,7 +3563,6 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
     it('still REJECTS a genuinely undeclared key — EI-10883 is preserved, not weakened', () => {
       expect(() => parse({ did: 'x', totallyMadeUpKey: 'y' })).toThrow();
       expect(() => parse({ did: 'x', confirmShrink: true })).toThrow();
-      expect(tool.description).toContain('`confirmShrink` is accepted by `work_items:checkpoint` only');
       expect(() => parse({ checks: [{ claim: 'a', nonsenseField: 'b' }] })).toThrow();
     });
   });

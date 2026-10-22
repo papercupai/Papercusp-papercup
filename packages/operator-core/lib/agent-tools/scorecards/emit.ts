@@ -1227,10 +1227,9 @@ function gradingAuditEvidenceReferenceKeys(evidenceRef: string, evidenceKind?: s
 }
 
 /**
- * A grading-integrity audit can call the target card's exact evaluator recipe
- * "re-runnable" while separately claiming its uniform distribution is false.
- * For spec-test-adequacy cards the evaluator owns those ratings, so corroborate
- * that claimed contradiction before the audit is allowed to settle the card.
+ * For spec-test-adequacy cards the evaluator owns the recorded ratings. Corroborate
+ * failed reproducibility or distribution claims against the creation-time replay;
+ * a live freshness change cannot invalidate the historical grading.
  *
  * Exported so the evaluate-and-emit round trip (plans/certify-spec-clauses.test.ts,
  * clause RSR-P-005-A) can run THIS auditor replay on a card as it was persisted — a
@@ -1242,22 +1241,24 @@ export async function validateGradingAuditReplayConsistency(
   _dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
   historicalContext?: { gradedCardCreatedAt?: string; workspaceId?: string },
 ): Promise<GradingAuditReplayConsistencyError | undefined> {
+  const failedReplayCriteria = ['re-runnable-evidence', 'degenerate-distribution'].filter(
+    (criterion) => ratingVerdict(auditRatings?.[criterion]?.rating ?? '') === 'fail',
+  );
   if (
     gradedObservation.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF ||
     !gradedObservation.rerunRecipe ||
-    ratingVerdict(auditRatings?.['re-runnable-evidence']?.rating ?? '') !== 'pass' ||
-    ratingVerdict(auditRatings?.['degenerate-distribution']?.rating ?? '') !== 'fail'
+    failedReplayCriteria.length === 0
   ) {
     return undefined;
   }
+  const replayChallenge = failedReplayCriteria.map((criterion) => `${criterion}='fail'`).join(' and ');
 
   const parsedRecipe = specTestAdequacyRerunRecipeSchema.safeParse(gradedObservation.rerunRecipe);
   if (!parsedRecipe.success) {
     return {
       code: 'grading_audit_replay_uncorroborated',
       error:
-        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
-        `re-runnable-evidence='pass': the graded spec-test-adequacy card's exact evaluator recipe ` +
+        `grading-integrity cannot accept ${replayChallenge}: the graded spec-test-adequacy card's exact evaluator recipe ` +
         'could not be replayed server-side; no audit card was persisted',
     };
   }
@@ -1344,8 +1345,7 @@ export async function validateGradingAuditReplayConsistency(
     return {
       code: 'grading_audit_replay_uncorroborated',
       error:
-        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
-        `re-runnable-evidence='pass': the server-side evaluator replay refused ` +
+        `grading-integrity cannot accept ${replayChallenge}: the server-side evaluator replay refused ` +
         `(${typeof payload.error === 'string' ? payload.error : 'unknown evaluator error'}); ` +
         'no audit card was persisted',
     };
@@ -1398,8 +1398,7 @@ export async function validateGradingAuditReplayConsistency(
     return {
       code: 'grading_audit_replay_uncorroborated',
       error:
-        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
-        `re-runnable-evidence='pass': the server-side evaluator replay returned no row for ` +
+        `grading-integrity cannot accept ${replayChallenge}: the server-side evaluator replay returned no row for ` +
         `${selection.planSlug}/${selection.specId}@${selection.specRevision}; no audit card was persisted`,
     };
   }
@@ -1460,8 +1459,6 @@ export async function validateGradingAuditReplayConsistency(
   // only with the existing structured citation fields, and only when the cited
   // artifact is outside the graded card's exact evidence selection. A free-form
   // disagreement or a citation back to the same selection still fails closed.
-  const auditFinding = auditRatings?.['degenerate-distribution'];
-  const independentEvidenceRef = auditFinding?.evidenceRef?.trim();
   const replayEvidenceRefs = new Set<string>();
   for (const { evidenceKind, evidenceRef } of selection.evidence) {
     for (const key of gradingAuditEvidenceReferenceKeys(evidenceRef, evidenceKind)) replayEvidenceRefs.add(key);
@@ -1473,24 +1470,25 @@ export async function validateGradingAuditReplayConsistency(
     replayEvidenceRefs.add(String(id));
     replayEvidenceRefs.add(`binding:${id}`);
   }
-  const auditEvidenceRefs = independentEvidenceRef
-    ? gradingAuditEvidenceReferenceKeys(independentEvidenceRef, auditFinding?.evidenceKind)
-    : new Set<string>();
-  const citesIndependentEvidence =
-    typeof auditFinding?.evidenceKind === 'string' &&
-    auditFinding.evidenceKind.trim().length > 0 &&
-    !!independentEvidenceRef &&
-    ![...auditEvidenceRefs].some((evidenceRef) => replayEvidenceRefs.has(evidenceRef));
+  const citesIndependentEvidence = failedReplayCriteria.some((criterion) => {
+    const auditFinding = auditRatings?.[criterion];
+    const independentEvidenceRef = auditFinding?.evidenceRef?.trim();
+    if (!auditFinding?.evidenceKind?.trim() || !independentEvidenceRef) return false;
+    const auditEvidenceRefs = gradingAuditEvidenceReferenceKeys(independentEvidenceRef, auditFinding.evidenceKind);
+    return ![...auditEvidenceRefs].some((evidenceRef) => replayEvidenceRefs.has(evidenceRef));
+  });
   if (mismatches.length > 0 || citesIndependentEvidence) return undefined;
+  const citationCriterion = failedReplayCriteria.includes('degenerate-distribution')
+    ? 'degenerate-distribution'
+    : 're-runnable-evidence';
 
   return {
     code: 'grading_audit_replay_consistent',
     error:
-      `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
-      `re-runnable-evidence='pass': the graded card's exact server-side evaluator replay reproduced ` +
+      `grading-integrity cannot accept ${replayChallenge}: the graded card's exact server-side evaluator replay reproduced ` +
       `every applicable rating, and the audit supplied no separately cited evidence outside the replay selection. ` +
-      `For an external challenge, provide both ratings['degenerate-distribution'].evidenceKind and ` +
-      `ratings['degenerate-distribution'].evidenceRef with a reference outside the replay selection ` +
+      `For an external challenge, provide both ratings['${citationCriterion}'].evidenceKind and ` +
+      `ratings['${citationCriterion}'].evidenceRef with a reference outside the replay selection ` +
       `(for example evidenceKind:'test-run', evidenceRef:'20924105'). The prose evidence field is preserved ` +
       `as the explanation, but this guard does not parse it to establish selection membership; ` +
       'no audit card was persisted',

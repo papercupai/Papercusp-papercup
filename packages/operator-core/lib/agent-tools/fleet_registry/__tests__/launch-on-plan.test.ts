@@ -223,6 +223,14 @@ vi.mock('../../plans/source', async (importOriginal) => ({
   getPlanRow: async () => (await readPlanBySlugMock.mock.results.at(-1)?.value)?.row ?? null,
 }));
 
+// Keep this handler unit suite hermetic: withPinnedPlanTypes loads the registry and
+// plan pins through withWorkspace. Real pin resolution is covered by the plan-types
+// revision-pinning integration suite; here the start-gate callback still runs.
+vi.mock('../../../plan-types/pins', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../plan-types/pins')>()),
+  withPinnedPlanTypes: <T>(_scope: unknown, fn: () => Promise<T>) => fn(),
+}));
+
 const acceptanceBarLifecycleMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ satisfied: true })));
 
 vi.mock('../../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({

@@ -1,5 +1,7 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
+import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
+import { ticketFilingIntegrationInstrument } from './capability-verbs/ticket-filing-instrument';
 /**
  * Rubric instrument registry (test-rubric-unification-2026-10-12 P-005 / R-5, plan D-006).
  *
@@ -610,6 +612,7 @@ export function parseGateSentinelHealth(stdout: string): number | null {
 }
 
 const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
+  ticketFilingIntegrationInstrument(resolveAgentWorkspaceRoot({})),
   {
     key: GATE_SENTINEL_HEALTH_INSTRUMENT_KEY,
     evaluator: 'command',
