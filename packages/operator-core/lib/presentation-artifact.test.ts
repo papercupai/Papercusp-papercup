@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const kit = resolve(import.meta.dirname, '../../../docs/presentations/papercusp-architecture-2026-10-21');
-const verifier = join(kit, 'verify.mjs');
 const fixtures: string[] = [];
 const required = [
   'README.md', 'build.mjs', 'deck.pdf', 'index.html', 'manifest.json',
@@ -21,12 +20,14 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'papercusp-presentation-'));
   fixtures.push(root);
   cpSync(kit, root, { recursive: true });
+  symlinkSync(resolve(import.meta.dirname, '../../../node_modules'), join(root, 'node_modules'), 'dir');
   return root;
 }
 
 function render(root: string): Promise<string> {
   return new Promise((resolveRun, reject) => {
-    execFile(process.execPath, [verifier, root], { timeout: 90_000, maxBuffer: 2_000_000 },
+    // Execute the copy: even an older verifier's default root is confined to this fixture.
+    execFile(process.execPath, [join(root, 'verify.mjs'), root], { timeout: 90_000, maxBuffer: 2_000_000 },
       (error, stdout, stderr) => error ? reject(new Error(stderr || error.message)) : resolveRun(stdout));
   });
 }

@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import type { Page, TestInfo } from '@playwright/test';
+import type { Page, TestInfo, Request, Response } from '@playwright/test';
 import { expect } from './_egress';
 
 export interface PublishedReportProof {
@@ -38,38 +38,56 @@ export async function captureReportClipboard(page: { addInitScript(script: strin
 export async function observeReportReadiness(page: Page, testInfo: TestInfo) {
   const started = Date.now();
   const requests: unknown[] = [];
+  const failures: unknown[] = [];
   const pending = new Set<Promise<void>>();
-  const queryName = (url: string) => {
+  const requestInfo = (url: string) => {
     const parsed = new URL(url);
-    return parsed.pathname.endsWith('/rest-query') ? parsed.searchParams.get('name') : null;
+    return { path: parsed.pathname,
+      name: parsed.pathname.endsWith('/rest-query') ? parsed.searchParams.get('name') : null };
   };
-  page.on('request', request => {
-    const name = queryName(request.url());
-    if (name?.startsWith('reports.') && requests.length < 100) requests.push({ atMs: Date.now() - started, phase: 'requested', name });
-  });
-  page.on('requestfailed', request => {
-    const name = queryName(request.url());
-    if (name?.startsWith('reports.') && requests.length < 100) requests.push({ atMs: Date.now() - started, phase: 'failed', name, error: request.failure()?.errorText });
-  });
-  page.on('response', response => {
-    const name = queryName(response.url());
-    if (!name?.startsWith('reports.')) return;
+  const record = (phase: string, info: ReturnType<typeof requestInfo>, extra = {}) => {
+    if (requests.length < 100) requests.push({ atMs: Date.now() - started, phase, ...info, ...extra });
+  };
+  const onRequest = (request: Request) => {
+    const info = requestInfo(request.url());
+    if (info.path.startsWith('/api/')) record('requested', info);
+  };
+  const onRequestFailed = (request: Request) => {
+    if (failures.length < 100) failures.push({ atMs: Date.now() - started,
+      ...requestInfo(request.url()), resourceType: request.resourceType(), error: request.failure()?.errorText });
+  };
+  const onPageError = (error: Error) => {
+    if (failures.length < 100) failures.push({ atMs: Date.now() - started, phase: 'pageerror', error: error.message });
+  };
+  const onResponse = (response: Response) => {
+    const info = requestInfo(response.url());
+    if (!info.path.startsWith('/api/')) return;
+    record('responded', info, { status: response.status() });
+    // Streaming bootstrap endpoints never finish a JSON body. Only report
+    // query bodies are needed for exact saved-text readiness.
+    if (!info.name?.startsWith('reports.')) return;
     const task = (async () => {
       const status = response.status();
       try {
         const payload = await response.json();
-        requests.push({ atMs: Date.now() - started, phase: 'completed', name, status,
+        record('completed', info, { status,
           reportIds: payload.rows?.map((row: { report_id?: string }) => row.report_id) });
-      } catch (error) { requests.push({ atMs: Date.now() - started, phase: 'body-failed', name, status, error: String(error) }); }
+      } catch (error) { record('body-failed', info, { status, error: String(error) }); }
     })();
     pending.add(task); void task.finally(() => pending.delete(task));
-  });
+  };
+  page.on('request', onRequest);
+  page.on('requestfailed', onRequestFailed);
+  page.on('pageerror', onPageError);
+  page.on('response', onResponse);
   await page.addInitScript(() => {
     const timeline: unknown[] = [];
     (window as unknown as { reportProofTimeline: unknown[] }).reportProofTimeline = timeline;
     let last = '';
     const observer = new MutationObserver(() => {
       const snapshot = {
+        readyState: document.readyState,
+        status: document.querySelector('[role="status"]')?.textContent?.slice(0, 200),
         title: document.querySelector('.reports-article-main > h2')?.textContent,
         bodyHeadings: document.querySelectorAll('.reports-body h1,.reports-body h2,.reports-body h3').length,
         outlineLinks: document.querySelectorAll('.reports-outline nav a').length,
@@ -84,8 +102,19 @@ export async function observeReportReadiness(page: Page, testInfo: TestInfo) {
   });
   return async () => {
     await Promise.allSettled([...pending]);
-    const rendering = await page.evaluate(() => (window as unknown as { reportProofTimeline?: unknown[] }).reportProofTimeline).catch(error => ({ unavailable: String(error) }));
-    const evidence = JSON.stringify({ requests, rendering }, null, 2);
+    const rendering = await page.evaluate(() => {
+      const state = window as unknown as { reportProofTimeline?: unknown[];
+        __sync_metrics__?: { snapshot(): { scheduler?: unknown }; queries(): unknown[] } };
+      return { timeline: state.reportProofTimeline, readyState: document.readyState,
+        status: document.querySelector('[role="status"]')?.textContent?.slice(0, 200),
+        scheduler: state.__sync_metrics__?.snapshot().scheduler,
+        queries: state.__sync_metrics__?.queries().slice(-30) };
+    }).catch(error => ({ unavailable: String(error) }));
+    page.off('request', onRequest);
+    page.off('requestfailed', onRequestFailed);
+    page.off('pageerror', onPageError);
+    page.off('response', onResponse);
+    const evidence = JSON.stringify({ requests, failures, rendering }, null, 2);
     await writeFile(testInfo.outputPath('report-readiness.json'), evidence);
     await testInfo.attach('report-readiness', { body: evidence, contentType: 'application/json' });
   };

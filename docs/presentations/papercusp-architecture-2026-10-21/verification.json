@@ -1,7 +1,7 @@
 {
   "status": "passed",
-  "checkedAt": "2026-10-22T00:21:12.597Z",
-  "mechanicalWalkthroughSeconds": 13,
+  "checkedAt": "2026-10-22T00:23:01.638Z",
+  "mechanicalWalkthroughSeconds": 14,
   "checks": [
     {
       "viewport": {
@@ -46,7 +46,7 @@
     {
       "path": "deck.pdf",
       "bytes": 731851,
-      "sha256": "a991148d3ec6c18515f559bec9f47a5f4daff7f504aa595405172b2ef145d1aa"
+      "sha256": "753acd4dcd6bc0433f70c1f12377db2dbea09f3c9e0b12f8acd7d55243d21329"
     },
     {
       "path": "presenter-notes.md",

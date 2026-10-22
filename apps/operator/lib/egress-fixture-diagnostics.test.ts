@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const registered = vi.hoisted(() => ({ fixtures: {} as Record<string, any> }));
+const persisted = vi.hoisted(() => vi.fn());
+vi.mock('node:fs/promises', () => ({ writeFile: persisted }));
 vi.mock('@playwright/test', async () => {
   const { expect } = await import('vitest');
   return {
@@ -29,6 +31,7 @@ function harness(status = 'timedOut', controlFails = false) {
   page.waitForTimeout = vi.fn(async () => {});
   const testInfo = {
     status, expectedStatus: 'passed',
+    outputPath: (name: string) => `/isolated-output/${name}`,
     attach: vi.fn(async (name: string, attachment: { body: string; contentType: string }) => {
       expect(attachment.contentType).toBe('application/json');
       order.push(name);
@@ -47,6 +50,7 @@ function failedRequest(url: string, resourceType = 'script', errorText: string |
 }
 
 describe('maintained Playwright failure diagnostics', () => {
+  beforeEach(() => vi.clearAllMocks());
   it('retains module and page errors when setup times out before a final assertion', async () => {
     const h = harness();
     await h.run(() => {
@@ -58,6 +62,8 @@ describe('maintained Playwright failure diagnostics', () => {
       failedScripts: [{ path: '/src/main.tsx', error: 'net::ERR_NETWORK_CHANGED' }],
     });
     expect(h.order.indexOf('browser-diagnostics')).toBeLessThan(h.order.indexOf('control'));
+    expect(persisted).toHaveBeenCalledWith('/isolated-output/browser-diagnostics.json',
+      JSON.stringify(h.attachments.find(a => a.name === 'browser-diagnostics')?.value, null, 2));
     expect(h.attachments.some(a => a.name === 'egress-report')).toBe(true);
   });
 
@@ -93,5 +99,6 @@ describe('maintained Playwright failure diagnostics', () => {
     await h.run(() => h.context.emit('request', { url: () => 'http://localhost:40135/src/main.tsx' }));
     expect(h.page.evaluate).toHaveBeenCalledOnce();
     expect(h.attachments).toEqual([]);
+    expect(persisted).not.toHaveBeenCalled();
   });
 });

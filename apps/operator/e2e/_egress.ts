@@ -73,6 +73,7 @@
  * in egress-monitor.ts.
  */
 import { test as base, expect, type Locator, type Page } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 import {
   classifyEgress,
   EGRESS_CONTROL_PARAM,
@@ -329,8 +330,12 @@ export const test = base.extend<EgressFixtureOptions & EgressFixtures>({
       // checks. Preserve those errors before touching a potentially closed page
       // for the sensor control, without replacing the original failure.
       if (testInfo.status !== undefined && testInfo.status !== testInfo.expectedStatus) {
+        const evidence = JSON.stringify(browserDiagnostics, null, 2);
+        // A list reporter does not persist body attachments. Keep the original
+        // startup failure beside screenshots even when teardown cannot use page.
+        await writeFile(testInfo.outputPath('browser-diagnostics.json'), evidence);
         await testInfo.attach('browser-diagnostics', {
-          body: JSON.stringify(browserDiagnostics, null, 2),
+          body: evidence,
           contentType: 'application/json',
         });
       }

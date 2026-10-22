@@ -1869,7 +1869,7 @@ export default defineTool({
               updatedAtMs: queue.updatedAtMs,
             },
             note:
-              'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get; after status=passed or status=deferred (checkpoint-tree-busy), repeat this confirmed admit with the refreshed exact queue identity' +
+              'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get. If status=deferred (checkpoint-tree-busy), wait for the active checkpoint run to release the tree before requesting another pre-check; deferred is not passing evidence. After status=passed, repeat this confirmed admit with the refreshed exact queue identity' +
               (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${retrySourceCommit}'` : '') +
               '.',
           });
@@ -2007,7 +2007,7 @@ export default defineTool({
                 updatedAtMs: pendingQueue.updatedAtMs,
               },
               note:
-                'R6 pre-check launched as a managed task after its durable marker was written. Its progress and verdict are persisted by operationId and survive serving-host replacement. NOTHING publishes in the background. Re-read op:get; after status=passed or status=deferred (checkpoint-tree-busy), repeat this confirmed admit with the refreshed exact queue identity' +
+                'R6 pre-check launched as a managed task after its durable marker was written. Its progress and verdict are persisted by operationId and survive serving-host replacement. NOTHING publishes in the background. Re-read op:get. If status=deferred (checkpoint-tree-busy), wait for the active checkpoint run to release the tree before requesting another pre-check; deferred is not passing evidence. After status=passed, repeat this confirmed admit with the refreshed exact queue identity' +
                 (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${operation.sourceCommit}'` : '') +
                 '.',
             });
