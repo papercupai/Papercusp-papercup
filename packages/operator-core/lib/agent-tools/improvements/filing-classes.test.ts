@@ -160,7 +160,10 @@ describe('improvements:filing-classes — refusals never create a work-item', ()
   it('force:true files past an already-open class item', async () => {
     h.sql.mockResolvedValue([{ feature_id: 'WI-EXISTING', status: 'open' }]);
 
-    const out = body(await call({ mode: 'file', toolName: 'coord:send', force: true }));
+    const out = body(await call(
+      { mode: 'file', toolName: 'coord:send', force: true },
+      { harnessSlug: 'papercusp' },
+    ));
 
     expect(out).toMatchObject({ ok: true, filed: true, classItem: 'WI-CLASS-1' });
     expect(h.createWorkItem).toHaveBeenCalledTimes(1);
@@ -213,7 +216,10 @@ describe('improvements:filing-classes — filing is ADDITIVE (D-001)', () => {
       .mockResolvedValueOnce({ error: 'target_not_found' })
       .mockResolvedValueOnce({ ok: true });
 
-    const out = body(await call({ mode: 'file', toolName: 'coord:send' }));
+    const out = body(await call(
+      { mode: 'file', toolName: 'coord:send' },
+      { harnessSlug: 'papercusp' },
+    ));
 
     // The row already names every member in its body and payload, so a broken edge is a
     // reported degradation, never a thrown filing.

@@ -1752,6 +1752,75 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     expect(status.turnsStalled).toBe(false);
   });
 
+  it.each(['active-inference', 'native-operation'] as const)(
+    'EI-26633791289838468: a current %s execution for the latest fire is not reported as stalled',
+    async (reason) => {
+    const now = Date.now();
+    const firedAt = new Date(now - 71_000).toISOString();
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        fire_count: 3,
+        fire_count_at_arm: 0,
+        last_fired_at: firedAt,
+        parked: true,
+        parked_ms: 71_000,
+        last_wake_status: 'delivered',
+        last_wake_at: firedAt,
+        presence_last_active_at: new Date(now - 1_000).toISOString(),
+        metadata: {
+          executionRecovery: {
+            status: 'running',
+            reason,
+            observedAt: now - 1_000,
+            nextProbeAt: now + 29_000,
+            attempts: 0,
+            probes: 1,
+            generation: '123:2:456',
+            lastAttemptAt: null,
+          },
+        },
+      }) as unknown as Sql,
+    });
+
+    const status = out.get('su-x')!;
+    expect(status.parked).toBe(true);
+    expect(status.lastWakeStatus).toBe('delivered');
+    expect(status.executionRecovery).toMatchObject({ status: 'running', reason });
+    expect(status.turnsStalled).toBe(false);
+    expect(status.stalled).toBe(false);
+    },
+  );
+
+  it('does not let a running marker from before the latest fire mask the no-loop-turn verdict', async () => {
+    const now = Date.now();
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        fire_count: 3,
+        fire_count_at_arm: 0,
+        last_fired_at: new Date(now - 71_000).toISOString(),
+        parked: true,
+        parked_ms: 71_000,
+        last_wake_status: 'delivered',
+        last_wake_at: new Date(now - 71_000).toISOString(),
+        presence_last_active_at: new Date(now - 1_000).toISOString(),
+        metadata: {
+          executionRecovery: {
+            status: 'running',
+            reason: 'active-inference',
+            observedAt: now - 120_000,
+            nextProbeAt: now - 90_000,
+            attempts: 0,
+            probes: 1,
+            generation: '123:2:456',
+            lastAttemptAt: null,
+          },
+        },
+      }) as unknown as Sql,
+    });
+
+    expect(out.get('su-x')!.turnsStalled).toBe(true);
+  });
+
   it('EI-22457624472620001: an elapsed provider backoff does not mask a real stall', async () => {
     const now = Date.now();
     const out = await getLoopStatuses(['su-x'], {

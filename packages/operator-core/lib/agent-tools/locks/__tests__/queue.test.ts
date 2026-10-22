@@ -47,7 +47,7 @@ describe('locks:queue tool metadata', () => {
     expect(tool.description).toContain('paths:[] matches nothing');
     expect(tool.description).toContain('coordination_domain');
     expect(tool.guidance?.chaining).toContain('omit harness');
-    expect(tool.guidance?.chaining).toContain('paths:[] is intentionally empty');
+    expect(tool.guidance?.chaining).toContain('paths:[] matches none');
     expect(tool.args.safeParse({}).success).toBe(true);
     expect(tool.args.safeParse({ coordination_domain: '/repo' }).success).toBe(true);
     expect(tool.args.safeParse({ coordination_domain: '' }).success).toBe(false);
@@ -60,7 +60,7 @@ describe('locks:queue tool metadata', () => {
     expect(tool.description).toContain('external_paths');
     expect(tool.guidance?.chaining).toContain('external_paths');
     expect(tool.description).toContain('at most one managed repository per request');
-    expect(tool.guidance?.chaining).toContain('at most one managed repository per request');
+    expect(tool.guidance?.chaining).toContain('query one managed repository per request');
     const shape = (tool.args as unknown as { shape: { external_paths: { description?: string } } }).shape;
     expect(shape.external_paths.description).toContain('at most one managed repository per request');
   });

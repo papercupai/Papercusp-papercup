@@ -81,14 +81,26 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
     if (i.nowMs - Number(e.lastProgressAt) < PROBE_INTERVAL_MS) return protect('failure-settle-grace', 'unknown');
     if (prior && i.nowMs < prior.nextProbeAt) {
       // WI-6554700010012442: a spent budget stays handed off during its backoff, too.
-      return isSpentBlock(prior) ? { action: 'block', state: prior } : protect('recovery-backoff', prior.status);
+      return isSpentBlock(prior) ? { action: 'block', state: prior } : {
+        action: 'protect', state: { ...state, status: prior.status,
+          reason: 'recovery-backoff', nextProbeAt: prior.nextProbeAt },
+      };
     }
     if (state.attempts >= MAX_RECOVERY_ATTEMPTS) {
       return { action: 'block', state: { ...state, status: 'blocked', reason: 'native-start-retry-exhausted', nextProbeAt: i.nowMs + 300_000 } };
     }
+    // The native observer already classifies capacity failures and parses their
+    // retry hints. Anchor that hold to the failure, not each recovery sweep, and
+    // retain the existing backoff when it is longer. A later routine fire still
+    // traverses the ordinary AUTO, owner-input and execution guards.
+    const retryAfterMs = e.failure?.retryAfterMs;
+    const providerRetryAt = e.failure?.retryable && typeof retryAfterMs === 'number'
+      && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+      && Number.isFinite(e.failure.atMs) && e.failure.atMs >= i.firedAt && e.failure.atMs <= i.nowMs
+      ? e.failure.atMs + retryAfterMs : 0;
     return { action: 'recover', state: { ...state, status: 'recovering', reason: 'native-turn-failed',
       attempts: state.attempts + 1, probes: 0, lastAttemptAt: i.nowMs,
-      nextProbeAt: i.nowMs + Math.min(300_000, PROBE_INTERVAL_MS * 2 ** state.attempts) } };
+      nextProbeAt: Math.max(providerRetryAt, i.nowMs + Math.min(300_000, PROBE_INTERVAL_MS * 2 ** state.attempts)) } };
   }
   // WI-6554700010012442: inside a spent block's backoff the answer is still 'block' (hand off).
   // Returning 'observe' here held the loop for every 5-minute window between re-blocks.

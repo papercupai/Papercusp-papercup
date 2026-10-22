@@ -12,6 +12,41 @@ function fixture(): ExecutionRecoveryInput {
 }
 
 describe('expected loop execution recovery', () => {
+  it('honors the native capacity retry deadline without sliding it on each observation', () => {
+    const i = fixture();
+    const failedAt = i.host.execution!.lastProgressAt!;
+    i.host.execution!.failure = { code: 'server_overloaded', retryable: true,
+      retryAfterMs: 120_000, atMs: failedAt };
+    const first = decideLoopExecutionRecovery(i);
+    expect(first).toMatchObject({ action: 'recover', state: { attempts: 1,
+      nextProbeAt: failedAt + 120_000 } });
+    i.prior = first.state;
+    i.nowMs = failedAt + 119_999;
+    i.host.execution!.observedAt = i.nowMs;
+    i.inference.observedAt = i.nowMs;
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'protect',
+      state: { reason: 'recovery-backoff', attempts: 1, nextProbeAt: failedAt + 120_000 } });
+  });
+
+  it.each([null, -1, 0, Number.NaN, Number.POSITIVE_INFINITY])(
+    'retains bounded recovery when the native retry delay is invalid (%s)', retryAfterMs => {
+      const i = fixture();
+      i.host.execution!.failure = { code: 'server_overloaded', retryable: true,
+        retryAfterMs, atMs: i.host.execution!.lastProgressAt! };
+      expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'recover',
+        state: { nextProbeAt: nowMs + 30_000 } });
+    });
+
+  it('keeps the recovery backoff when it is longer than the capacity hold', () => {
+    const i = fixture();
+    i.host.execution!.failure = { code: 'server_overloaded', retryable: true,
+      retryAfterMs: 60_000, atMs: i.host.execution!.lastProgressAt! };
+    i.prior = { status: 'recovering', reason: 'native-turn-failed', attempts: 4,
+      probes: 0, nextProbeAt: nowMs, observedAt: nowMs, generation: '1:1:2', lastAttemptAt: nowMs - 60_000 };
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'recover',
+      state: { nextProbeAt: nowMs + 300_000, attempts: 5 } });
+  });
+
   it('retains a paced recovery deadline without relying on provider error wording', () => {
     const first = decideLoopExecutionRecovery(fixture());
     expect(first).toMatchObject({ action: 'recover', state: { status: 'recovering', attempts: 1, nextProbeAt: nowMs + 30_000 } });

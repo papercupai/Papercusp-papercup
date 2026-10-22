@@ -1513,6 +1513,8 @@ export function computeTurnsStalled(input: {
    *  alive right now. Without it the gap below is two frozen past instants (see the
    *  blind-spot note in the body). */
   lastActiveAtMs?: number | null;
+  /** True only when a running inference/native operation was observed after this fire. */
+  currentExecutionInFlight?: boolean;
   intervalSec: number | null;
   nowMs?: number;
 }): boolean {
@@ -1524,6 +1526,9 @@ export function computeTurnsStalled(input: {
   const lastLoopTurnAtMs = Object.prototype.hasOwnProperty.call(input, 'lastLoopTurnAtMs')
     ? (input.lastLoopTurnAtMs ?? null)
     : input.lastTurnAtMs;
+  // A current operation for this fire has not had a chance to complete its loop-origin
+  // turn yet. The parked-loop stall verdict handles an operation that exceeds its dwell floor.
+  if (input.currentExecutionInFlight) return false;
   // No turn has EVER completed for this owner, yet several fires have landed — the
   // strongest form of the signal (never masked by a stale-but-present lastTurnAt).
   if (lastLoopTurnAtMs == null) return true;
@@ -2052,6 +2057,17 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   // retry window is still in the future. Once it has elapsed, preserve the ordinary
   // turnsStalled verdict so a genuinely wedged retry is still visible.
   const providerBackoffActive = lifecycleBackoff?.resumesInMs != null && lifecycleBackoff.resumesInMs > 0;
+  const executionRecovery = r.metadata?.executionRecovery as
+    | { status?: string; reason?: string; observedAt?: number }
+    | undefined;
+  const currentExecutionInFlight =
+    parked &&
+    lastFiredMs != null &&
+    executionRecovery?.status === 'running' &&
+    (executionRecovery.reason === 'active-inference' || executionRecovery.reason === 'native-operation') &&
+    Number.isFinite(executionRecovery.observedAt) &&
+    Number(executionRecovery.observedAt) >= lastFiredMs &&
+    Number(executionRecovery.observedAt) <= Date.now();
   const turnsStalled = computeTurnsStalled({
     active: Boolean(r.active) && !providerBackoffActive,
     fireCount: firesSinceArm,
@@ -2059,6 +2075,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastTurnAtMs: lastTurnMs,
     lastLoopTurnAtMs: lastLoopTurnMs,
     lastActiveAtMs: presenceMs,
+    currentExecutionInFlight,
     intervalSec,
   });
   const cadence = computeLoopCadence({

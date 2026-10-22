@@ -316,9 +316,10 @@ describe("workspace-host image compatibility", () => {
     expect(fixture.bootstrapInput.agentRuntimeInstalls).toEqual(agentRuntimeInstalls);
     expect(fixture.bootstrapInput.statusChannel).toBe("ec2-console-output");
     expect(fixture.bootstrapScript).toContain("PAPERCUSP_BOOTSTRAP_STATUS");
-    expect(fixture.bootstrapScript).toContain("claude-install --linux");
-    expect(fixture.bootstrapScript).toContain("codex-install --linux");
-    expect(fixture.bootstrapScript).toContain("omp-install --linux");
+    // Each command and argument remains a separate shell-quoted argv token.
+    expect(fixture.bootstrapScript).toContain("'claude-install' '--linux'");
+    expect(fixture.bootstrapScript).toContain("'codex-install' '--linux'");
+    expect(fixture.bootstrapScript).toContain("'omp-install' '--linux'");
   });
 
   it("runs the deterministic fixture through the existing exact bootstrap attestation gate", async () => {
