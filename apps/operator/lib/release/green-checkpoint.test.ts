@@ -6585,7 +6585,7 @@ describe("runGreenCheckpoint", () => {
     }
   });
 
-  it("WI-38533: relays only bounded affected-task progress while retaining complete output", async () => {
+  it("WI-38533: relays affected progress and admission waits while retaining complete output", async () => {
     const lines: string[] = [];
     const log = vi.spyOn(console, "log").mockImplementation((line) => {
       lines.push(String(line));
@@ -6595,17 +6595,23 @@ describe("runGreenCheckpoint", () => {
         "bash",
         [
           "-c",
-          "printf 'ordinary child output\\n'; printf 'AFFECTED_TASK_PROGRESS state=running task=demo elapsedSec=60 capturedBytes=42\\n' >&2",
+          "printf 'ordinary child output\\n'; printf 'Full run log: /tmp/affected-demo.log\\n'; printf 'AFFECTED_TASK_PROGRESS state=running task=demo elapsedSec=60 capturedBytes=42\\nAFFECTED_TESTS_ADMISSION_QUEUED waiting on holder pid=123\\nAFFECTED_TESTS_ADMISSION_GRANTED after 60s queued\\nAFFECTED_TESTS_ADMISSION_YIELD completedTasks=1 remainingTasks=2\\nordinary child error\\n' >&2",
         ],
         { relayAffectedProgress: true },
       );
       expect(result.stdout).toContain("ordinary child output");
       expect(result.stderr).toContain("AFFECTED_TASK_PROGRESS state=running");
-      expect(lines).toHaveLength(1);
-      expect(lines[0]).toContain(
+      expect(lines).toHaveLength(5);
+      expect(lines.join("\n")).toContain(
         "AFFECTED_TASK_PROGRESS state=running task=demo",
       );
+      expect(lines.join("\n")).toContain("Full run log: /tmp/affected-demo.log");
+      expect(lines.join("\n")).toContain("AFFECTED_TESTS_ADMISSION_QUEUED waiting on holder pid=123");
+      expect(lines.join("\n")).toContain("AFFECTED_TESTS_ADMISSION_GRANTED after 60s queued");
+      expect(lines.join("\n")).toContain("AFFECTED_TESTS_ADMISSION_YIELD completedTasks=1 remainingTasks=2");
+      expect(result.stderr).toContain("ordinary child error");
       expect(lines.join("\n")).not.toContain("ordinary child output");
+      expect(lines.join("\n")).not.toContain("ordinary child error");
     } finally {
       log.mockRestore();
     }

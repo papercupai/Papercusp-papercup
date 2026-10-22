@@ -53,6 +53,8 @@ export interface HostedWorkspaceProvisioningRequest {
   desiredSpec: WorkspaceHostDesiredSpec;
   operationId: string;
   actorId: string;
+  /** Internal reconciler snapshot; never accepted from a browser request. */
+  capacityReconcile?: { hostGeneration: number; controllerFence: number | null; observedAtMs: number };
 }
 
 export interface HostedWorkspaceAdmissionDependencies {

@@ -58,6 +58,11 @@ describe('portable ticket filing instrument preserves the full original integrat
     expect(parseTicketFilingIntegration(output(skipped, marker.replace('skippedTests=0', 'skippedTests=unknown')))).toBeNull();
   });
 
+  it.each(['/foreign/lib/capability-verbs/ticket.integration.test.ts', '/repo/other-package/lib/capability-verbs/ticket.integration.test.ts'])('refuses a foreign file sharing the canonical suite suffix: %s', name => {
+    const foreign = report(); foreign.testResults[0]!.name = name;
+    expect(parseTicketFilingIntegration(output(foreign))).toBeNull();
+  });
+
   it('keeps command failure, timeout and malformed results unknown through the real executor', async () => {
     for (const message of ['exit code 1', 'timed out']) {
       expect(await runInstrument(TICKET_FILING_INSTRUMENT_KEY, { exec: async () => { throw new Error(message); } }))

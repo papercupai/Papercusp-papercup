@@ -2916,5 +2916,121 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Preserve original public-docs and fixture parent receipts as recorded, including the fixture's 12 conditional skips. The new host-boundary repair has focused parser/build/host proof but does not qualify either original chain or full runtime closure. Original desktop eight-step parent remains missing. Continue actual per-step/report bindings and pre-setup/external-loader/non-module/other-runner closure using existing collectors. Do not repeat unchanged commands or saved guards absent drift. Preserve mandatory engine-archive review, D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
+  "currentFixtureStepBinding20261022": {
+    "workItemId": "WI-6554700010010682",
+    "status": "derived-historical-lifecycle-bindings-only-original-chain-unqualified",
+    "sourceEvidence": "currentOriginalFixtureParent20261015.nativeProcessArchive",
+    "method": "Read the immutable saved receipt and verify its referenced log/event/stream bytes. Select the unique original npm run test node-entry, then pair only that observer process's direct child-spawn and child-close by processIdentity, pid, childIdentity and childPid. Inherited lifecycle labels on descendant spawns do not establish original npm step identity. No command or test rerun.",
+    "archive": {
+      "root": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1-artifacts",
+      "receipt": "d9ab38c82125f6276a20853f183a47ac2781b2db1e9e6355cc7d8605c574a0fa.receipt.json",
+      "sha256": "d9ab38c82125f6276a20853f183a47ac2781b2db1e9e6355cc7d8605c574a0fa",
+      "referencedPinsChecked": 96,
+      "distinctArtifactsChecked": 84
+    },
+    "parent": {
+      "entry": {
+        "ref": "fa11a69a8c92da01f828047a2f3397c4c919d662742da21e382dd579a19b91d6.process-event.json",
+        "sha256": "fa11a69a8c92da01f828047a2f3397c4c919d662742da21e382dd579a19b91d6",
+        "byteLength": 609
+      },
+      "processIdentity": "ec4ec2d2-632c-4bf8-a38e-d31177598c7f",
+      "pid": 1323875,
+      "startedAtMs": 1792035995526,
+      "finishedAtMs": 1792036055943,
+      "exitCode": 0,
+      "captureComplete": true
+    },
+    "lifecycleBindings": [
+      {
+        "phase": "pretest",
+        "script": "node scripts/build.mjs",
+        "observerProcessIdentity": "ec4ec2d2-632c-4bf8-a38e-d31177598c7f",
+        "observerPid": 1323875,
+        "childIdentity": "c722acd7-f7c7-418d-a351-f859188fc44f",
+        "childPid": 1324770,
+        "command": "sh",
+        "argv": [
+          "-c",
+          "node scripts/build.mjs"
+        ],
+        "startedAtMs": 1792035996219,
+        "closedAtMs": 1792036042451,
+        "exitCode": 0,
+        "signal": null,
+        "stdioAccessible": {
+          "stdout": false,
+          "stderr": false
+        },
+        "spawn": {
+          "ref": "911d603401c6945e5d44945281e81715540c02fdf54396add6b5c3ec66c44160.process-event.json",
+          "sha256": "911d603401c6945e5d44945281e81715540c02fdf54396add6b5c3ec66c44160",
+          "byteLength": 526
+        },
+        "close": {
+          "ref": "6b9e0ebdcaab3ce89effb992aa8c97b0ed3be37cc60963400ff268a7a5326662.process-event.json",
+          "sha256": "6b9e0ebdcaab3ce89effb992aa8c97b0ed3be37cc60963400ff268a7a5326662",
+          "byteLength": 280
+        }
+      },
+      {
+        "phase": "test",
+        "script": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run",
+        "observerProcessIdentity": "ec4ec2d2-632c-4bf8-a38e-d31177598c7f",
+        "observerPid": 1323875,
+        "childIdentity": "002bcdd9-6f70-4ce3-a8e0-148442c16b98",
+        "childPid": 1369932,
+        "command": "sh",
+        "argv": [
+          "-c",
+          "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"
+        ],
+        "startedAtMs": 1792036042457,
+        "closedAtMs": 1792036055889,
+        "exitCode": 0,
+        "signal": null,
+        "stdioAccessible": {
+          "stdout": false,
+          "stderr": false
+        },
+        "spawn": {
+          "ref": "4cdcda1ec64ec65c5984d8f5dbb81e402b41b9d2c4ed7145a565041c12a51178.process-event.json",
+          "sha256": "4cdcda1ec64ec65c5984d8f5dbb81e402b41b9d2c4ed7145a565041c12a51178",
+          "byteLength": 587
+        },
+        "close": {
+          "ref": "bf894e9e0854a3890788a5c5b5c6362cca91bc5236919ae5286e5d42aca43ab2.process-event.json",
+          "sha256": "bf894e9e0854a3890788a5c5b5c6362cca91bc5236919ae5286e5d42aca43ab2",
+          "byteLength": 280
+        }
+      }
+    ],
+    "verifiedScope": "The two matching direct npm lifecycle shell calls have distinct child identities, successful matching close events, nonoverlapping intervals, and intervals inside the recorded parent execution. These are observed spawn/close bindings, not native per-step test report receipts.",
+    "qualificationGaps": [
+      {
+        "layer": "parent and step receipt production",
+        "observation": "Saved archive kind is affected-task-native-execution with steps:[]; the current ordered reader requires original-native-command-execution plus a parent binding to every native step receipt.",
+        "source": "scripts/lib/budgeted-task-scheduler.mjs"
+      },
+      {
+        "layer": "step stdout/stderr and report binding",
+        "observation": "Both observed lifecycle shell calls record stdioAccessible.stdout=false and stderr=false. The original archive does not bind distinct per-step stdout/stderr/report artifacts; aggregate stdout and descendant Writable inputs cannot establish those bindings."
+      },
+      {
+        "layer": "runner outcome and source population",
+        "observation": "The original test result retains 12 conditional skips; the original fixture configuration omitted the executed-source-map reporter/setup. No zero-skip applicability ruling or per-test evaluator/body source census is established."
+      }
+    ],
+    "currentReaderSource": {
+      "path": "scripts/lib/budgeted-task-scheduler.mjs",
+      "sha256": "1fdca9d8ac5e397d9ceed892c988c683ff448dcb4ac80693bcc9368bc8466eb5",
+      "scope": "Read-only contract comparison; no maintained suite was rerun on this current source."
+    },
+    "originalCommandsRerun": 0,
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Preserve the original public-docs, fixture and desktop parent receipts with their conditional skips and recorded source scope. currentFixtureStepBinding20261022 binds the two observed direct npm lifecycle calls to immutable events, while recording the missing parent/step report contract explicitly. Continue prospective per-step/report production and runtime closure on the existing collectors; do not manufacture historical reports from aggregate logs. Reuse unchanged proof only within its recorded scope; no unchanged expensive reruns. Preserve mandatory engine archive review, D020/P006 hold, six forms, P018, P028, P031/D045 and final shipment obligations. Full plan remains unshipped."
 }

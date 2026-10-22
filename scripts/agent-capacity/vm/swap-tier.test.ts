@@ -797,9 +797,9 @@ describe('minimum-resource active cohorts', () => {
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
     const events = JSON.parse(result.stdout.split('EVENTS=')[1]);
-    expect(events).toEqual(fail ? ['validate-swap', 'stop', 'start', 'stop', 'archive'] : ['validate-swap', 'stop', 'start', 'warm', {
+    expect(events).toEqual(fail ? ['validate-swap', 'stop', 'start', 'stop', 'validate-swap', 'archive'] : ['validate-swap', 'stop', 'start', 'warm', {
       arm: { active: [1], active_rounds: 3, swap_ready: true, keep_swap: true },
-    }, 'stop', 'archive']);
+    }, 'stop', 'validate-swap', 'archive']);
   });
 
   it.each([
@@ -1060,6 +1060,144 @@ describe('frozen D075 native workload detector', () => {
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
     for (const row of JSON.parse(result.stdout)) expect(row).toMatchObject({ exit: 2, receipt: { status: 'unknown', qualification: 'not-evaluated' } });
+  });
+
+  function qualificationFixture() {
+    const input = fixture();
+    const identity = { runId: 'trial-1', provider: 'gcp', projectOrAccount: 'test-project', zone: 'us-central1-a',
+      instanceId: 'vm-1', profile: '2cpu8g', customerWorkspaceId: 'customer-1', candidateSha: 'a'.repeat(40), artifactSha256: 'b'.repeat(64), model: 'gpt-6-luna', effort: 'low' };
+    input.rows[0].identity = identity;
+    input.rows.unshift({ t: 0.1, kind: 'server-population-preflight', count: 1, expected: '/server', active: ['/server'] },
+      { t: 0.2, kind: 'active-swap-preflight', device: '/dev/zram0', devices: [{ name: '/dev/zram0' }] });
+    input.rows.push({ t: input.rows.at(-1).t + 1, kind: 'active-swap-postflight', device: '/dev/zram0', devices: [{ name: '/dev/zram0' }] });
+    const operations = ['cold-wake', 'grow', 'resize', 'reconnect'];
+    const evidence: any = { schemaVersion: 'swap-tier-qualification-v1', identity,
+      sources: Object.fromEntries(['provider-inventory', 'footprint', ...operations, 'teardown'].map(k => [k, { path: `${k}.json`, sha256: 'c'.repeat(64) }])),
+      providerInventory: { identity, market: 'on-demand', customerWorkspaces: ['customer-1'] },
+      footprint: { identity, serverProcesses: 1, measuredAt: 0, dbBytes: 100, repositoryBytes: 200, activeHours: 1, freshInstall: true },
+      lifecycle: operations.map(kind => ({ kind, identity, requestedAt: 1000, readyAt: 1120,
+        health: { ok: true, service: 'papercusp-operator', sha: identity.candidateSha },
+        witnessBefore: { created: true, manifestSha256: 'd'.repeat(64), files: 2 },
+        witnessAfter: { verified: true, sqlReadOnly: true, manifestSha256: 'd'.repeat(64), files: 2 } })),
+      teardown: { identity, runId: identity.runId, deleted: ['vm-1'], remainingInstances: [], orphanDisks: [], verified: true } };
+    return { ...input, evidence, expectedSha: identity.candidateSha, expectedArtifact: identity.artifactSha256 };
+  }
+  const qualify = (input: ReturnType<typeof qualificationFixture>) => py(DRIVER,
+    'm.evaluate_native_qualification(inp["rows"], inp["probe"], inp["evidence"], inp["expectedSha"], inp["expectedArtifact"])', input);
+
+  it('composes complete observations while retaining independent review authority', () => {
+    expect(qualify(qualificationFixture())).toMatchObject({ status: 'pass', qualification: 'independent-review-required', gaps: [], failures: [] });
+  });
+  it.each([
+    ['foreign candidate', (x: any) => { x.expectedSha = 'e'.repeat(40); }],
+    ['foreign artifact', (x: any) => { x.expectedArtifact = 'e'.repeat(64); }],
+    ['foreign run', (x: any) => { x.rows.find((r: any) => r.kind === 'run-start').identity = { ...x.evidence.identity, runId: 'other' }; }],
+    ['changed frozen model', (x: any) => { x.rows.find((r: any) => r.kind === 'run-start').model = 'other'; }],
+    ['changed frozen effort', (x: any) => { x.rows.find((r: any) => r.kind === 'run-start').effort = 'high'; }],
+    ['missing source category', (x: any) => { delete x.evidence.sources.grow; }],
+    ['unhashed source', (x: any) => { x.evidence.sources.grow.sha256 = null; }],
+    ['spot substituted', (x: any) => { x.evidence.providerInventory.market = 'spot'; }],
+    ['foreign tenant', (x: any) => { x.evidence.providerInventory.customerWorkspaces.push('other'); }],
+    ['unmeasured footprint', (x: any) => { delete x.evidence.footprint.dbBytes; }],
+    ['foreign footprint identity', (x: any) => { x.evidence.footprint.identity = { ...x.evidence.identity, instanceId: 'other' }; }],
+    ['boolean process count', (x: any) => { x.evidence.footprint.serverProcesses = true; }],
+    ['missing active hours', (x: any) => { x.evidence.footprint.activeHours = 0; }],
+    ['active hours shorter than measured run', (x: any) => { x.evidence.footprint.activeHours = 0.001; }],
+    ['footprint from after launch', (x: any) => { x.evidence.footprint.measuredAt = 2; }],
+    ['wrong native population', (x: any) => { x.rows.find((r: any) => r.kind === 'server-population-preflight').active.push('/other'); }],
+    ['swap absent at shutdown', (x: any) => { x.rows.pop(); }],
+    ['swap changed at shutdown', (x: any) => { x.rows.at(-1).device = '/other'; }],
+    ['swap checked before shutdown', (x: any) => { x.rows.at(-1).t = 2; }],
+    ['missing lifecycle operation', (x: any) => { x.evidence.lifecycle.pop(); }],
+    ['duplicate lifecycle operation', (x: any) => { x.evidence.lifecycle[1] = x.evidence.lifecycle[0]; }],
+    ['readiness from another candidate', (x: any) => { x.evidence.lifecycle[0].health.sha = 'e'.repeat(40); }],
+    ['HTML availability', (x: any) => { x.evidence.lifecycle[0].health = '<html>SPA</html>'; }],
+    ['reversed clock', (x: any) => { x.evidence.lifecycle[0].readyAt = 999; }],
+    ['changed acknowledged data', (x: any) => { x.evidence.lifecycle[0].witnessAfter.manifestSha256 = 'e'.repeat(64); }],
+    ['writable SQL probe', (x: any) => { x.evidence.lifecycle[0].witnessAfter.sqlReadOnly = false; }],
+    ['missing file witness', (x: any) => { x.evidence.lifecycle[0].witnessBefore.files = 0; }],
+    ['boolean retained file count', (x: any) => { x.evidence.lifecycle[0].witnessBefore.files = 1; x.evidence.lifecycle[0].witnessAfter.files = true; }],
+    ['foreign teardown', (x: any) => { x.evidence.teardown.runId = 'other'; }],
+    ['unbound teardown identity', (x: any) => { delete x.evidence.teardown.identity; }],
+    ['same-named VM deleted in another project', (x: any) => { x.evidence.teardown.identity = { ...x.evidence.identity, projectOrAccount: 'other-project' }; }],
+    ['undeleted instance', (x: any) => { x.evidence.teardown.remainingInstances.push('vm-1'); }],
+    ['orphan disk', (x: any) => { x.evidence.teardown.orphanDisks.push('disk-1'); }],
+  ])('keeps %s unknown', (_name, mutate) => {
+    const input = qualificationFixture(); mutate(input);
+    expect(qualify(input).status).toBe('unknown');
+  });
+  it('enforces the raw cold-ready boundary and retains workload failures', () => {
+    const input = qualificationFixture(); input.evidence.lifecycle[0].readyAt += 0.0001;
+    expect(qualify(input)).toMatchObject({ status: 'fail', failures: ['cold-wake:application-ready'] });
+    input.evidence.lifecycle[0].readyAt = 1120;
+    input.rows.find((r: any) => r.kind === 'arm-end').host.oom_kill = 1;
+    expect(qualify(input)).toMatchObject({ status: 'fail', failures: ['oom'] });
+  });
+  it('never treats an inline passing dossier as retained archive/source proof', () => {
+    const input = qualificationFixture();
+    const code = [
+      'import importlib.util,json,tempfile,pathlib,sys',
+      `s=importlib.util.spec_from_file_location("m",${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s);s.loader.exec_module(m);x=json.load(sys.stdin)',
+      'with tempfile.TemporaryDirectory() as d:',
+      ' p=pathlib.Path(d);(p/"dossier.json").write_text(json.dumps(x["evidence"]))',
+      ' (p/"results.jsonl").write_text("\\n".join(json.dumps(r) for r in x["rows"]))',
+      ' (p/"probe.csv").write_text("\\n".join(",".join(str(v) for v in r) for r in x["probe"]))',
+      ' out=m.read_native_qualification(d,str(p/"dossier.json"),x["expectedSha"],x["expectedArtifact"])',
+      ' print(json.dumps(out))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { input: JSON.stringify(input), encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: 'unknown', qualification: 'independent-review-required' });
+  });
+  it('rechecks an actual 50-history archive and every hashed source through the CLI', () => {
+    const input = qualificationFixture();
+    const code = [
+      'import importlib.util,json,tempfile,pathlib,sys,hashlib,subprocess',
+      `s=importlib.util.spec_from_file_location("m",${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s);s.loader.exec_module(m);x=json.load(sys.stdin)',
+      'def digest(p):return hashlib.sha256(p.read_bytes()).hexdigest()',
+      'with tempfile.TemporaryDirectory() as d:',
+      ' p=pathlib.Path(d);e=x["evidence"];rows=x["rows"];sessions={}',
+      ' for row in rows:',
+      '  if isinstance(row.get("agents"),dict):row["agents"]={"a"+str(int(k[1:])+1):v for k,v in row["agents"].items()}',
+      '  if "agent" in row:row["agent"]="a"+str(int(row["agent"][1:])+1)',
+      ' next(r for r in rows if r["kind"]=="run-start")["warm"]=1',
+      ' for i in range(1,51):',
+      '  name="a"+str(i);data=p/(name+".txt");data.write_text(name);sha=digest(data);history=[]',
+      '  count=1+sum(r.get("kind")=="wake" and r.get("agent")==name for r in rows)',
+      '  for n in range(count):',
+      '   marker="WARM-"+name+"-"+str(n)',
+      '   payloads=[{"role":"user","content":[{"text":marker}]},{"type":"function_call_output","output":sha},{"role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"DONE-"+marker}]},{"type":"task_complete"}]',
+      '   history.extend({"timestamp":"1970-01-01T00:00:02Z","type":"event_msg" if z==3 else "response_item","payload":v} for z,v in enumerate(payloads))',
+      '  path=p/(name+".jsonl");path.write_text("\\n".join(json.dumps(r) for r in history));sessions[name]={"file":str(path),"data":str(data)}',
+      ' (p/"results.jsonl").write_text("\\n".join(json.dumps(r) for r in rows))',
+      ' (p/"probe.csv").write_text("\\n".join(",".join(str(v) for v in r) for r in x["probe"]))',
+      ' e["resultsSha256"]=digest(p/"results.jsonl");e["probeSha256"]=digest(p/"probe.csv")',
+      ' e["archiveSha256"]=m.archive_native_evidence(d,sessions)["archiveSha256"]',
+      ' for kind,ref in e["sources"].items():',
+      '  value=e["providerInventory"] if kind=="provider-inventory" else e["footprint"] if kind=="footprint" else e["teardown"] if kind=="teardown" else next(o for o in e["lifecycle"] if o["kind"]==kind)',
+      '  path=p/ref["path"];path.write_text(json.dumps(value));ref["sha256"]=digest(path)',
+      ' dossier=p/"dossier.json";dossier.write_text(json.dumps(e));out=[]',
+      ' def check(label):',
+      `  r=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"evaluate-workload","--out",d,"--qualification",str(dossier),"--expected-sha",x["expectedSha"],"--expected-artifact-sha256",x["expectedArtifact"]],capture_output=True,text=True)`,
+      '  out.append({"label":label,"exit":r.returncode,"result":json.loads(r.stdout)})',
+      ' check("complete")',
+      ' source=p/e["sources"]["footprint"]["path"];raw=source.read_bytes();source.write_bytes(raw+b" ");check("changed-source");source.write_bytes(raw)',
+      ' e["footprint"]["repositoryBytes"]+=1;dossier.write_text(json.dumps(e));check("inline-mismatch");e["footprint"]["repositoryBytes"]-=1;dossier.write_text(json.dumps(e))',
+      ' source.unlink();check("missing-source");source.write_bytes(raw)',
+      ' raw=(p/"probe.csv").read_bytes();(p/"probe.csv").write_bytes(raw+b"\\nmalformed");check("malformed-probe");(p/"probe.csv").write_bytes(raw)',
+      ' raw=(p/"native-evidence.tar.gz").read_bytes();(p/"native-evidence.tar.gz").write_bytes(b"broken");check("broken-archive");(p/"native-evidence.tar.gz").write_bytes(raw)',
+      ' raw=(p/"results.jsonl").read_bytes();(p/"results.jsonl").write_bytes(raw+b"\\n{}");check("foreign-results");(p/"results.jsonl").write_bytes(raw)',
+      ' dossier.write_text("{truncated");check("truncated-dossier")',
+      ' print(json.dumps(out))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { input: JSON.stringify(input), encoding: 'utf8', timeout: 20000 });
+    expect(result.status, result.stderr).toBe(0);
+    const [passing, ...refused] = JSON.parse(result.stdout);
+    expect(passing).toMatchObject({ label: 'complete', exit: 0, result: { status: 'pass', qualification: 'independent-review-required' } });
+    expect(refused.map((row: any) => row.label)).toEqual(['changed-source', 'inline-mismatch', 'missing-source', 'malformed-probe', 'broken-archive', 'foreign-results', 'truncated-dossier']);
+    for (const row of refused) expect(row, row.label).toMatchObject({ exit: 2, result: { status: 'unknown' } });
   });
 });
 

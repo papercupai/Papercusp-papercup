@@ -2,7 +2,7 @@
 import ts from 'typescript';
 import { execute, original, source } from './host-startup-migration-cases';
 import type { RailMigrationCase } from './rail-migration-cases';
-import type { DueReleaseRequestRow } from '../work-items-release-request';
+import type { DueReleaseRequestRow, PendingReleaseRequestConsequence, ReleaseRequestConsequenceJob } from '../work-items-release-request';
 
 type Observation = { eligible: number; applied: number; reason: string; scope?: string | null };
 const prefix = 'packages/operator-core/lib/';
@@ -77,7 +77,7 @@ async function measured(
 
 export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
   id: 'release-request-original-timeout-delivery-retry-unknown-and-measured-recovery', item: 'P-009', route: 'condition',
-  rowIds: [`owner-only-alarm|${prefix}dbos/in-process-periodic.ts|tick|1`],
+  rowIds: [`owner-only-alarm|${prefix}dbos/in-process-periodic.ts|replayConsequence|1`],
   run: () => conditionMeasured(async (rail) => {
     const { expect } = await import('vitest');
     const { hasWorkItemProgressAfterReleaseRequest } = await import('../work-items-release-request');
@@ -85,17 +85,24 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
       holderNow: 'holder', lastProgressAt: null, terminal: false, conditionRequest: null, paths: [],
       request: { by: 'requester', holder: 'holder', reason: 'fixture timeout', onSilence: 'escalate',
         deadlineAt: 1000, requestedAt: 500, resolved: false, resolution: null, resolvedAt: null } };
-    let scanFails = false, broadcasts = 0, resolves = 0, pages = 0, retirementFails = true;
+    let scanFails = false, broadcasts = 0, resolves = 0, pages = 0, pageAttempts = 0, retirementFails = true;
+    let pendingConsequences: PendingReleaseRequestConsequence[] = [];
     const modules: Record<string, unknown> = {
       '@papercusp/db-org': { getOrgPg: () => ({ sql: {} }) },
       '../work-items-release-request': {
         hasWorkItemProgressAfterReleaseRequest,
+        findPendingReleaseRequestConsequences: async () => pendingConsequences,
+        settleReleaseRequestConsequence: async (_sql: unknown, delivered: PendingReleaseRequestConsequence) => {
+          pendingConsequences = pendingConsequences.filter((entry) => entry.job.id !== delivered.job.id);
+          return true;
+        },
         findDueReleaseRequests: async (_sql: unknown, opts: { alarmPending?: boolean }) => {
           if (scanFails) throw new Error('request scan unreadable');
           return opts.alarmPending ? (row.conditionRequest ? [row] : []) : (row.request.resolved ? [] : [row]);
         },
-        resolveWorkItemReleaseRequest: async () => {
+        resolveWorkItemReleaseRequest: async (_id: string, opts: { consequenceJob: ReleaseRequestConsequenceJob }) => {
           row.conditionRequest = { by: row.request.by, holder: row.request.holder, deadlineAt: row.request.deadlineAt };
+          pendingConsequences.push({ id: row.id, harness: row.harness, workspaceId: row.workspaceId, job: opts.consequenceJob });
           row.request.resolved = true; row.request.resolution = 'consequence-escalate'; return row.request;
         },
         settleReleaseRequestCondition: async (_sql: unknown, _row: unknown, recovered: boolean) => {
@@ -106,7 +113,10 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
         setWorkItemClaimHold: async () => { throw new Error('must not change lease'); }, commentWorkItem: async () => {} },
       '../work-item-lock-release': {}, '../agent-tools/work_items/release-force-guard': {},
       '../agent-tools/coordination/messages': { sendMessage: async () => {} },
-      '../attention-notify': { notifyAttention: async () => { pages++; throw new Error('page unavailable'); } },
+      '../attention-notify': { notifyAttentionOnce: async () => {
+        if (++pageAttempts === 1) throw new Error('page unavailable');
+        pages++;
+      } },
       '../severe-event-broadcast': {
         broadcastSevereEvent: async (input: Parameters<typeof rail.broadcastSevereEvent>[0]) => {
           broadcasts++; if (broadcasts === 1) return false; return rail.broadcastSevereEvent(input);
@@ -123,8 +133,13 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
         if (!(name in modules)) throw new Error(`unexpected dependency ${name}`); return modules[name];
       },
     }) as { tick: () => Promise<void> };
-    await check.tick(); expect(pages).toBe(1); expect(broadcasts).toBe(1);
-    await check.tick(); await check.tick(); expect(broadcasts).toBe(3); expect(pages).toBe(1); expect(resolves).toBe(0);
+    await check.tick(); expect(pages).toBe(0); expect(broadcasts).toBe(1);
+    expect(pendingConsequences).toHaveLength(1);
+    await check.tick(); expect(pages).toBe(1); expect(pageAttempts).toBe(2);
+    expect(pendingConsequences).toHaveLength(0);
+    const broadcastsAfterRetry = broadcasts;
+    await check.tick(); expect(broadcasts).toBe(broadcastsAfterRetry + 1);
+    expect(pages).toBe(1); expect(resolves).toBe(0);
     scanFails = true; await expect(check.tick()).rejects.toThrow('request scan unreadable'); expect(resolves).toBe(0);
     scanFails = false; row.lastProgressAt = new Date(501).toISOString();
     await check.tick(); expect(row.conditionRequest).not.toBeNull();
@@ -247,16 +262,16 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
   }),
 }, {
   id: 'release-request-lock-release-error-primary-and-skipped-exclusion', item: 'P-009', route: 'observation',
-  mechanism: 'routine-capability-read', rowIds: [row('dbos/in-process-periodic.ts', 'tick')],
+  mechanism: 'routine-capability-read', rowIds: [row('dbos/in-process-periodic.ts', 'replayConsequence')],
   run: () => measured('routine-capability-read', 'release-request-locks', async (observeFallback) => {
     const { expect } = await import('vitest');
-    const text = statementRange(prefix + 'dbos/in-process-periodic.ts', 'const lockRelease =', 'const reclaimHolder =');
+    const text = statementRange(prefix + 'dbos/in-process-periodic.ts', 'const lockRelease =', 'const released =');
     let decisions = 0;
     const record = (name: string, observation: Observation) => { decisions++; return observeFallback(name, observation); };
     for (const result of [{ failures: 1, skipped: null }, { failures: 0, skipped: null },
       { failures: 0, skipped: 'missing-owner' }, { failures: 0, skipped: 'no-paths' }]) {
-      await execute(text, { observeFallback: record, row: { id: 'fixture', holderNow: 'fixture', paths: [] },
-        resolved: { holder: 'fixture' }, releaseReclaimedWorkItemLocks: async () => result });
+      await execute(text, { observeFallback: record, row: { id: 'fixture' },
+        job: { reclaimHolder: 'fixture', paths: [] }, releaseReclaimedWorkItemLocks: async () => result });
     }
     expect(decisions).toBe(2);
   }),

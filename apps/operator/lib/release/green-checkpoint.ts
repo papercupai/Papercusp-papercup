@@ -1832,6 +1832,8 @@ export interface CheckpointResult {
    * normalization. An unavailable verifier can name this head without settling its retest;
    * the recorded convergence round remains the evidence that a red was measured. */
   repairVerificationHead?: string;
+  /** Bounded per-gate output captured by targeted verification at repairVerificationHead. */
+  repairVerificationFailureTails?: Record<string, string>;
   /** P-003: machine-readable identity/provenance for the status shown to readers. */
   verdictProvenance?: {
     frozenCandidate: string;
@@ -6471,6 +6473,7 @@ export type RepairHeadVerification =
       signature: RepairSignatureInput[];
       summary: string;
       selectiveCoverage?: FrozenRepairSelectiveCoverage;
+      failureTails?: Record<string, string>;
       /** WI-10007489: the targeted radius this verdict actually ran, recorded on its round. */
       executed?: FrozenRepairRoundExecution;
     }
@@ -7601,6 +7604,13 @@ export function interpretRepairHeadMeasurements(input: {
       );
     }
   }
+  const failureTails: Record<string, string> = {};
+  for (const entry of gateOutcomes ?? []) {
+    const outputTail = entry.outputTail?.trim();
+    if ((entry.status === "fail" || entry.status === "errored") && outputTail) {
+      failureTails[entry.id] = outputTail;
+    }
+  }
   const downgradedNote = downgradedAtHead.length
     ? `${downgradedAtHead.length} failing file(s) downgraded (non-blocking): ` +
       `${[...new Set(downgradedAtHead)].slice(0, 5).join(", ")}${downgradedAtHead.length > 5 ? ", …" : ""}`
@@ -7611,6 +7621,7 @@ export function interpretRepairHeadMeasurements(input: {
       failingTests: [...fresh.keys()],
       signature: [...fresh.values()],
       ...(selectiveCoverage ? { selectiveCoverage } : {}),
+      ...(Object.keys(failureTails).length ? { failureTails } : {}),
       executed: roundExecution,
       summary:
         `still red at repair head ${at}: ` +
@@ -13921,6 +13932,9 @@ async function runGreenCheckpointInner(
           summary,
           repairQueue,
           repairVerificationHead: candidate,
+          ...(verification.failureTails
+            ? { repairVerificationFailureTails: verification.failureTails }
+            : {}),
         });
       }
       if (verification.kind === "unavailable") {
@@ -17673,29 +17687,72 @@ export function failingRepairLegsForRouting(
   ).actionable;
 }
 
-/**
- * WI-6554700010018714: the failure output this tick measured for each non-passing leg, keyed
- * by leg id, so a routed leg item carries the tail the verdict line already shows instead of
- * "none recorded for this leg". test_runs cannot hold a lint leg's output, so this is the only
- * source for one. Only a measurement taken AT the queue's repairHead counts: a tail from an
- * older head describes code the queue has since moved past.
+interface RepairFailureTailMeasurement {
+  head: string;
+  legs: readonly { id: string; status: string; outputTail?: string }[];
+}
+
+/** Gather bounded lint output from the full-gate round-one and targeted-verification records. */
+export function repairFailureTailMeasurements(input: {
+  redLegsAtR1?: { candidate: string };
+  postSuiteLegs?: readonly {
+    id: string;
+    status: string;
+    executionIdentity?: { result?: { output?: string } };
+  }[];
+  repairVerificationHead?: string;
+  repairVerificationFailureTails?: Readonly<Record<string, string>>;
+}): RepairFailureTailMeasurement[] {
+  const measurements: RepairFailureTailMeasurement[] = [];
+  if (input.redLegsAtR1 && input.postSuiteLegs?.length) {
+    measurements.push({
+      head: input.redLegsAtR1.candidate,
+      legs: input.postSuiteLegs.map((leg) => ({
+        id: leg.id,
+        status: leg.status,
+        outputTail: leg.executionIdentity?.result?.output,
+      })),
+    });
+  }
+  if (input.repairVerificationHead && input.repairVerificationFailureTails) {
+    measurements.push({
+      head: input.repairVerificationHead,
+      legs: Object.entries(input.repairVerificationFailureTails).map(([id, outputTail]) => ({
+        id,
+        status: "fail",
+        outputTail,
+      })),
+    });
+  }
+  return measurements;
+}
+
+/** WI-6554700010018714: collect bounded failure output by leg id for frozen-repair routing.
+ * Only measurements at the queue's current repairHead count; older heads describe different code.
+ * Additional measurements are ordered oldest-first, and the current hold-tick result wins ties.
  */
 export function repairTickLegFailureTails(
   repairTickLegs: RepairTickLegs | undefined,
   repairHead: string | undefined,
+  additionalMeasurements: readonly RepairFailureTailMeasurement[] = [],
 ): Map<string, string> {
   const out = new Map<string, string>();
-  if (!repairTickLegs || !repairHead) return out;
-  const head = repairTickLegs.head ?? "";
-  const sameHead =
+  if (!repairHead) return out;
+  const sameHead = (head: string) =>
     head.length >= 7 &&
     repairHead.length >= 7 &&
     (head.startsWith(repairHead) || repairHead.startsWith(head));
-  if (!sameHead) return out;
-  for (const leg of repairTickLegs.legs) {
-    if (leg.status !== "fail" && leg.status !== "errored") continue;
-    const tail = leg.outputTail?.trim();
-    if (tail) out.set(leg.id, tail);
+  const measurements = [
+    ...additionalMeasurements,
+    ...(repairTickLegs ? [{ head: repairTickLegs.head, legs: repairTickLegs.legs }] : []),
+  ];
+  for (const measurement of measurements) {
+    if (!sameHead(measurement.head)) continue;
+    for (const leg of measurement.legs) {
+      if (leg.status !== "fail" && leg.status !== "errored" && leg.status !== "failed") continue;
+      const tail = leg.outputTail?.trim();
+      if (tail) out.set(leg.id, tail);
+    }
   }
   return out;
 }
@@ -18248,6 +18305,7 @@ export async function runGreenCheckpoint(
             failingTests: failingRepairLegsForRouting(q, finalResult.repairTickLegs),
           }
         : null;
+    const failureTailMeasurements = repairFailureTailMeasurements(finalResult);
     // WI-6554700010009547: bounded and entry-logged, like the disposition write above. A
     // failure or a deadline is non-fatal: the held candidate stays correctly held.
     await runPostVerdictStepWithDeadline(
@@ -18259,6 +18317,7 @@ export async function runGreenCheckpoint(
           failureTails: repairTickLegFailureTails(
             finalResult.repairTickLegs,
             queueForRouting?.repairHead,
+            failureTailMeasurements,
           ),
         }),
       deps.log,
@@ -25066,7 +25125,11 @@ export function runCmd(
       const lines = combined.split(/\r?\n/);
       progressRemainders.set(stream, lines.pop() ?? "");
       for (const line of lines) {
-        if (line.startsWith("AFFECTED_TASK_PROGRESS ")) {
+        if (
+          line.startsWith("AFFECTED_TASK_PROGRESS ") ||
+          /^AFFECTED_TESTS_ADMISSION_(?:QUEUED|GRANTED|YIELD) /.test(line) ||
+          line.startsWith("Full run log: ")
+        ) {
           console.log(`${orchestratorStdoutTag()} ${line}`);
         }
       }

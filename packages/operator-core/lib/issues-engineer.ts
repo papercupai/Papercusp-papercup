@@ -3690,6 +3690,7 @@ export async function setIssueState(
     completionEvidence?: PersistedCompletionEvidence;
     /** Already validated by the unified work-item completion boundary. */
     blueprintResult?: { operationId: string; specificationRevision: string; output: unknown; evidenceRef: string };
+    deferredOperationCompletion?: import('./blueprint/operation-service').DeferredOperationCompletionFence;
     /** Internal, receipt-fenced DBOS program-root terminal write. */
     acceptedProgramAttempt?: import('./blueprint/operation-worker-binding').AcceptedProgramRootAttempt;
     /** Detached receipt verified at the canonical host-adapter boundary. */
@@ -3792,7 +3793,10 @@ export async function setIssueState(
       ? await operationClaims.readActiveOperationWorkerClaimBinding(ws, by)
       : { status: 'none' as const }
     : null;
-  const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions, opts.blueprintResult);
+  const completionPayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions, opts.blueprintResult);
+  const evidencePayloadJson = opts.deferredOperationCompletion && opts.blueprintResult
+    ? JSON.stringify({ ...JSON.parse(completionPayloadJson ?? '{}'), out: opts.blueprintResult.output })
+    : completionPayloadJson;
   // EI-21184699633369991: work_items:set_state { force:true } accepts a
   // completionRef without structured evidence. Preserve the existing authority
   // on that ref-only correction; otherwise the terminal UPDATE turns a valid
@@ -3860,13 +3864,14 @@ export async function setIssueState(
           harness_slug: string;
           status: string;
           updated_ts: string | number;
+          taken_at: unknown;
           payload: unknown;
           terminal_owner: string | null;
           terminal_completion_ref: string | null;
           authority: string | null;
         }[]
       >`
-        SELECT taken_by, harness_slug, status, updated_ts, payload,
+        SELECT taken_by, taken_at, harness_slug, status, updated_ts, payload,
                terminal_owner, terminal_completion_ref, authority
           FROM harness_shared.work_items
          WHERE workspace_id = ${ws} AND feature_id = ${id}
@@ -3889,6 +3894,21 @@ export async function setIssueState(
     }
     const runtimePayload = priorRow.payload && typeof priorRow.payload === 'object' && !Array.isArray(priorRow.payload)
       ? priorRow.payload as Record<string, unknown> : {};
+    if (opts.deferredOperationCompletion) {
+      if (opts.skipCompletionGate || opts.force || !isTerminal || by !== opts.deferredOperationCompletion.ownerId) {
+        throw new Error('deferred operation completion requires a governed claimed terminal write');
+      }
+      (await import('./blueprint/operation-service')).assertDeferredOperationCompletionFence(opts.deferredOperationCompletion, {
+        assignee: priorRow.taken_by, updatedAt: new Date(Number(priorRow.updated_ts)).toISOString(),
+        takenAt: tsIsoOrNull(priorRow.taken_at), payload: priorRow.payload, state: priorRow.status,
+      });
+      const [claim] = await tx`
+        SELECT 1 FROM harness_shared.work_items AS wi
+         WHERE workspace_id = ${ws} AND feature_id = ${id} ${onAliasedRow()}
+           AND taken_at IS NOT DISTINCT FROM ${opts.deferredOperationCompletion.claimStamp ?? opts.deferredOperationCompletion.takenAt}::text::timestamptz
+      `;
+      if (!claim) throw new Error('deferred operation completion claim stamp changed');
+    }
     const hasExternalRuntimeProducer = Object.prototype.hasOwnProperty.call(runtimePayload, 'externalRuntimeProducer');
     if (opts.externalRuntimeCompletion || (hasExternalRuntimeProducer && isTerminal)) {
       const receipt = opts.externalRuntimeCompletion;
@@ -4097,7 +4117,7 @@ export async function setIssueState(
                                   -- Exempt the evidence subtree; merge it verbatim.
                                   ELSE COALESCE(payload, '{}'::jsonb) || (
                                          jsonb_strip_nulls(
-                                           ${evidencePayloadJson}::text::jsonb - '_completionEvidence' - 'blueprintResult'
+                                           ${evidencePayloadJson}::text::jsonb - '_completionEvidence' - 'blueprintResult' - 'out'
                                          )
                                          || CASE WHEN ${evidencePayloadJson}::text::jsonb ? '_completionEvidence'
                                                  THEN jsonb_build_object(
@@ -4106,6 +4126,9 @@ export async function setIssueState(
                                                       )
                                                  ELSE '{}'::jsonb
                                             END
+                                         || CASE WHEN ${evidencePayloadJson}::text::jsonb ? 'out'
+                                                 THEN jsonb_build_object('out', ${evidencePayloadJson}::text::jsonb -> 'out')
+                                                 ELSE '{}'::jsonb END
                                          || CASE WHEN ${evidencePayloadJson}::text::jsonb ? 'blueprintResult'
                                                  THEN jsonb_build_object(
                                                         'blueprintResult',
@@ -4123,6 +4146,9 @@ export async function setIssueState(
            AND origin <> 'remote'
            ${onBaseRow()}
            AND ${currentEffect}
+           AND ${opts.deferredOperationCompletion
+             ? tx`clock_timestamp() < to_timestamp(${opts.deferredOperationCompletion.deadlineAt}::double precision / 1000)`
+             : tx`TRUE`}
         RETURNING feature_id`;
       if (updated.length === 0) return [] as IssueRowDb[];
       terminalWriteSucceeded = true;

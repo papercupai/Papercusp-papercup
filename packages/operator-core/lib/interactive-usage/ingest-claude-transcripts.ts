@@ -950,5 +950,16 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
   } catch (error) {
     result.errors.push({ file: 'gateway-account-attribution', error: error instanceof Error ? error.message : String(error) });
   }
+  // The normal routine is the progress driver. Explicit adapters (including
+  // verifier catch-up) are nested bounded reads and must not recursively settle.
+  if (!opts.adapters && !opts.historical) {
+    try {
+      const { settleDeferredOperationCompletions } = await import('../blueprint/operation-service');
+      const settled = await settleDeferredOperationCompletions(sql, ws);
+      for (const error of settled.errors) result.errors.push({ file: 'operation-completion-settlement', error });
+    } catch (error) {
+      result.errors.push({ file: 'operation-completion-settlement', error: error instanceof Error ? error.message : String(error) });
+    }
+  }
   return result;
 }

@@ -55,6 +55,83 @@ import {
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
+export const P544_QUALIFICATION_INSTRUMENT_KEYS = {
+  'r-14': 'agent-capacity:p544-qualified-trial-cost',
+  'r-15': 'agent-capacity:p544-native-qualification',
+  'r-16': 'agent-capacity:p544-economic-selection',
+} as const;
+
+/** Reuses the maintained native/archive and cost readers. This admits no cloud
+ * resources and never treats an absent dossier or a saved pass as a measurement.
+ * The separate admission pins must be supplied with actual qualification evidence;
+ * its authenticity and suitability for the reviewed candidate remain review duties.
+ */
+export const P544_QUALIFICATION_COMMAND = String.raw`
+const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
+const [root, criterion] = process.argv.slice(1);
+let status = 'unknown', candidateSha = null, artifactSha256 = null;
+try {
+  const bindingPath = path.join(root, 'docs/evidence/p544-qualification-inputs.json');
+  const binding = JSON.parse(fs.readFileSync(bindingPath, 'utf8'));
+  candidateSha = binding.candidateSha; artifactSha256 = binding.artifactSha256;
+  if (binding.schemaVersion !== 'p544-measurement-inputs-v1' ||
+      !/^[a-f0-9]{40}$/.test(candidateSha || '') || !/^[a-f0-9]{64}$/.test(artifactSha256 || '') ||
+      typeof binding.economicsDossier !== 'string' || !binding.economicsDossier.trim()) throw Error('invalid admission pins');
+  const dossierPath = path.resolve(path.dirname(bindingPath), binding.economicsDossier);
+  const invoke = (program, args) => {
+    const run = cp.spawnSync(program, args, { cwd: root, encoding: 'utf8', timeout: 30000, maxBuffer: 4*1024*1024 });
+    if (run.error || run.signal || ![0,1,2].includes(run.status)) throw Error('measurement did not finish');
+    return JSON.parse(run.stdout);
+  };
+  const pins = ['--expected-sha', candidateSha, '--expected-artifact-sha256', artifactSha256];
+  if (criterion === 'r-14' || criterion === 'r-16') {
+    const result = invoke(process.execPath, ['--import','tsx',path.join(root,'scripts/agent-capacity/cost-model.ts'),
+      '--qualification-economics',dossierPath,...pins]);
+    if (result.scope !== 'P544-composite-economics' || result.qualification !== 'independent-review-required') throw Error('foreign measurement');
+    status = criterion === 'r-14' ? result.trialCost : result.comparison;
+  } else if (criterion === 'r-15') {
+    const dossier = JSON.parse(fs.readFileSync(dossierPath, 'utf8'));
+    if (dossier.schemaVersion !== 'p544-economics-v1' || !Array.isArray(dossier.options) ||
+        !dossier.options.length || dossier.options.length > 16) throw Error('option population');
+    const ids = new Set();
+    if (!['gcp','aws'].every(p => dossier.options.some(o => o.identity && o.identity.provider === p))) throw Error('missing provider');
+    const results = dossier.options.map(option => {
+      if (!option.id || ids.has(option.id)) throw Error('duplicate option');
+      ids.add(option.id);
+      if (option.identity.candidateSha !== candidateSha || option.identity.artifactSha256 !== artifactSha256) throw Error('foreign candidate');
+      const result = invoke('python3', [path.join(root,'scripts/agent-capacity/vm/swap-tier.py'),'evaluate-workload',
+        '--out',path.resolve(path.dirname(dossierPath),option.qualification.directory),
+        '--qualification',path.resolve(path.dirname(dossierPath),option.qualification.dossier),...pins]);
+      const observed = result.identity;
+      if (result.scope !== 'D075-composite-evidence' || result.qualification !== 'independent-review-required' ||
+          !observed || Object.keys(observed).length !== Object.keys(option.identity).length ||
+          !Object.keys(observed).every(k => observed[k] === option.identity[k])) return 'unknown';
+      return result.status;
+    });
+    status = results.includes('fail') ? 'fail' : results.every(s => s === 'pass') ? 'pass' : 'unknown';
+  }
+} catch { status = 'unknown'; }
+if (!['pass','fail','unknown'].includes(status)) status = 'unknown';
+console.log(JSON.stringify({ scope:'P544-composite-check', criterion, status, candidateSha, artifactSha256,
+  qualification:'independent-review-required' }));
+`;
+
+export function p544QualificationInstruments(root: string): CommandInstrument[] {
+  return (Object.keys(P544_QUALIFICATION_INSTRUMENT_KEYS) as (keyof typeof P544_QUALIFICATION_INSTRUMENT_KEYS)[]).map(criterion => ({
+    key: P544_QUALIFICATION_INSTRUMENT_KEYS[criterion], evaluator: 'command', unit: 'count', timeoutMs: 120_000,
+    description: 'Recompute retained P544 native/cost evidence under separate admitted candidate pins; 1 consistent, 0 failed, absent/incomplete unknown. Independent authenticity review still required.',
+    argv: [process.execPath, '-e', P544_QUALIFICATION_COMMAND, root, criterion],
+    parse(stdout: string): number | null {
+      try {
+        const result = JSON.parse(stdout);
+        if (result.scope !== 'P544-composite-check' || result.criterion !== criterion ||
+          result.qualification !== 'independent-review-required' ||
+          !/^[a-f0-9]{40}$/.test(result.candidateSha ?? '') || !/^[a-f0-9]{64}$/.test(result.artifactSha256 ?? '')) return null;
+        return result.status === 'pass' ? 1 : result.status === 'fail' ? 0 : null;
+      } catch { return null; }
+    },
+  }));
+}
 export const NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY = 'storage:disk-headroom-alarm-native';
 
 /** The unchanged R-1 bakeoff artifact also supplies the approved R-2/R-3 outcomes. */
@@ -612,6 +689,7 @@ export function parseGateSentinelHealth(stdout: string): number | null {
 }
 
 const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
+  ...p544QualificationInstruments(resolveAgentWorkspaceRoot({})),
   ticketFilingIntegrationInstrument(resolveAgentWorkspaceRoot({})),
   {
     key: GATE_SENTINEL_HEALTH_INSTRUMENT_KEY,

@@ -1,0 +1,166 @@
+{
+  "kind": "operational-test-evidence",
+  "name": "Missing harness schema recreated through same-folder registration",
+  "framework": "operational",
+  "workItemId": "WI-6554700010018437",
+  "evidencePlane": "live",
+  "scope": "private staging identity; not avi-test or final shipment",
+  "startedAt": "2026-10-22T06:56:59.103Z",
+  "slug": "test-byoc-reprov-18437-1ac7b-20261022",
+  "command": [
+    "authenticated POST /api/harness/projects",
+    "canonical dropHarnessSchema on empty private fixture",
+    "same-folder POST /api/harness/projects",
+    "verify actual agent_chats view",
+    "canonical fixture cleanup"
+  ],
+  "assertions": [
+    {
+      "id": "database-identity",
+      "passed": true,
+      "evidence": "{\"name\":\"papercusp\",\"port\":5432}"
+    },
+    {
+      "id": "current-staging-build",
+      "passed": true,
+      "evidence": "{\"sha\":\"713ace0e86\"}"
+    },
+    {
+      "id": "unique-private-registry-identity",
+      "passed": true,
+      "evidence": "{\"slug\":\"test-byoc-reprov-18437-1ac7b-20261022\"}"
+    },
+    {
+      "id": "initial-real-schema-scaffold",
+      "passed": true,
+      "evidence": "{\"body\":{\"ok\":true,\"project\":{\"path\":\"/home/builduser/.papercusp/test-artifacts/byoc-reprovision-18437-20261022/fixture\",\"slug\":\"test-byoc-reprov-18437-1ac7b-20261022\"},\"provisioning\":{\"ok\":true},\"repoInit\":{\"branch\":\"staging\",\"committed\":false}},\"http\":200}"
+    },
+    {
+      "id": "actual-agent-chats-view-created",
+      "passed": true,
+      "evidence": "{\"agent_chats\":true,\"present\":true}"
+    },
+    {
+      "id": "private-missing-schema-reproduced",
+      "passed": true,
+      "evidence": "{\"relations\":8,\"removed\":true}"
+    },
+    {
+      "id": "same-folder-reprovision-succeeds",
+      "passed": true,
+      "evidence": "{\"body\":{\"ok\":true,\"project\":{\"path\":\"/home/builduser/.papercusp/test-artifacts/byoc-reprovision-18437-20261022/fixture\",\"slug\":\"test-byoc-reprov-18437-1ac7b-20261022\"},\"provisioning\":{\"ok\":true},\"reprovisioned\":true},\"http\":200}"
+    },
+    {
+      "id": "missing-agent-chats-view-recreated",
+      "passed": true,
+      "evidence": "{\"agent_chats\":true,\"present\":true}"
+    },
+    {
+      "id": "different-folder-refused",
+      "passed": true,
+      "evidence": "{\"body\":{\"error\":\"slug already exists\"},\"http\":409}"
+    },
+    {
+      "id": "private-registry-cleanup",
+      "passed": true,
+      "evidence": "{\"http\": 200, \"registryAbsent\": true}"
+    },
+    {
+      "id": "empty-private-schema-cleanup",
+      "passed": true,
+      "evidence": "{\"relations\": 8, \"removed\": true}"
+    }
+  ],
+  "runtime": {
+    "http": 200,
+    "body": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "713ace0e86",
+      "version": "0.0.0",
+      "claimSpec": {
+        "specVersion": "1.0",
+        "revisionAdoption": [
+          "first"
+        ]
+      },
+      "ts": "2026-10-22T06:56:59.198Z"
+    }
+  },
+  "create": {
+    "http": 200,
+    "body": {
+      "ok": true,
+      "project": {
+        "slug": "test-byoc-reprov-18437-1ac7b-20261022",
+        "path": "/home/builduser/.papercusp/test-artifacts/byoc-reprovision-18437-20261022/fixture"
+      },
+      "provisioning": {
+        "ok": true
+      },
+      "repoInit": {
+        "committed": false,
+        "branch": "staging"
+      }
+    }
+  },
+  "schemaBefore": {
+    "present": true,
+    "agent_chats": true
+  },
+  "fixtureFault": {
+    "relations": 8,
+    "removed": true
+  },
+  "reprovision": {
+    "http": 200,
+    "body": {
+      "ok": true,
+      "project": {
+        "slug": "test-byoc-reprov-18437-1ac7b-20261022",
+        "path": "/home/builduser/.papercusp/test-artifacts/byoc-reprovision-18437-20261022/fixture"
+      },
+      "provisioning": {
+        "ok": true
+      },
+      "reprovisioned": true
+    }
+  },
+  "schemaAfter": {
+    "present": true,
+    "agent_chats": true
+  },
+  "foreign": {
+    "http": 409,
+    "body": {
+      "error": "slug already exists"
+    }
+  },
+  "exitCode": 0,
+  "unregister": {
+    "http": 200,
+    "body": {
+      "ok": true
+    }
+  },
+  "cleanupSchema": {
+    "relations": 8,
+    "removed": true
+  },
+  "registryAbsent": true,
+  "finishedAt": "2026-10-22T06:56:59.535Z",
+  "schemaVersion": 1,
+  "summary": "PASS on measured staging build 713ace0e86: create a private harness, verify its real agent_chats view, remove only its empty private view schema with the canonical helper, then recover it through the authenticated same-folder registration route. Different-folder registration is refused. Registry and schema are cleaned up. This proves the current staging repair route; it does not prove avi-test upgrade or final shipment.",
+  "subjectCommit": "713ace0e8692fb7ff0b8488f96d828027224da50",
+  "sourcePaths": [
+    "packages/operator-core/lib/endpoint-route/routes/harness/projects.ts",
+    "packages/operator-core/lib/scaffold-harness-schema.ts"
+  ],
+  "rawReceipt": {
+    "path": "/home/builduser/.papercusp/test-artifacts/byoc-reprovision-18437-20261022/receipt.json",
+    "sha256": "0aefa60ac4412ee61b609262910a45533e3265acbddf6789cb4d88ec9cbf13c1"
+  },
+  "publication": {
+    "identityRedaction": "Canonical serializeIdentitySafeJson redacts incidental machine identity values. Exact private fixture paths remain in the local raw receipt; measured hashes, timestamps, HTTP results and assertions are preserved."
+  }
+}

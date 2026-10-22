@@ -46,6 +46,7 @@ import {
   applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
+  CARRY_NOTES_DDL,
 } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables, PgLinkStore } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
@@ -62,6 +63,8 @@ import { projectBlueprintToPg } from './blueprint/project-to-pg';
 import { acceptBlueprintDirectWorkItem, readAcceptedBlueprintDirectWorkItem } from './blueprint/operation-admission';
 import { readActiveOperationModelPolicy } from './blueprint/operation-worker-binding';
 import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, openBlueprintOperationWait, recordDirectOperationModelAttestation, resumeBlueprintOperation, signalBlueprintOperation, submitBlueprintOperation } from './blueprint/operation-service';
+import { retainDeferredOperationCompletion, settleDeferredOperationCompletions } from './blueprint/operation-service';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { BlueprintOperationClient, createPgBlueprintOperationPort } from './blueprint/operation-client';
 import { createInferenceGateway, OWNER_HEADER } from './inference-gateway/gateway';
 import { createFailoverPool } from './inference-gateway/account-failover';
@@ -256,6 +259,7 @@ beforeAll(async () => {
     await applyMigrationForTest(db.sql, resolve(SQL_DIR, migration));
   }
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
+  await db.sql.unsafe(CARRY_NOTES_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
@@ -585,12 +589,12 @@ describe('blueprint direct-item revision pin', () => {
     },
   );
 
-  it('persists provider-authored Codex completion evidence on its applied backend receipt', async () => {
+  it.each(['feature', 'task'] as const)('persists provider-authored Codex completion evidence on its applied backend receipt (%s)', async (itemKind) => {
     const modelPolicy = { mode: 'exact' as const, models: ['gpt-5.6-sol'],
       effort: 'high', onUnavailable: 'fail' as const };
-    const source = { id: 'codex-attestation-fixture', workItem: { kind: 'feature' },
+    const source = { id: 'codex-attestation-fixture', workItem: { kind: itemKind },
       roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
-      operations: [{ id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+      operations: [{ id: 'extract', version: 'A', target: { kind: 'work-item', itemKind },
         execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
         acceptance: { resultSchema: { type: 'object' } }, policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy } }],
     };
@@ -787,6 +791,77 @@ describe('blueprint direct-item revision pin', () => {
     catchup.mockResolvedValueOnce({ ...emptyCatchup, errors: [{ file: 'test', error: 'read failure' }] });
     await expect(close()).rejects.toThrow('usage catch-up failed');
     expect((await wi.getWorkItem(itemId, 'papercup'))?.state).toBe('open');
+    await db.sql`UPDATE harness_shared.work_items
+      SET taken_at = date_trunc('second', now()) - interval '1 minute' + interval '0.123456 seconds'
+      WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+    const pendingItem = (await wi.getWorkItem(itemId, 'papercup'))!;
+    const [claimPrecision] = await db.sql`SELECT taken_at::text AS exact,
+        taken_at = ${pendingItem.takenAt}::timestamptz AS rounded_matches,
+        payload = ${JSON.stringify(pendingItem.payload)}::text::jsonb AS encoded_payload_matches,
+        payload = ${JSON.stringify(pendingItem.payload)}::jsonb AS double_encoded_payload_matches
+      FROM harness_shared.work_items WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+    expect(claimPrecision.rounded_matches).toBe(false);
+    expect(claimPrecision.encoded_payload_matches).toBe(true);
+    expect(claimPrecision.double_encoded_payload_matches).toBe(false);
+    // The recovery path reads server-authenticated immutable invocation args;
+    // no caller may provide a substitute output or execution identity.
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.tool_invocations (
+      id bigserial PRIMARY KEY, workspace_id text, tool_name text, status text,
+      coord_owner_id text, principal_kind text, principal_auth_method text,
+      principal_trust text, role text, harness_slug text, run_id text,
+      invoked_at timestamptz, args_json jsonb)`);
+    const originalArgs = { id: itemId, harness: 'papercup', state: 'done', assumptions: 'none', outputPayload: {},
+      completion: { summary: 'Original accepted output', verifiedHow: 'integration',
+        testsRun: 'work-items-lifecycle.integration.test.ts', testResult: 'pass' } };
+    const [invocation] = await db.sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id, tool_name, status, coord_owner_id, principal_kind, principal_auth_method,
+       principal_trust, role, harness_slug, run_id, invoked_at, args_json)
+      VALUES ('default', 'work_items:complete', 'ok', ${owner}, 'harness', 'spawn-url',
+        'trusted', 'worker', 'papercup', 'original-run', now(), ${db.sql.json(originalArgs)}) RETURNING id`;
+    const { readAuthenticatedOperationCompletionInvocation } = await import('./agent-tools/work_items/complete');
+    expect((await readAuthenticatedOperationCompletionInvocation('default', String(invocation.id))).request)
+      .toMatchObject(originalArgs);
+    for (const column of ['principal_trust', 'principal_auth_method', 'principal_kind', 'coord_owner_id']) {
+      const [saved] = await db.sql`SELECT ${db.sql(column)} AS value FROM harness_shared.tool_invocations WHERE id = ${invocation.id}`;
+      await db.sql`UPDATE harness_shared.tool_invocations SET ${db.sql(column)} = 'forged' WHERE id = ${invocation.id}`;
+      await expect(readAuthenticatedOperationCompletionInvocation('default', String(invocation.id))).rejects.toThrow();
+      await db.sql`UPDATE harness_shared.tool_invocations SET ${db.sql(column)} = ${saved.value} WHERE id = ${invocation.id}`;
+    }
+    await expect(readAuthenticatedOperationCompletionInvocation('other-workspace', String(invocation.id))).rejects.toThrow();
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 10000
+      WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+    await expect(readAuthenticatedOperationCompletionInvocation('default', String(invocation.id))).rejects.toThrow(/attempt changed/);
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.parse(pendingItem.updatedAt)}
+      WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+    const pendingContext = { workspaceId: 'default', harnessSlug: 'papercup', role: 'worker',
+      uiClientId: owner, isSuperuser: true, runId: 'original-authenticated-completion',
+      principal: { kind: 'system', slug: 'superuser', workspaceId: 'default',
+        authMethod: 'bearer-token', trust: 'trusted' } } as unknown as UnifiedToolContext;
+    const fence = { ownerId: owner, updatedAt: pendingItem.updatedAt, takenAt: pendingItem.takenAt,
+      claimStamp: claimPrecision.exact as string,
+      payloadSnapshot: pendingItem.payload as Record<string, unknown>, deadlineAt: Date.now() + 60_000 };
+    for (const patch of [
+      { ownerId: 'different-worker' }, { updatedAt: '2020-01-01T00:00:00.000Z' },
+      { takenAt: '2020-01-01T00:00:00.000Z' }, { deadlineAt: 1 },
+      { payloadSnapshot: { ...fence.payloadSnapshot, out: { changed: true } } },
+      { payloadSnapshot: { ...fence.payloadSnapshot, blueprintOperation: {} } },
+    ]) {
+      await expect(wi.setWorkItemState(itemId, 'done', { harness: 'papercup', by: owner,
+        outputPayload: {}, completionAuthority: 'committed',
+        deferredOperationCompletion: { ...fence, ...patch } })).rejects.toThrow(/deferred operation completion/);
+      expect((await wi.getWorkItem(itemId, 'papercup'))?.state).toBe('open');
+    }
+    const retained = await retainDeferredOperationCompletion(db.sql, { item: pendingItem, ctx: pendingContext,
+      state: 'done', output: {}, completionEvidence: { summary: 'Original worker completed the accepted fixture',
+        verifiedHow: 'integration', testsRun: 'work-items-lifecycle.integration.test.ts', testResult: 'pass' },
+      completionAuthority: 'committed', assumptions: undefined });
+    const duplicate = await retainDeferredOperationCompletion(db.sql, { item: pendingItem, ctx: pendingContext,
+      state: 'done', output: {}, completionEvidence: { summary: 'Original worker completed the accepted fixture',
+        verifiedHow: 'integration', testsRun: 'work-items-lifecycle.integration.test.ts', testResult: 'pass' },
+      completionAuthority: 'committed', assumptions: undefined });
+    expect(duplicate).toEqual(retained);
+    expect(await settleDeferredOperationCompletions(db.sql, 'default')).toMatchObject({ completed: 0, pending: 1, refused: 0, errors: [] });
+    expect((await wi.getWorkItem(itemId, 'papercup'))?.state).toBe('open');
     catchup.mockClear();
     catchup.mockImplementationOnce(async (options, scope) => {
       expect(options).toMatchObject({ includeIsolationRoots: false,
@@ -800,8 +875,39 @@ describe('blueprint direct-item revision pin', () => {
             sourceId: 'cumulative:0:codex-request-late', inputTotalTokens: 140 })})`;
       return { ...emptyCatchup, scannedFiles: 1, ingestedFiles: 1, samples: 1 };
     });
-    expect((await close())?.state).toBe('done');
-    expect(catchup).toHaveBeenCalledTimes(1);
+    // Model convergence happens during this call, but its final SQL fence must
+    // still reject a changed microsecond claim stamp (the JS Date view rounds).
+    const staleClaimWrite = wi.setWorkItemState(itemId, 'done', { harness: 'papercup', by: owner,
+      outputPayload: {}, completionAuthority: 'committed',
+      deferredOperationCompletion: { ...fence, claimStamp: pendingItem.takenAt } });
+    if (itemKind === 'feature') expect(await staleClaimWrite).toBeNull();
+    else await expect(staleClaimWrite).rejects.toThrow('deferred operation completion claim stamp changed');
+    expect((await wi.getWorkItem(itemId, 'papercup'))?.state).toBe('open');
+    const workerClaims = await import('./blueprint/operation-worker-binding');
+    const activeWorker = await workerClaims.readActiveOperationWorkerClaimBinding('default', owner);
+    const [retainedBody] = await db.sql`SELECT body FROM harness_shared.coord_event_log WHERE id = ${retained.eventId}`;
+    const attemptBody = retainedBody.body;
+    const [sqlFences] = await db.sql`SELECT
+        taken_by = ${owner} AS actor,
+        taken_at IS NOT DISTINCT FROM ${attemptBody.claimStamp}::text::timestamptz AS claim,
+        updated_ts = ${Date.parse(attemptBody.updatedAt)} AS stamp,
+        payload = ${JSON.stringify(attemptBody.payloadSnapshot)}::text::jsonb AS payload,
+        clock_timestamp() < to_timestamp(${attemptBody.deadlineAt}::double precision / 1000) AS deadline,
+        ${workerClaims.operationWorkerEffectWhereSql(db.sql, activeWorker, {
+          payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
+        })} AS worker
+      FROM harness_shared.work_items WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${itemId}`;
+    expect(sqlFences).toEqual({ actor: true, claim: true, stamp: true, payload: true, deadline: true, worker: true });
+    const settlements = await Promise.all([settleDeferredOperationCompletions(db.sql, 'default'),
+      settleDeferredOperationCompletions(db.sql, 'default')]);
+    expect(settlements.map(r => r.errors)).toEqual([[], []]);
+    expect(settlements.reduce((sum, r) => sum + r.completed, 0), JSON.stringify(settlements)).toBe(1);
+    expect(settlements.reduce((sum, r) => sum + r.refused, 0), JSON.stringify(settlements)).toBe(0);
+    expect(await wi.getWorkItem(itemId, 'papercup')).toMatchObject({ state: 'done', payload: { out: {}, blueprintResult: { output: {} } } });
+    expect(await settleDeferredOperationCompletions(db.sql, 'default')).toMatchObject({ completed: 0, pending: 0, refused: 0, errors: [] });
+    // The intentionally stale SQL write and the successful settlement each
+    // perform their own bounded canonical verification.
+    expect(catchup).toHaveBeenCalledTimes(2);
     // The origin proof lives on the operation receipt, not the diagnostic
     // outcome retention window. A later result read must remain verifiable.
     await db.sql`DELETE FROM harness_shared.gateway_request_outcomes`;

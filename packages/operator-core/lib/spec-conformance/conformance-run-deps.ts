@@ -268,7 +268,8 @@ export async function judgeTestsFromLedger(
         : {}),
     };
   }
-  const failing = rows.filter((row) => row.status !== 'pass').map((row) => `${row.file_path} (${row.status}, test_runs #${row.id})`);
+  const runErrors = rows.filter((row) => row.status === 'error');
+  const failing = rows.filter((row) => row.status === 'fail').map((row) => `${row.file_path} (fail, test_runs #${row.id})`);
   // A passing status is not enough for file-wide evidence: filtered or dirty runs
   // can pass only a subset or a moving source tree. Legacy failure rows remain
   // useful negative evidence above, but legacy pass rows cannot prove coverage.
@@ -291,10 +292,11 @@ export async function judgeTestsFromLedger(
       : [];
   });
   const passing = rows.length - failing.length;
-  if (missing.length > 0 || stale.length > 0 || unprovenPasses.length > 0) {
+  if (missing.length > 0 || stale.length > 0 || runErrors.length > 0 || unprovenPasses.length > 0) {
     const unavailable = [
       ...missing.map((file) => `${file} (no test-run ledger row)`),
       ...stale.map((row) => `${row.file_path} (stale test-run evidence, test_runs #${row.id})`),
+      ...runErrors.map((row) => `${row.file_path} (test run status is error, test_runs #${row.id})`),
       ...unprovenPasses,
     ];
     return {

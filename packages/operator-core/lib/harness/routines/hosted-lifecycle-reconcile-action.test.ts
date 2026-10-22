@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { HostedLifecycleReconciliationResult } from '../../workspace-host/hosted-lifecycle-store';
-import { makeHostedLifecycleReconcileAction, HOSTED_LIFECYCLE_RECONCILE } from './hosted-lifecycle-reconcile-action';
+import { makeHostedLifecycleReconcileAction as createAction, HOSTED_LIFECYCLE_RECONCILE } from './hosted-lifecycle-reconcile-action';
 import { BESPOKE_ACTIVE_SEEDS } from './bespoke-active-seeds-check';
 import { TARGET_ROLE_SPEND } from '../../automation/routine-classification';
 
@@ -33,6 +33,8 @@ const STORE_FILE = join(HERE, '..', '..', 'workspace-host', 'hosted-lifecycle-st
 
 const ACTION_NAME = 'hosted-lifecycle-reconcile';
 const TARGET_ROLE = `system:${ACTION_NAME}`;
+const makeHostedLifecycleReconcileAction = (overrides: Parameters<typeof createAction>[0] = {}) =>
+  createAction({ reconcileDemand: async () => ({ considered: 0, enqueued: [], held: [] }), ...overrides });
 
 const read = (p: string) => readFileSync(p, 'utf8');
 
@@ -76,6 +78,21 @@ const ctx = (workspaceId = 'ws-123') => ({
 });
 
 describe('hosted-lifecycle-reconcile system action', () => {
+  it('advances persisted capacity demand on the existing routine and reports held demand', async () => {
+    const reconcileDemand = vi.fn(async () => ({ considered: 1, enqueued: [],
+      held: [{ hostId: 'host-1', reason: 'hosted_pool_capacity_cooldown' }] }));
+    const log = vi.fn();
+    await makeHostedLifecycleReconcileAction({ reconcile: async () => idle, reconcileDemand, log })(ctx('capacity-ws'));
+    expect(reconcileDemand).toHaveBeenCalledExactlyOnceWith('capacity-ws');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('capacityHeld=[{"hostId":"host-1","reason":"hosted_pool_capacity_cooldown"}]'));
+  });
+
+  it('does not report a healthy tick when authoritative demand cannot be read', async () => {
+    await expect(makeHostedLifecycleReconcileAction({ reconcile: async () => idle,
+      reconcileDemand: async () => { throw new Error('demand ledger unavailable'); }, log: vi.fn() })(ctx()))
+      .rejects.toThrow('demand ledger unavailable');
+  });
+
   it('reconciles the routine ctx workspace, not a hardcoded value', async () => {
     const reconcile = vi.fn(async () => idle);
     const action = makeHostedLifecycleReconcileAction({ reconcile, log: vi.fn() });

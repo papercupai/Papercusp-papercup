@@ -29,7 +29,9 @@
  */
 import {
   reconcileHostedLifecycleJobs,
+  reconcileHostedPoolDemand,
   type HostedLifecycleReconciliationResult,
+  type HostedPoolDemandReconciliationResult,
 } from '../../workspace-host/hosted-lifecycle-store';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
@@ -37,21 +39,24 @@ export const HOSTED_LIFECYCLE_RECONCILE = 'hosted-lifecycle-reconcile';
 
 export interface HostedLifecycleReconcileActionDeps {
   reconcile: (workspaceId: string) => Promise<HostedLifecycleReconciliationResult>;
+  reconcileDemand: (workspaceId: string) => Promise<HostedPoolDemandReconciliationResult>;
   log: (message: string) => void;
 }
 
 export function makeHostedLifecycleReconcileAction(overrides: Partial<HostedLifecycleReconcileActionDeps> = {}) {
   const deps: HostedLifecycleReconcileActionDeps = {
     reconcile: (workspaceId) => reconcileHostedLifecycleJobs(workspaceId),
+    reconcileDemand: (workspaceId) => reconcileHostedPoolDemand(workspaceId),
     log: (message) => console.log(`[${HOSTED_LIFECYCLE_RECONCILE}] ${message}`),
     ...overrides,
   };
   return async (ctx: SystemActionCtx): Promise<void> => {
     const out = await deps.reconcile(ctx.workspaceId);
+    const capacity = await deps.reconcileDemand(ctx.workspaceId);
     const touched = out.recoveryPending.length + out.orphaned.length + out.exhausted.length + out.spend.due;
     // Quiet by design when a tick found nothing to advance — the healthy steady state is every
     // queued/running operation heartbeating, and a per-tick line for that is pure noise.
-    if (touched === 0) return;
+    if (touched === 0 && capacity.considered === 0) return;
     deps.log(
       `${ctx.workspaceId}: recoveryPending=${out.recoveryPending.length} ` +
         `orphaned=${out.orphaned.length} exhausted=${out.exhausted.length} ` +
@@ -59,6 +64,8 @@ export function makeHostedLifecycleReconcileAction(overrides: Partial<HostedLife
         `spendAttempted=${out.spend.attempted} spendObserved=${out.spend.observed} ` +
         `spendSettled=${out.spend.settled} spendRetryable=${out.spend.retryable} ` +
         `spendSkipped=${out.spend.skipped} spendErrors=${out.spend.errors.length}` +
+        (capacity.considered > 0 ? ` capacityConsidered=${capacity.considered} capacityEnqueued=${capacity.enqueued.length} ` +
+          `capacityHeld=${JSON.stringify(capacity.held)}` : '') +
         (out.spend.errors.length > 0
           ? ` errors=[${out.spend.errors
               .map((error) => `${error.hostId}/${error.runId ?? 'unknown'}:${error.reason}`)

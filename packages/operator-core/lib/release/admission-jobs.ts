@@ -35,6 +35,7 @@ import { importCompletenessPreflight, readAdmissionBlobBatch } from './admission
 import { dirname, resolve, relative, sep } from 'node:path';
 import {
   precheckPopulation,
+  resolveCanonicalIntegrationRoot,
   isTestFilePath,
   type AdmissionRadius,
   type SignatureLike,
@@ -373,6 +374,7 @@ export function immutablePrecheckPopulation(input: ImmutablePrecheckInput):
   const unavailable = (detail: string) => ({ ok: false as const, detail });
   try {
     const top = treeAt(root, input.commit);
+    const canonicalRoot = resolveCanonicalIntegrationRoot(root);
     const admitted = new Set(input.admittedPaths.map((file) => file.trim().replaceAll('\\', '/').replace(/^\.\//, '')));
     const gitlinks = top.filter((entry) => entry.type === 'commit' && admitted.has(entry.file));
     // P-007: an ordinary admission adds its related-test radius to the exact admitted files.
@@ -382,21 +384,22 @@ export function immutablePrecheckPopulation(input: ImmutablePrecheckInput):
     }
     const blobs = new Map<string, string | null>();
     const ownRoots = gitlinks.map((entry) => resolve(root, entry.file));
-    const collect = (cwd: string, commit: string, entries: Entry[], depth: number): void => {
-      if (depth > 8) throw new Error(`pinned submodule nesting exceeds inventory bound at ${cwd}`);
+    const collect = (logicalCwd: string, objectCwd: string, commit: string, entries: Entry[], depth: number): void => {
+      if (depth > 8) throw new Error('pinned submodule nesting exceeds inventory bound at ' + logicalCwd);
       const sources = entries.filter((entry) => entry.type === 'blob' && /\.[cm]?[jt]sx?$/.test(entry.file));
-      const batch = readAdmissionBlobBatch(cwd, [...new Set(sources.filter((entry) => entry.mode !== '120000').map((entry) => entry.sha))]);
-      if (!batch.ok) throw new Error(`${cwd}@${commit}: ${batch.detail}`);
+      const batch = readAdmissionBlobBatch(objectCwd, [...new Set(sources.filter((entry) => entry.mode !== '120000').map((entry) => entry.sha))]);
+      if (!batch.ok) throw new Error(objectCwd + '@' + commit + ': ' + batch.detail);
       for (const entry of entries) {
-        if (entry.type === 'blob') blobs.set(resolve(cwd, entry.file), entry.mode === '120000' ? null : batch.contents.get(entry.sha) ?? null);
+        if (entry.type === 'blob') blobs.set(resolve(logicalCwd, entry.file), entry.mode === '120000' ? null : batch.contents.get(entry.sha) ?? null);
         else if (entry.type === 'commit') {
-          const child = resolve(cwd, entry.file);
-          assertSubmoduleStore(child, entry.sha);
-          collect(child, entry.sha, treeAt(child, entry.sha), depth + 1);
+          const logicalChild = resolve(logicalCwd, entry.file);
+          const objectChild = resolve(objectCwd, entry.file);
+          assertSubmoduleStore(objectChild, entry.sha);
+          collect(logicalChild, objectChild, entry.sha, treeAt(objectChild, entry.sha), depth + 1);
         }
       }
     };
-    collect(root, input.commit, top, 0);
+    collect(root, canonicalRoot, input.commit, top, 0);
     const sources = [...blobs.keys()].filter((file) => /\.[cm]?[jt]sx?$/.test(file));
     const fs = { list: () => sources, read: (file: string) => blobs.get(file) ?? null, exists: (file: string) => blobs.has(file) };
     const index = buildIndex({ rootDir: root, fs });

@@ -373,6 +373,8 @@ export function buildFileLockAuthorityHandlers(
         coordinationDomain: p.coordinationDomain,
         ...(p.nativeEditProof ? { nativeEditProof: p.nativeEditProof } : {}),
         ...(p.operation ? { operation: p.operation } : {}),
+        ...(p.workspaceId ? { workspaceId: p.workspaceId } : {}),
+        ...(p.contributor ? { contributor: p.contributor } : {}),
       });
       if (result.ok && result.released) {
         const ts = now();

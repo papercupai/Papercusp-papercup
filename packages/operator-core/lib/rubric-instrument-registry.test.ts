@@ -21,6 +21,9 @@ import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
+  P544_QUALIFICATION_COMMAND,
+  P544_QUALIFICATION_INSTRUMENT_KEYS,
+  p544QualificationInstruments,
   NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
   GATE_SENTINEL_HEALTH_COMMAND,
   GATE_SENTINEL_HEALTH_INSTRUMENT_KEY,
@@ -52,6 +55,36 @@ import {
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const AUDIT_EVIDENCE = join(REPO_ROOT, 'docs/audits/application-performance-reliability-audit-2026-10-01-evidence.json');
+
+describe('P544 retained native/economics instruments', () => {
+  it('registers three maintained readers with exact criterion and independent candidate pins', () => {
+    const instruments = p544QualificationInstruments(REPO_ROOT);
+    expect(instruments).toHaveLength(3);
+    for (const instrument of instruments) {
+      expect(getRegisteredInstrument(instrument.key)?.evaluator).toBe('command');
+      const criterion = instrument.argv[4];
+      const result = { scope: 'P544-composite-check', criterion, candidateSha: 'a'.repeat(40), artifactSha256: 'b'.repeat(64),
+        qualification: 'independent-review-required', status: 'pass' };
+      expect(instrument.parse(JSON.stringify(result), { now: 0 })).toBe(1);
+      expect(instrument.parse(JSON.stringify({ ...result, status: 'fail' }), { now: 0 })).toBe(0);
+      for (const patch of [{ status: 'unknown' }, { candidateSha: null }, { artifactSha256: '' },
+        { criterion: 'foreign' }, { qualification: 'qualified' }, { scope: 'saved-summary' }]) {
+        expect(instrument.parse(JSON.stringify({ ...result, ...patch }), { now: 0 })).toBeNull();
+      }
+    }
+    expect(Object.keys(P544_QUALIFICATION_INSTRUMENT_KEYS)).toEqual(['r-14', 'r-15', 'r-16']);
+  });
+  it('executes fail-closed without a retained admission file and never starts a provider operation', () => {
+    const output: string[] = [], spawn = vi.fn(() => { throw new Error('must not launch without pins'); });
+    runInNewContext(P544_QUALIFICATION_COMMAND, {
+      require: (name: string) => name === 'node:fs' ? { readFileSync: () => { throw new Error('missing dossier'); } }
+        : name === 'node:path' ? { join: (...parts: string[]) => parts.join('/') } : { spawnSync: spawn },
+      process: { argv: ['node', '/fixture', 'r-15'] }, console: { log: (s: string) => output.push(s) },
+    });
+    expect(JSON.parse(output[0])).toMatchObject({ status: 'unknown', candidateSha: null, qualification: 'independent-review-required' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+});
 
 const PSI_SAMPLE = [
   'some avg10=12.50 avg60=8.25 avg300=3.00 total=123456789',

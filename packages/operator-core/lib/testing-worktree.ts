@@ -13,6 +13,7 @@ import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   exemptProbeSubject,
   isMutationProbeRun,
+  mutationSubjectForVerifierSource,
   resolveProbeSubjectExemption,
   resolveProbeSubjectExemptionSync,
   WORKTREE_SNAPSHOT_GIT_BUDGETS_MS,
@@ -52,7 +53,8 @@ export function captureTestSourceSnapshot(root: string): WorktreeGitSnapshot {
     return captureWorktreeSnapshot(root);
   }
   try {
-    const receipt = readVerifierSourceReceiptSync(root);
+    const mutation = mutationSubjectForVerifierSource(root);
+    const receipt = readVerifierSourceReceiptSync(root, undefined, { mutation });
     return { commit: receipt.sourceCommit, porcelain: '' };
   } catch (error) {
     return { commit: null, porcelain: null,

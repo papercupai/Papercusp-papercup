@@ -124,6 +124,9 @@ describe.runIf(process.platform === 'linux')('boot-malloc-arena re-exec, end to 
 
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'boot-malloc-arena-'));
+    // Match apps/operator/bin/package.json: the committed-source loader must see
+    // raw TypeScript through tsx's ESM hook, not transformed text through CJS.
+    writeFileSync(join(dir, 'package.json'), '{"type":"module"}\n');
   });
   afterAll(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -226,6 +229,7 @@ describe.runIf(process.platform === 'linux')('self-only allocator preload, end t
 
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'boot-preload-scrub-'));
+    writeFileSync(join(dir, 'package.json'), '{"type":"module"}\n');
   });
   afterAll(() => {
     rmSync(dir, { recursive: true, force: true });

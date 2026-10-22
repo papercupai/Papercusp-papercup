@@ -321,10 +321,12 @@ export async function checkMcpDark(
 // long-stale presence beat is the weaker signal.
 //
 // THE HEAL preserves headed sessions in place: inject mode:'mcp-reconnect' into
-// the session's own pty host (the /mcp dialog macro, psu-pty-host P-003). A
-// headless host has no interactive dialog, so only that class may use its
-// advertised carry-respawn capability (kill + resume with a watchdog-tagged
-// continuation). Both are rate-capped and judged ONLY by transport truth (the
+// the session's own pty host (the /mcp dialog macro, psu-pty-host P-003) when
+// that host advertises forced reconnect support. Headless hosts, and older
+// headed hosts without that capability, use carry-respawn when available. It
+// replaces only the CLI child inside the existing host; the host gates it on
+// terminal idle, cleared owner input, and a completed agent turn. Both paths
+// are rate-capped and judged ONLY by transport truth (the
 // presence beat advancing on a later pass, never the socket write); an old or
 // incapable host falls back to a mode-specific notification. On confirmed
 // recovery, ONE follow-up wake tells the agent to re-arm lost awaits and
@@ -359,10 +361,10 @@ const DEFAULT_LOOP_STALE_FLOOR_MS = 20 * 60_000;
  *  recovery is never inferred from ¬dark). */
 const RECOVERED_FRESH_MS = 5 * 60_000;
 /** Conservative carry budget when the live served model window is unavailable. */
-const FALLBACK_HEADLESS_RECOVERY_WINDOW_TOKENS = 200_000;
+const FALLBACK_RECOVERY_WINDOW_TOKENS = 200_000;
 
-type HeadlessRecoverySpec = Pick<RespawnLaunchSpec, 'firstPrompt' | 'systemPromptAddendum'>;
-type BuildHeadlessRecoverySpec = (ownerId: string) => Promise<HeadlessRecoverySpec | null>;
+type RecoverySpec = Pick<RespawnLaunchSpec, 'firstPrompt' | 'systemPromptAddendum'>;
+type BuildRecoverySpec = (ownerId: string) => Promise<RecoverySpec | null>;
 
 export interface InteractiveDarkSnapshot {
   ownerId: string;
@@ -665,6 +667,19 @@ export function headlessMcpRecoveryWakeText(ownerId: string, staleMins: number):
   );
 }
 
+/** The carry prompt delivered when the watchdog resumes a headed session. */
+export function headedMcpRecoveryWakeText(ownerId: string, staleMins: number): string {
+  return (
+    '⚠ MCP transport auto-recovery (mcp-dark-watchdog P-005): headed session ' +
+    ownerId +
+    ' had no Papercusp MCP call for ~' +
+    staleMins +
+    'm. Its existing psu host kept the terminal open and relaunched the CLI child with a ' +
+    'watchdog-tagged carry. Re-read the active work-item and loop checkpoints, then continue. ' +
+    'If Papercusp tools still fail, report the exact error. Do not start a second CLI for this session.'
+  );
+}
+
 /** Register the headless carry prompt before the host submits it as a turn. */
 export async function taggedHeadlessMcpRecoveryWakeText(
   ownerId: string,
@@ -672,6 +687,29 @@ export async function taggedHeadlessMcpRecoveryWakeText(
   options: { dir?: string; nowMs?: number } = {},
 ): Promise<string> {
   const text = headlessMcpRecoveryWakeText(ownerId, staleMins);
+  try {
+    const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
+    return (
+      await tagTurnForInjection({
+        sid: ownerId,
+        origin: 'watchdog',
+        text,
+        ...(options.dir ? { dir: options.dir } : {}),
+        ...(options.nowMs != null ? { nowMs: options.nowMs } : {}),
+      })
+    ).taggedText;
+  } catch {
+    return text;
+  }
+}
+
+/** Register the headed carry prompt before the host submits it as a turn. */
+export async function taggedHeadedMcpRecoveryWakeText(
+  ownerId: string,
+  staleMins: number,
+  options: { dir?: string; nowMs?: number } = {},
+): Promise<string> {
+  const text = headedMcpRecoveryWakeText(ownerId, staleMins);
   try {
     const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
     return (
@@ -702,9 +740,11 @@ export function interactiveDarkRecoveryInstructions(
     );
   }
   return (
-    `The in-place /mcp auto-heal did not land (${cause}). Fix: type /mcp in that session's terminal ` +
-    `and reconnect papercusp-su; the session keeps its context. If the window is gone, resume it ` +
-    `with psu --resume and let the transport initialize at launch.`
+    'The watchdog could not confirm an in-place MCP recovery (' +
+    cause +
+    '). Run node scripts/mcp-reconnect.mjs from the Papercusp checkout. It checks whether this ' +
+    'host can force the reconnect; if not, run the carry-respawn command it prints. That replaces ' +
+    'only the CLI child and keeps this terminal open.'
   );
 }
 
@@ -712,10 +752,10 @@ export function interactiveDarkRecoveryInstructions(
  * Assemble the same deterministic carry used by every other context boundary.
  * The watchdog is an external cut, so it must mark the boundary as forced and
  * never claim the session flushed its own state. Resolve the live transcript so
- * a headless judge's original kickoff remains available even when it has not
+ * the session's original kickoff remains available even when it has not
  * made a successful MCP call yet.
  */
-async function buildCanonicalHeadlessRecoverySpec(ownerId: string): Promise<HeadlessRecoverySpec | null> {
+async function buildCanonicalRecoverySpec(ownerId: string): Promise<RecoverySpec | null> {
   try {
     const [{ buildOwnerRespawnLaunchSpec }, { estimateContextWindowForOwner, resolveSessionRefReconciled }] =
       await Promise.all([import('../carry-respawn'), import('../compaction-usage')]);
@@ -725,7 +765,7 @@ async function buildCanonicalHeadlessRecoverySpec(ownerId: string): Promise<Head
     const effectiveWindowTokens =
       typeof measuredWindow === 'number' && Number.isFinite(measuredWindow) && measuredWindow > 0
         ? measuredWindow
-        : FALLBACK_HEADLESS_RECOVERY_WINDOW_TOKENS;
+        : FALLBACK_RECOVERY_WINDOW_TOKENS;
 
     const ref = await resolveSessionRefReconciled(ownerId).catch(() => null);
     let transcriptPath: string | null = null;
@@ -803,8 +843,8 @@ export async function checkInteractiveMcpDark(
     sharedWindowMs?: number;
     jitterMaxMs?: number;
     sharedBudget?: InteractiveHealBudgetState;
-    /** Test seam for the canonical headless carry assembly. */
-    buildHeadlessRecoverySpec?: BuildHeadlessRecoverySpec;
+    /** Test seam for the canonical watchdog carry assembly. */
+    buildRecoverySpec?: BuildRecoverySpec;
   } = {},
 ): Promise<InteractiveMcpDarkResult> {
   const out: InteractiveMcpDarkResult = {
@@ -1008,7 +1048,7 @@ export async function checkInteractiveMcpDark(
             out,
             now,
             host: hostByOwner.get(step.ownerId),
-            buildHeadlessRecoverySpec: opts.buildHeadlessRecoverySpec ?? buildCanonicalHeadlessRecoverySpec,
+            buildRecoverySpec: opts.buildRecoverySpec ?? buildCanonicalRecoverySpec,
           });
         } catch (e) {
           // One owner's failure must not abort the rest of the pass (live incident
@@ -1077,10 +1117,10 @@ async function runInteractiveHealStep(
     out: InteractiveMcpDarkResult;
     now: number;
     host: PsuPtyHost | undefined;
-    buildHeadlessRecoverySpec: BuildHeadlessRecoverySpec;
+    buildRecoverySpec: BuildRecoverySpec;
   },
 ): Promise<void> {
-  const { sql, discovery, out, now, host, buildHeadlessRecoverySpec } = ctx;
+  const { sql, discovery, out, now, host, buildRecoverySpec } = ctx;
   if (step.action === 'defer-budget') {
     out.budgetDeferred.push(step.ownerId);
     console.warn(
@@ -1121,15 +1161,18 @@ async function runInteractiveHealStep(
     }
     const headless = discovery.sessionClassForHost(host) === 'claude-headless';
     let sent: 'sent' | 'no-host' | 'no-cap' | 'send-failed' | 'carry-build-failed';
-    if (headless) {
-      if (!host) {
-        sent = 'no-host';
-      } else if (!discovery.hostSupports(host, 'carry-respawn')) {
+    if (!host) {
+      sent = 'no-host';
+    } else if (headless || !discovery.hostSupports(host, 'mcp-reconnect-force')) {
+      // The base mcp-reconnect capability does not promise that force:true is
+      // honored. Older headed hosts cannot adopt new host code while a terminal
+      // is attached, but they can safely carry-respawn inside that same PTY host.
+      if (!discovery.hostSupports(host, 'carry-respawn')) {
         sent = 'no-cap';
       } else {
-        let spec: HeadlessRecoverySpec | null = null;
+        let spec: RecoverySpec | null = null;
         try {
-          spec = await buildHeadlessRecoverySpec(step.ownerId);
+          spec = await buildRecoverySpec(step.ownerId);
         } catch {
           spec = null;
         }
@@ -1140,7 +1183,10 @@ async function runInteractiveHealStep(
           // when there is none, use the watchdog-tagged recovery instruction so
           // the successor wakes without inventing an owner directive.
           const carry =
-            spec.firstPrompt ?? (await taggedHeadlessMcpRecoveryWakeText(step.ownerId, v?.staleMins ?? 0));
+            spec.firstPrompt ??
+            (await (headless
+              ? taggedHeadlessMcpRecoveryWakeText(step.ownerId, v?.staleMins ?? 0)
+              : taggedHeadedMcpRecoveryWakeText(step.ownerId, v?.staleMins ?? 0)));
           const accepted = await discovery.injectIntoHost(host.sock, {
             mode: 'carry-respawn',
             data: carry,
@@ -1154,9 +1200,8 @@ async function runInteractiveHealStep(
       // This sweep is only entered after the interactive detector has evidence
       // of a toolless session (recent assistant turns without an agent-origin
       // MCP call). Claude can still render the server as "connected" while its
-      // tools/list binding is gone, so the ordinary idempotent macro would
-      // close the dialog without pressing Reconnect. Carry the explicit force
-      // bit through the host envelope for this evidence-backed heal.
+      // tools/list binding is gone, so an advertised forced-reconnect macro is
+      // required before we queue the in-place /mcp action.
       sent = await discovery.mcpReconnectViaPty(step.ownerId, 'papercusp-su', { force: true });
     }
     console.warn(

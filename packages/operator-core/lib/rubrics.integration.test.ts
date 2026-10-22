@@ -3088,6 +3088,84 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(applied?.classRef).toBe('plan-class-feature-ship');
   });
 
+  it.each(['plan-class-investigation', 'plan-class-general'])(
+    'promotes adopted %s acceptance to shipment without losing BARs or prior standards',
+    async (priorClass) => {
+      const seeded = await seedBarContract(`class-promotion-${priorClass}`, { authorMethods: true });
+      for (const ref of [priorClass, 'class-promotion-prior-standard']) {
+        const [existing] = await db.adminSql`
+          SELECT 1 FROM harness_shared.harness_plans
+           WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${ref}`;
+        if (!existing) await insertRubricPlan(ref, { workspaceId: seeded.workspaceId });
+      }
+      // Reproduce a research contract that has already adopted its BARs. The
+      // repair must use the amendment writer rather than rebuild this document.
+      await db.adminSql`
+        UPDATE harness_shared.harness_plans
+           SET template_data=template_data || ${JSON.stringify({
+             classRef: priorClass, composes: ['class-promotion-prior-standard'],
+           })}::text::jsonb
+         WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+           AND plan_slug=${seeded.rubricSlug}`;
+      const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+      const [subjectBefore] = await db.adminSql<{
+        version: number; content: string; acceptance_bar_seeded_at: Date | string; acceptance_bar_seeded_by: string;
+      }[]>`
+        SELECT version, content, acceptance_bar_seeded_at, acceptance_bar_seeded_by FROM harness_shared.harness_plans
+         WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+      const amendment = {
+        rubricId: seeded.rubricSlug, actorId: 'class-promotion-actor',
+        classRef: 'plan-class-feature-ship',
+        reason: 'The research now includes customer implementation and verified shipment.',
+        expectedRubricRevision: before.revision,
+        expectedSubjectPlanRevision: Number(subjectBefore!.version),
+      };
+      const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+      expect(preview).toMatchObject({
+        changedBars: [], approvalRequired: false,
+        priorBarSetHash: before.barSetHash, nextBarSetHash: before.barSetHash,
+        revisionMovement: {
+          rubric: { from: before.revision, to: before.revision! + 1 },
+          subject: { from: Number(subjectBefore!.version), to: Number(subjectBefore!.version) },
+        },
+      });
+      expect((await rubrics.getRubric(seeded.rubricSlug))?.classRef).toBe(priorClass);
+
+      const after = (await rubrics.amendRubric(amendment))!;
+      expect(after.classRef).toBe('plan-class-feature-ship');
+      expect(after.composes).toEqual(['class-promotion-prior-standard', priorClass]);
+      expect(after.criteria).toEqual(before.criteria);
+      expect(after.barSetHash).toBe(before.barSetHash);
+      // The prior semantic amendment advanced the subject's seed authority.
+      // deriveContract canonicalizes these two fields from that subject row;
+      // class promotion must retain the remaining adopted-contract identity.
+      const seededAt = subjectBefore!.acceptance_bar_seeded_at;
+      expect(after.barContract).toEqual({
+        ...before.barContract,
+        seededAt: seededAt instanceof Date ? seededAt.toISOString() : new Date(seededAt).toISOString(),
+        seededBy: subjectBefore!.acceptance_bar_seeded_by,
+      });
+      expect(after.createdBy).toBe(before.createdBy);
+      expect(after.status).toBe(before.status);
+      expect(after.revision).toBe(before.revision! + 1);
+      const [subjectAfter] = await db.adminSql<{
+        version: number; content: string; acceptance_bar_rubric_revision: number; acceptance_bar_set_hash: string;
+      }[]>`
+        SELECT version, content, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+          FROM harness_shared.harness_plans
+         WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+      expect(Number(subjectAfter!.version)).toBe(Number(subjectBefore!.version));
+      expect(subjectAfter!.content).toBe(subjectBefore!.content);
+      expect(Number(subjectAfter!.acceptance_bar_rubric_revision)).toBe(after.revision);
+      expect(subjectAfter!.acceptance_bar_set_hash).toBe(before.barSetHash);
+      await expect(rubrics.amendRubric({
+        ...amendment, classRef: priorClass, expectedRubricRevision: after.revision,
+        reason: 'Attempt to return to the exempt research profile.',
+      })).rejects.toThrow(/existing acceptance class cannot be replaced/);
+      expect((await rubrics.getRubric(seeded.rubricSlug))?.revision).toBe(after.revision);
+    },
+  );
+
   it('refuses a cross-plan dry-run for an unstarted legacy rubric instead of fabricating BAR hashes', async () => {
     const seeded = await seedBarContract('unstarted-dry-run-preview', { authorMethods: true });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
@@ -3783,6 +3861,32 @@ describe('template_data persistence boundary — the set-template-data door', ()
     }
     expect(Number(row!.version)).toBe(seeded.subjectRevision + 1);
     expect(Number(row!.acceptance_bar_rubric_revision)).toBe(after.revision);
+
+    const { default: rubricsGetTool } = await import('./agent-tools/rubrics/get');
+    const currentRead = (await rubricsGetTool.handler(
+      { rubricRef: seeded.rubricSlug, detail: 'full' },
+      { isSuperuser: true, uiClientId: 'rubrics-live-readback-integration-test', workspaceId: seeded.workspaceId } as never,
+    )) as {
+      data: {
+        results: Array<{
+          ok: boolean;
+          rubric?: { criteria: Array<{ key: string; check?: unknown }> };
+          liveRequirements?: { source: string; subjectPlanVersion: number; live: string[]; changed: string[] };
+        }>;
+      };
+    };
+    expect(currentRead.data.results[0]).toMatchObject({
+      ok: true,
+      rubricRef: seeded.rubricSlug,
+      liveRequirements: {
+        source: 'live-plan',
+        subjectPlanVersion: Number(row!.version),
+        live: [],
+        changed: [],
+      },
+    });
+    const currentCriterion = currentRead.data.results[0]?.rubric?.criteria.find((criterion) => criterion.key === key);
+    expect(currentCriterion?.check).toMatchObject({ kind: 'tests', files });
   });
 
   it('EI-25970739425963382: renders method edits beside a meaning change while only that meaning changes BAR identity', async () => {

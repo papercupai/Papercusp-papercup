@@ -18,6 +18,51 @@ const snapshot = (): GateSuiteVerdictReplay => captureGateSuiteVerdictReplay({
 }, { green: true, infraFault: false, failures: [], rootScripts: null, failingCasesByFile: null });
 
 describe('P-014 downstream recorded verdict replay', () => {
+  it('accepts only the recorded repair measurement adding failure diagnostics, preserving verdict and coverage checks', () => {
+    const head = '4224bf7c89d8a1e492dd747cb5bd8272fb7046a3';
+    const id = 'lint:condition-rail';
+    const queue = createFrozenCandidateQueue({ candidate: head, base: null, failingTests: [id], nowMs: 100 });
+    const prior = captureGateSuiteVerdictReplay({
+      candidate: head, runId: '22fd4b4a-e5d8-4883-9aea-9f1b35324d28', measuredAtMs: 1792583215816,
+    }, { green: null, infraFault: true, failures: [], rootScripts: null, failingCasesByFile: null });
+    prior.suiteMeasured = false;
+    prior.decisions!.push(captureGateDecisionReplay('post-gate-action', ['block'], true));
+    prior.decisions!.push(captureGateDecisionReplay('frozen-verdict-head', [head, head], true));
+    const output = recordedGateDecision('repair-measurements', interpretRepairHeadMeasurements, [{
+      queue, fileList: [], gateList: [id], fileRun: undefined,
+      gateRun: { pass: false, summary: 'measured lint failure', measuredHead: head, coverageComplete: true,
+        perGate: [{ id, status: 'fail', outputTail: 'actual lint failure details' }] },
+      selection: selectFrozenRepairAdmissionPaths(queue), radiusCoverageComplete: true, radiusNote: 'no admitted paths',
+      executed: frozenRepairRoundExecution({ mode: 'targeted', fileKeys: [], gateIds: [id], radiusMode: 'cumulative' }),
+    }], prior.decisions!);
+    expect(output).toMatchObject({ kind: 'red', failureTails: { [id]: 'actual lint failure details' } });
+    const historical = prior.decisions![2]!.expected as Record<string, unknown>;
+    delete historical.failureTails;
+    expect(checkRecordedGateVerdict(prior, []).ok).toBe(false);
+    expect(checkRecordedGateVerdict(prior)).toMatchObject({ ok: true,
+      detail: expect.stringContaining('green-main-cycle-time-2026-10-08#D-085') });
+    expect(historical).not.toHaveProperty('failureTails');
+
+    for (const change of [
+      { kind: 'green' },
+      { failingTests: [] },
+      { signature: [] },
+      { executed: { mode: 'targeted', fileKeys: [], gateIds: [] } },
+      { failureTails: { [id]: 'an already recorded different diagnostic' } },
+    ]) {
+      const changed = structuredClone(prior);
+      changed.decisions![2]!.expected = { ...historical, ...change };
+      expect(checkRecordedGateVerdict(changed).ok, JSON.stringify(change)).toBe(false);
+    }
+    for (const identity of [{ runId: 'another-run' }, { measuredAtMs: prior.measuredAtMs + 1 },
+      { candidate: 'b'.repeat(40) }]) {
+      expect(checkRecordedGateVerdict({ ...prior, ...identity }).ok).toBe(false);
+    }
+    const otherDecision = structuredClone(prior);
+    otherDecision.decisions![0]!.expected = false;
+    expect(checkRecordedGateVerdict(otherDecision).ok).toBe(false);
+  });
+
   it('replays selective failed measurements and refuses to discharge their unresolved frontier', () => {
     const queue = createFrozenCandidateQueue({ candidate, base: null, nowMs: 100 });
     const prior = snapshot(); prior.suiteMeasured = false;

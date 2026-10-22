@@ -18,6 +18,39 @@
   ],
   "amendments": [
     {
+      "rowId": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesSweepPassImpl|1",
+      "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
+      "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path"
+      },
+      "evidenceRef": "EI-26227486727828858: relocated producer identity, independently reviewed in thread-post:1194238",
+      "reviewerRef": "thread-post:1194238"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesSweepPassImpl|2",
+      "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
+      "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path"
+      },
+      "evidenceRef": "EI-26227486727828858: relocated producer identity, independently reviewed in thread-post:1194238",
+      "reviewerRef": "thread-post:1194238"
+    },
+    {
+      "rowId": "log-only-fallback|scripts/mcp-call.mjs|main|3",
+      "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved"
+      },
+      "evidenceRef": "EI-26227486727828858: invalid-superuser-bearer diagnostic, independently reviewed in thread-post:1194238",
+      "reviewerRef": "thread-post:1194238"
+    },
+    {
       "rowId": "bespoke-watchdog|apps/operator/lib/mcp-proxy/watchdog.mjs|<module>|1",
       "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
       "reason": "P-017 independent census found an existing site omitted by the original call-argument scan; retain it in its assigned migration lane.",

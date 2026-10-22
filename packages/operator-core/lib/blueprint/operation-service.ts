@@ -57,6 +57,9 @@ import { seedContentHash, type RubricSeedSource } from '../cupboard/rubric-store
 import { BlueprintOperationRefusal } from './operation-refusal';
 import { storeOperationPrivateInput } from './operation-private-input';
 import type { PersonalToolContext } from '../personal-vault/types';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import type { PersistedCompletionEvidence, StoredAssumptionDeclaration } from '../coord-lifecycle/records';
+import { resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import { assertSupportCaseInput, type SupportCaseInput } from './support-workflow-contract';
 import { supportWorkflowFromOperation } from './support-workflow-operation';
 
@@ -649,7 +652,52 @@ export async function readAcceptedProgramRootGuard(
 }
 
 /** Exported for the shared public contract (operation-contract.ts). */
+const DeferredCompletionSchema = z.object({
+  kind: z.literal('completion-pending'), receiptId: z.number().int().positive(),
+  workItemId: z.string().min(1), runId: z.string().min(1), harnessSlug: z.string().min(1),
+  ownerId: z.string().min(1), updatedAt: z.string().datetime(),
+  sourceInvocationId: z.string().regex(/^[1-9][0-9]*$/).nullable(),
+  workerReceipt: z.record(z.string(), z.unknown()),
+  takenAt: z.string().nullable(), payloadSnapshot: z.record(z.string(), z.unknown()),
+  claimStamp: z.string().nullable(),
+  output: z.unknown(), state: z.enum(['done', 'passed', 'resolved']),
+  completionEvidence: z.record(z.string(), z.unknown()),
+  completionAuthority: z.enum(['committed', 'validated']), assumptions: z.unknown(),
+  deadlineAt: z.number().int().positive(),
+  context: z.object({
+    role: z.string(), harnessSlug: z.string(), uiClientId: z.string(),
+    isSuperuser: z.boolean(), isPowerUser: z.boolean(), sigVerifiedSpawn: z.boolean(),
+    principal: z.object({ kind: z.string(), slug: z.string(), workspaceId: z.string(),
+      authMethod: z.string(), trust: z.literal('trusted') }).strict(),
+  }).strict(),
+});
+
+/** Internal lifecycle fence, never a public completion argument. The state
+ * writers repeat it at their locked row/UPDATE, after expensive validation. */
+export interface DeferredOperationCompletionFence {
+  ownerId: string; updatedAt: string; takenAt: string | null;
+  payloadSnapshot: Record<string, unknown>; deadlineAt: number;
+  claimStamp?: string | null;
+}
+
+export function assertDeferredOperationCompletionFence(
+  fence: DeferredOperationCompletionFence, item: Pick<WorkItem, 'assignee' | 'updatedAt' | 'takenAt' | 'payload' | 'state'>,
+): void {
+  if (Date.now() >= fence.deadlineAt || item.assignee !== fence.ownerId ||
+      item.updatedAt !== fence.updatedAt || item.takenAt !== fence.takenAt ||
+      ANY_FAMILY_TERMINAL_STATES.includes(item.state) ||
+      !isDeepStrictEqual(item.payload, fence.payloadSnapshot)) {
+    throw new Error('deferred operation completion attempt changed or expired');
+  }
+}
+
 export const OperationEventBodySchema = z.discriminatedUnion('kind', [
+  DeferredCompletionSchema,
+  z.object({
+    kind: z.literal('completion-settlement'), receiptId: z.number().int().positive(),
+    workItemId: z.string(), runId: z.string(), attemptEventId: z.string(),
+    outcome: z.enum(['completed', 'refused', 'expired']), reason: z.string(),
+  }),
   z.object({
     kind: z.literal('native-budget-reservation'), receiptId: z.number().int().positive(),
     attemptId: z.string().uuid(), maximumCostMicros: z.number().int().positive(),
@@ -1516,7 +1564,7 @@ export async function prepareDirectOperationCompletion(
     const modelFailure = await verifyDirectOperationModel(
       sql, workspaceId, item.id, pin as Record<string, unknown>, operation.policy.model, true,
     );
-    if (modelFailure) throw new Error(`blueprint operation model attestation failed: ${modelFailure}`);
+    if (modelFailure) throw new OperationModelEvidenceError(modelFailure);
   }
   const acceptanceSubjectRef = operation.acceptance.rubric
     ? blueprintOperationAcceptanceSubjectRef({
@@ -1541,6 +1589,214 @@ export async function prepareDirectOperationCompletion(
       acceptanceAttemptStamp: item.updatedAt,
     } : {}),
   };
+}
+
+/** Only a missing temporal observation is deferrable. Policy, origin, malformed
+ * evidence and ingestion faults remain ordinary refusals. Settlement always
+ * repeats the unchanged verifier; this class grants no model exemption. */
+export class OperationModelEvidenceError extends Error {
+  readonly pending: boolean;
+  constructor(readonly reason: string) {
+    super(`blueprint operation model attestation failed: ${reason}`);
+    this.pending = reason === 'accepted worker has unmatched request-grain model evidence';
+  }
+}
+
+export async function retainDeferredOperationCompletion(sql: Sql, input: {
+  item: WorkItem; ctx: UnifiedToolContext; state: string; output: unknown;
+  completionEvidence: PersistedCompletionEvidence | undefined; completionAuthority: string;
+  assumptions: StoredAssumptionDeclaration | undefined;
+  sourceInvocationId?: string;
+}): Promise<{ eventId: string; deadlineAt: number }> {
+  const ownerId = resolveAgentIdentity(input.ctx).ownerId;
+  const workspaceId = input.ctx.workspaceId;
+  if (!workspaceId || !input.completionEvidence) throw new Error('deferred completion requires scoped adjudicated evidence');
+  const { readActiveOperationWorkerClaimBinding, matchOperationWorkerClaim } = await import('./operation-worker-binding');
+  const read = await readActiveOperationWorkerClaimBinding(workspaceId, ownerId);
+  if (read.status !== 'bound' || !matchOperationWorkerClaim(read, input.item).allowed ||
+      input.item.assignee !== ownerId || !input.ctx.runId || !input.ctx.principal) {
+    throw new Error('deferred completion requires the authenticated applied claim holder');
+  }
+  const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(sql, workspaceId, input.item);
+  const output = exactJsonValue(input.output, 'output');
+  const valid = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
+  if (!valid.ok) throw new Error(`blueprint operation output is invalid: ${valid.errors.join('; ')}`);
+  const [receipt] = await sql<Array<{ id: string | number }>>`
+    SELECT id FROM harness_shared.blueprint_operation_invocations
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${pin.harnessSlug}
+       AND target_ref = ${input.item.id} AND target_kind = 'work-item'
+       AND request_key = ${pin.requestKey ?? null} AND caller_id = ${pin.callerId ?? null}
+       AND request_fingerprint = ${pin.requestFingerprint ?? null}
+       AND operation_id = ${pin.operationId} AND specification_revision = ${pin.specificationRevision}
+  `;
+  if (!receipt) throw new Error('deferred completion has no accepted invocation');
+  const [claim] = await sql<Array<{ claim_stamp: string | null }>>`
+    SELECT taken_at::text AS claim_stamp FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${input.item.harness!}
+       AND feature_id = ${input.item.id} AND taken_by = ${ownerId}
+       AND updated_ts = ${Date.parse(input.item.updatedAt)}
+       AND payload = ${JSON.stringify(input.item.payload)}::text::jsonb
+  `;
+  if (!claim) {
+    const current = await sql`
+      SELECT harness_slug, taken_by = ${ownerId} AS actor_matches,
+             updated_ts = ${Date.parse(input.item.updatedAt)} AS stamp_matches,
+             payload = ${JSON.stringify(input.item.payload)}::text::jsonb AS payload_matches
+        FROM harness_shared.work_items WHERE workspace_id = ${workspaceId} AND feature_id = ${input.item.id}
+    `;
+    throw new Error(`deferred completion claim or snapshot changed: ${JSON.stringify(current)}`);
+  }
+  const deadlineAt = Date.now() + 30 * 60_000;
+  const body = DeferredCompletionSchema.parse({
+    kind: 'completion-pending', receiptId: checkedReceiptId(receipt.id),
+    workItemId: input.item.id, harnessSlug: input.item.harness, runId: input.ctx.runId,
+    ownerId, updatedAt: input.item.updatedAt, takenAt: input.item.takenAt,
+    sourceInvocationId: input.sourceInvocationId ?? null,
+    claimStamp: claim.claim_stamp,
+    workerReceipt: read.receipt,
+    payloadSnapshot: input.item.payload, output: exactJsonValue(input.output, 'output'),
+    state: input.state, completionEvidence: input.completionEvidence,
+    completionAuthority: input.completionAuthority, assumptions: input.assumptions ?? null, deadlineAt,
+    context: { role: input.ctx.role, harnessSlug: input.ctx.harnessSlug, uiClientId: ownerId,
+      isSuperuser: input.ctx.isSuperuser === true, isPowerUser: input.ctx.isPowerUser === true,
+      sigVerifiedSpawn: input.ctx.sigVerifiedSpawn === true,
+      principal: { kind: input.ctx.principal.kind, slug: input.ctx.principal.slug,
+        workspaceId: input.ctx.principal.workspaceId, authMethod: input.ctx.principal.authMethod,
+        trust: input.ctx.principal.trust } },
+  });
+  const handle: BlueprintOperationHandle = { workspaceId, harnessSlug: pin.harnessSlug,
+    receiptId: body.receiptId, operationId: pin.operationId, specificationRevision: pin.specificationRevision,
+    target: { kind: 'work-item', id: input.item.id } };
+  // The hash includes the original invocation, output and adjudication. A retry
+  // cannot replace the stored request or silently extend its deadline.
+  const key = `${ownerId}:${input.item.id}:${input.item.updatedAt}`;
+  const msgId = eventIdentity('completion-pending', handle, key);
+  const [prior] = await sql<Array<{ id: string | number; body: unknown }>>`
+    SELECT id, body FROM harness_shared.coord_event_log
+     WHERE workspace_id = ${workspaceId} AND surface = 'blueprint-operation' AND msg_id = ${msgId}
+  `;
+  if (prior) {
+    const saved = DeferredCompletionSchema.parse(prior.body);
+    if (!isDeepStrictEqual({ ...saved, deadlineAt }, body)) throw new Error('deferred completion invocation changed');
+    return { eventId: String(prior.id), deadlineAt: saved.deadlineAt };
+  }
+  const saved = await appendControlEvent(sql, handle, msgId, body);
+  return { eventId: saved.id, deadlineAt };
+}
+
+/** Called by the existing transcript ingestion progress path. No worker turn,
+ * new operation, publication or notification is involved. Each terminal write
+ * still passes the canonical model, acceptance, claim and SQL attempt gates. */
+export async function settleDeferredOperationCompletions(sql: Sql, workspaceId: string): Promise<{
+  completed: number; pending: number; refused: number; errors: string[];
+  dispositions: Array<{ eventId: string; outcome: string; reason: string }>;
+}> {
+  return runWithWorkspace(workspaceId, async () => {
+    const result = { completed: 0, pending: 0, refused: 0, errors: [] as string[],
+      dispositions: [] as Array<{ eventId: string; outcome: string; reason: string }> };
+    const attempts = await sql<Array<{ id: string | number; body: unknown }>>`
+      SELECT e.id, e.body FROM harness_shared.coord_event_log e
+       WHERE e.workspace_id = ${workspaceId} AND e.surface = 'blueprint-operation'
+         AND e.body->>'kind' = 'completion-pending'
+         AND NOT EXISTS (SELECT 1 FROM harness_shared.coord_event_log d
+           WHERE d.workspace_id = e.workspace_id AND d.surface = e.surface
+             AND d.writer_key = e.writer_key AND d.body->>'kind' = 'completion-settlement'
+             AND d.body->>'attemptEventId' = e.id::text)
+       ORDER BY e.id LIMIT 32
+    `;
+    for (const event of attempts) {
+      const lease = await sql.reserve();
+      let locked = false;
+      try {
+        const [lock] = await lease<Array<{ locked: boolean }>>`
+          SELECT pg_try_advisory_lock(hashtext(${workspaceId}), hashtext(${`blueprint-completion:${event.id}`})) AS locked
+        `;
+        locked = lock.locked;
+        if (!locked) { result.pending++; continue; }
+        const [settled] = await lease`
+          SELECT 1 FROM harness_shared.coord_event_log
+           WHERE workspace_id = ${workspaceId} AND surface = 'blueprint-operation'
+             AND body->>'kind' = 'completion-settlement' AND body->>'attemptEventId' = ${String(event.id)} LIMIT 1
+        `;
+        if (settled) continue;
+        const attempt = DeferredCompletionSchema.parse(event.body);
+        if (objectValue(event.body)?.fingerprint !== createHash('sha256').update(canonicalJson(attempt)).digest('hex')) {
+          throw new Error('deferred completion event fingerprint changed');
+        }
+        let item = await getWorkItem(attempt.workItemId, attempt.harnessSlug);
+        const pin = attempt.payloadSnapshot.blueprintOperation as AcceptedOperationPin;
+        const handle = OperationHandleSchema.parse({ workspaceId, harnessSlug: pin.harnessSlug,
+          receiptId: attempt.receiptId, operationId: pin.operationId, specificationRevision: pin.specificationRevision,
+          target: { kind: 'work-item', id: attempt.workItemId } });
+        const dispose = async (outcome: 'completed' | 'refused' | 'expired', reason: string) => {
+          await appendControlEvent(sql, handle, eventIdentity('completion-settlement', handle, String(event.id)), {
+            kind: 'completion-settlement', receiptId: attempt.receiptId, workItemId: attempt.workItemId,
+            runId: attempt.runId, attemptEventId: String(event.id), outcome, reason,
+          });
+          result.dispositions.push({ eventId: String(event.id), outcome, reason });
+        };
+        if (!item) { await dispose('refused', 'deferred completion target is absent'); result.refused++; continue; }
+        const priorEvidence = item.terminalCompletionEvidence as Record<string, unknown> | null;
+        const alreadyWritten = isSettledWorkItem(item) && item.terminalOwner === attempt.ownerId &&
+          priorEvidence?.deferredOperationCompletionEvent === String(event.id) &&
+          isDeepStrictEqual(objectValue(objectValue(item.payload)?.blueprintResult)?.output, attempt.output);
+        if (!alreadyWritten) {
+          try { assertDeferredOperationCompletionFence(attempt, item); }
+          catch (error) {
+            await dispose(Date.now() >= attempt.deadlineAt ? 'expired' : 'refused', String(error));
+            result.refused++; continue;
+          }
+          const { readActiveOperationWorkerClaimBinding, matchOperationWorkerClaim } = await import('./operation-worker-binding');
+          const worker = await readActiveOperationWorkerClaimBinding(workspaceId, attempt.ownerId);
+          if (worker.status !== 'bound' || !matchOperationWorkerClaim(worker, item).allowed ||
+              !isDeepStrictEqual(worker.receipt, attempt.workerReceipt)) {
+            await dispose('refused', 'accepted worker execution receipt changed'); result.refused++; continue;
+          }
+          try {
+            const { setWorkItemState } = await import('../work-items');
+            const written = await setWorkItemState(item.id, attempt.state, {
+              harness: attempt.harnessSlug, by: attempt.ownerId,
+              completionEvidence: { ...attempt.completionEvidence, deferredOperationCompletionEvent: String(event.id) } as PersistedCompletionEvidence,
+              completionAuthority: attempt.completionAuthority, outputPayload: attempt.output,
+              assumptions: (attempt.assumptions ?? undefined) as StoredAssumptionDeclaration | undefined,
+              deferredOperationCompletion: attempt,
+            });
+            if (!written || !isSettledWorkItem(written)) {
+              const current = await getWorkItem(item.id, attempt.harnessSlug);
+              throw new Error(`deferred completion state write did not land: ${JSON.stringify({
+                returned: written?.state ?? null, current: current?.state ?? null,
+                sameStamp: current?.updatedAt === attempt.updatedAt,
+                sameClaim: current?.assignee === attempt.ownerId && current?.takenAt === attempt.takenAt,
+                samePayload: isDeepStrictEqual(current?.payload, attempt.payloadSnapshot),
+              })}`);
+            }
+            item = written;
+          } catch (error) {
+            if (error instanceof OperationModelEvidenceError && error.pending) { result.pending++; continue; }
+            await dispose('refused', error instanceof Error ? error.message : String(error));
+            result.refused++; continue;
+          }
+        }
+        const { synchronizeFinishWork } = await import('../agent-tools/work_items/complete');
+        const ctx = { ...attempt.context, workspaceId, runId: attempt.runId,
+          signal: new AbortController().signal, log: () => {} } as unknown as UnifiedToolContext;
+        const finish = await synchronizeFinishWork({ id: item.id,
+          workItem: item as unknown as Record<string, unknown>, completionEvidenceStored: true, ctx });
+        if (!finish.complete) { result.errors.push(`${item.id}: ${finish.errors?.join('; ')}`); continue; }
+        await dispose('completed', 'canonical completion and finish converged');
+        result.completed++;
+      } catch (error) {
+        result.errors.push(`${event.id}: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        try {
+          if (locked) await lease`
+            SELECT pg_advisory_unlock(hashtext(${workspaceId}), hashtext(${`blueprint-completion:${event.id}`}))
+          `;
+        } finally { await lease.release(); }
+      }
+    }
+    return result;
+  });
 }
 
 interface ValidatedCanonicalOperation {

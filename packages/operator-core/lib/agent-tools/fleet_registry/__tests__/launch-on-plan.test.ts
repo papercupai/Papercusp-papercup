@@ -6,7 +6,13 @@
  * Importing the module also validates its whole import chain compiles + loads (the
  * tool self-registers via defineTool on import).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterAll, describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 
 // WI-1074216/P-006: permanent wrong store adapters prove the literal launch
 // oracles fail without mutating production code. The lost-slot suppression
@@ -56,7 +62,11 @@ const launchTransaction = vi.hoisted(() => ({
 const goalLaunchReadMock = vi.hoisted(() => vi.fn());
 const goalPotPlacementAuthorityMock = vi.hoisted(() => vi.fn());
 const goalModeSubjectMock = vi.hoisted(() => vi.fn());
+const getModesMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => [] as unknown[]));
 const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
+const fetchPresenceFleetMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => new Map()));
+const readOperatorStateMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => null));
+const reseedLeaderCompactionLimitMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => null));
 // WI-10004545: the plan-goal attribution write is isolated from the live database; the
 // real helper's identity-derived resolution + `WHERE goal_id IS NULL` is pinned in
 // modes/goal-context.test.ts, so this file only pins WHEN launch-on-plan calls it.
@@ -73,7 +83,27 @@ const fleetSlugImpl = vi.hoisted(() => ({
 
 vi.mock('../../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../modes/store')>()),
+  getModes: (...args: unknown[]) => getModesMock(...args),
   getModeSubject: (...args: unknown[]) => goalModeSubjectMock(...args),
+}));
+
+vi.mock('../../coordination/presence-fleet', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../coordination/presence-fleet')>()),
+  fetchPresenceFleet: (...args: unknown[]) => fetchPresenceFleetMock(...args),
+}));
+
+// Placement policy defaults to an empty row in this unit suite. Keep the real
+// policy/cache logic available while preventing its read from opening Postgres.
+vi.mock('../../../operator-state-pg', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../operator-state-pg')>()),
+  readOperatorState: (...args: unknown[]) => readOperatorStateMock(...args),
+}));
+
+// Compaction reseeding is covered through its own store tests; it is an unrelated
+// best-effort launch side effect that resolves model configuration from Postgres.
+vi.mock('../take-leadership-core', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../take-leadership-core')>()),
+  reseedLeaderCompactionLimit: (...args: unknown[]) => reseedLeaderCompactionLimitMock(...args),
 }));
 
 vi.mock('../../../modes/goal-context', async (importOriginal) => ({
@@ -625,6 +655,14 @@ beforeEach(() => {
   goalLaunchReadMock.mockReset();
   goalModeSubjectMock.mockReset();
   goalModeSubjectMock.mockResolvedValue(null);
+  getModesMock.mockReset();
+  getModesMock.mockResolvedValue([]);
+  fetchPresenceFleetMock.mockReset();
+  fetchPresenceFleetMock.mockResolvedValue(new Map());
+  readOperatorStateMock.mockReset();
+  readOperatorStateMock.mockResolvedValue(null);
+  reseedLeaderCompactionLimitMock.mockReset();
+  reseedLeaderCompactionLimitMock.mockResolvedValue(null);
   stampPlanGoalProvenanceMock.mockReset();
   stampPlanGoalProvenanceMock.mockResolvedValue(null);
   goalLaunchResolveMock.mockReset();

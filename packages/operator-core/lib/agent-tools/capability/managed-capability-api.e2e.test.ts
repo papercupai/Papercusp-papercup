@@ -3,15 +3,24 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { createWriteStream } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 
 describe('managed capability acceptance over the production HTTP route', () => {
   it('retains kernel/browser state across fresh clients and refuses PTY without a private session bus', async () => {
     const root = resolve(__dirname, '../../../../..');
+    // This child owns a disposable database, so its durable receipts must go to
+    // the outer test ledger. Keep the reporter-only URL explicit before the
+    // with-test-pg wrapper clears the ordinary database discovery variables.
+    const childEnv = {
+      ...process.env,
+      PAPERCUSP_TEST_RUNS_DB_URL: resolveTestRunsPgUrl(process.env),
+      TMPDIR: '/dev/shm',
+    };
     const result = await new Promise<{ code: number | null; output: string }>((resolveResult, reject) => {
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
         resolve(__dirname, '__fixtures__/managed-api-client.mts')], {
-        cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: root, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let output = '';
       const log = process.env.PC_EXECUTED_SOURCE_MAP_OUT

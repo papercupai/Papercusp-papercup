@@ -11,6 +11,7 @@ import { WorkItemAdmissionQueueDriver } from '../resource-governor/queue';
 import { allSessionsLiveResolver } from '../../test/_admission-ledger-fixture';
 import { hostedPoolAgentAdmissionGuard, createHostedPoolAgentReservations, retireHostedPoolAgentReservations } from './hosted-agent-admission';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
+import { reconcileHostedPoolDemand, readHostedLifecycleAdmission } from './hosted-lifecycle-store';
 
 const h = vi.hoisted(() => ({ sql: null as any }));
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -141,6 +142,100 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
   async function operations(ws: string) {
     return db.adminSql`SELECT id, host_id, admission_receipt FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws}`;
   }
+
+  async function capacityDemand(ws: string) {
+    const digest = randomUUID().replace(/-/g, '').slice(0, 24);
+    const id = `ws-${digest}`, hostId = `host-${digest}`;
+    await customer(ws, id, hostId);
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'provisioning'
+      WHERE workspace_id = ${ws} AND id = ${id}`;
+    const target = { id: hostId, connectionId: 'pool-connection', hostGeneration: 1, desiredRevision: 1,
+      controllerAuthority: { controllerId: 'controller-a', fence: 7 }, hostedCustomerWorkspaceId: id,
+      desired: { target: 'gcp' } };
+    const enqueue = vi.fn(async (request: any) => {
+      const retained = { connectionId: request.connectionId, name: request.name, desired: request.desiredSpec };
+      const replay = await readHostedLifecycleAdmission({ workspaceId: ws, customerWorkspaceId: id,
+        operationId: request.operationId, actorId: request.actorId, request: retained });
+      if (!replay) await admitHostedLifecycleJob({ ...input(ws, id, hostId), action: 'provision',
+        operationId: request.operationId, request: retained, capacityReconcile: request.capacityReconcile });
+    });
+    return { id, hostId, target, enqueue,
+      deps: { readTarget: async () => target as any, admitAndStart: enqueue } };
+  }
+
+  it('P539 recovers a crash before admission and re-enqueues the same durable operation on replay', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    const first = await reconcileHostedPoolDemand(ws, demand.deps);
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET display_name = 'changed after admission'
+      WHERE workspace_id = ${ws} AND id = ${demand.id}`;
+    const second = await reconcileHostedPoolDemand(ws, demand.deps);
+    expect(first.enqueued).toEqual([`prov-${demand.hostId.slice(5)}`]);
+    expect(second.enqueued).toEqual(first.enqueued);
+    expect(await operations(ws)).toHaveLength(1);
+    expect(demand.enqueue).toHaveBeenCalledTimes(2);
+    expect(demand.enqueue.mock.calls[1]![0].name).toBe(demand.id);
+  });
+
+  it('P539 admits a pristine placeholder before a controller has acquired its first fence', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET controller_id = NULL, controller_fence = 0
+      WHERE workspace_id = ${ws} AND id = ${demand.hostId}`;
+    const { controllerAuthority: _unused, ...target } = demand.target;
+    const result = await reconcileHostedPoolDemand(ws, { ...demand.deps, readTarget: async () => target as any });
+    expect(result.enqueued).toHaveLength(1);
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('P539 uses the shared scope clock and holds a second customer during cooldown', async () => {
+    const ws = fresh(), first = await capacityDemand(ws), second = await capacityDemand(ws);
+    await reconcileHostedPoolDemand(ws, first.deps);
+    await db.adminSql`UPDATE harness_shared.workspace_host_operations SET status = 'running'
+      WHERE workspace_id = ${ws}`;
+    const result = await reconcileHostedPoolDemand(ws, second.deps);
+    expect(result.held).toEqual([{ hostId: second.hostId, reason: 'hosted_pool_capacity_cooldown' }]);
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('P539 concurrent reconcilers reserve at most one operation and account for pending capacity', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    await Promise.all([reconcileHostedPoolDemand(ws, demand.deps), reconcileHostedPoolDemand(ws, demand.deps)]);
+    expect(await operations(ws)).toHaveLength(1);
+    const raw = { ...input(ws, demand.id, demand.hostId), action: 'provision' as const,
+      operationId: `another-${randomUUID()}`, capacityReconcile: {
+        hostGeneration: 1, controllerFence: 7, observedAtMs: Date.now() } };
+    await expect(admitHostedLifecycleJob(raw)).rejects.toThrow();
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('P539 holds a changed generation before any enqueue and preserves the demand row', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    const result = await reconcileHostedPoolDemand(ws, { ...demand.deps,
+      readTarget: async () => ({ ...demand.target, hostGeneration: 2 }) as any });
+    expect(result.held).toEqual([{ hostId: demand.hostId, reason: 'demand-generation-unverified' }]);
+    expect(demand.enqueue).not.toHaveBeenCalled();
+    expect(await operations(ws)).toEqual([]);
+  });
+
+  it.each(['stale', 'future', 'generation', 'fence'] as const)('P539 refuses %s capacity proof under real admission locks', async kind => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    const snapshot = { hostGeneration: 1, controllerFence: 7, observedAtMs: Date.now() };
+    if (kind === 'stale') snapshot.observedAtMs -= 100_000;
+    if (kind === 'future') snapshot.observedAtMs += 100_000;
+    if (kind === 'generation') snapshot.hostGeneration += 1;
+    if (kind === 'fence') snapshot.controllerFence += 1;
+    await expect(admitHostedLifecycleJob({ ...input(ws, demand.id, demand.hostId),
+      action: 'provision', capacityReconcile: snapshot })).rejects.toThrow(/capacity_(observation_unverified|generation_changed)/);
+    expect(await operations(ws)).toEqual([]);
+  });
+
+  it('P539 refuses quota exhaustion without forgetting queued demand', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    await allowance(organization(ws, demand.id), { 'pool.hosts': 0 });
+    const result = await reconcileHostedPoolDemand(ws, demand.deps);
+    expect(result.enqueued).toEqual([]);
+    expect(result.held).toHaveLength(1);
+    expect(await operations(ws)).toEqual([]);
+  });
 
   async function pinDiskAllocation(ws: string, operationId: string, capacity = { dbGiB: 256, workspaceGiB: 0 }) {
     await db.adminSql`UPDATE harness_shared.workspace_host_operations

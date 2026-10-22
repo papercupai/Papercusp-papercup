@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { withWorkspace } from '@papercusp/db-org';
 import { backfillHostedTrialEntitlementAuthority, lockHostedEntitlementAuthority,
@@ -158,6 +158,8 @@ export interface AdmitHostedLifecycleJobInput {
   policy?: Partial<HostedLifecyclePolicy>;
   /** Server-only idle automation. Ordinary customer-requested stops omit this. */
   idleStop?: true;
+  /** Server-owned queued-demand observation. Revalidated under the provider/tenant locks. */
+  capacityReconcile?: { hostGeneration: number; controllerFence: number | null; observedAtMs: number };
   /** Server-resolved requirements. Candidate inventory is read inside admission, never supplied by a customer. */
   pool?: Omit<WorkspaceHostPoolRequest, 'workspaceId' | 'customerWorkspaceId' | 'target' | 'nowMs' | 'mayProvision'>;
 }
@@ -1110,6 +1112,7 @@ export async function admitHostedLifecycleJob(
         : null);
     if (!billingOwner) throw new Error('hosted_lifecycle_billing_owner_required');
     const idleStop = input.idleStop ? await admitHostedPoolIdleStop(tx, input, row.organization_id) : undefined;
+    if (idleStop && input.capacityReconcile) await fenceHostedPoolCapacityChange(tx, input);
 
     const decision = evaluateHostedLifecycleAdmission(
       policyFrom(row, input.policy),
@@ -1138,6 +1141,7 @@ export async function admitHostedLifecycleJob(
       const poolSnapshot = await placeHostedPoolJob(tx, input);
       placement = poolSnapshot.placement;
       if (placement.kind === 'queue') throw new HostedLifecyclePlacementError(placement);
+      if (input.capacityReconcile) await fenceHostedPoolCapacityChange(tx, input);
       resourceAdmission = await admitHostedPoolHostResources(tx, input, row.organization_id, poolSnapshot);
       // A new provision reserves the already-locked, customer-bound FK placeholder.
       // Existing VMs instead compare the exact observed generation and controller fence.
@@ -1280,6 +1284,159 @@ export interface HostedLifecycleReconciliationResult {
   exhausted: string[];
   notifications: string[];
   spend: HostedLifecycleSpendReconciliationSummary;
+}
+
+export const HOSTED_POOL_CAPACITY_COOLDOWN_MS = 60_000;
+export const HOSTED_POOL_DEMAND_OBSERVATION_MAX_AGE_MS = 75_000;
+
+/** Reuse the operation ledger as the pool clock. Admission already holds the
+ * provider lock and all candidate host locks, so two reconcilers cannot both
+ * pass this clock and reserve a new operation. The host CAS binds the sampled
+ * generation; quota, pending capacity and budget are still checked by admission.
+ */
+async function fenceHostedPoolCapacityChange(tx: Sql, input: AdmitHostedLifecycleJobInput): Promise<void> {
+  const snapshot = input.capacityReconcile!;
+  const now = Date.now();
+  if (!Number.isSafeInteger(snapshot.observedAtMs) || snapshot.observedAtMs > now ||
+      now - snapshot.observedAtMs > HOSTED_POOL_DEMAND_OBSERVATION_MAX_AGE_MS ||
+      !Number.isSafeInteger(snapshot.hostGeneration) || snapshot.hostGeneration < 1 ||
+      (snapshot.controllerFence !== null &&
+        (!Number.isSafeInteger(snapshot.controllerFence) || snapshot.controllerFence < 0))) {
+    throw new Error('hosted_pool_capacity_observation_unverified');
+  }
+  const recent = await tx<Array<{ id: string }>>`
+    SELECT operation.id FROM harness_shared.workspace_host_operations operation
+    JOIN harness_shared.workspace_hosts host ON host.workspace_id = operation.workspace_id AND host.id = operation.host_id
+    JOIN harness_shared.workspace_hosts requested ON requested.workspace_id = host.workspace_id AND requested.id = ${input.hostId}
+    WHERE operation.workspace_id = ${input.workspaceId} AND host.target = ${input.providerTarget}
+      AND host.region = requested.region
+      AND host.desired_spec->'scope' = requested.desired_spec->'scope'
+      AND host.desired_spec->>'zone' = requested.desired_spec->>'zone'
+      AND operation.action IN ('provision', 'start', 'stop', 'destroy')
+      AND operation.admission_receipt IS NOT NULL
+      AND operation.created_at > ${new Date(now - HOSTED_POOL_CAPACITY_COOLDOWN_MS).toISOString()}::timestamptz
+    LIMIT 1`;
+  if (recent.length) throw new Error('hosted_pool_capacity_cooldown');
+  const fenced = await tx<Array<{ id: string }>>`
+    UPDATE harness_shared.workspace_hosts SET updated_at = now()
+    WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}
+      AND host_generation = ${snapshot.hostGeneration} AND controller_fence IS NOT DISTINCT FROM ${snapshot.controllerFence}
+    RETURNING id`;
+  if (fenced.length !== 1) throw new Error('hosted_pool_capacity_generation_changed');
+}
+
+export interface HostedPoolDemandReconciliationResult {
+  considered: number;
+  enqueued: string[];
+  held: Array<{ hostId: string; reason: string }>;
+}
+
+/** The existing directory is durable demand, including a crash before admission.
+ * This is a zero-warm-floor reconciliation, not a second scheduler. It reuses
+ * the same admission and DBOS enqueue path as signup. A tick can enqueue ONE
+ * operation, and a replay uses the original operation id/receipt. Failed jobs
+ * remain with the existing recovery/cleanup state machine, never a fresh VM.
+ */
+export async function reconcileHostedPoolDemand(workspaceId: string, deps: {
+  admitAndStart?: (input: import('../auth/hosted/workspace-admission').HostedWorkspaceProvisioningRequest) => Promise<void>;
+  readTarget?: typeof readWorkspaceHostDestroyTarget;
+  startLifecycle?: typeof import('../dbos/workspace-host-provision-workflow').startWorkspaceHostLifecycleWorkflow;
+} = {}): Promise<HostedPoolDemandReconciliationResult> {
+  const out: HostedPoolDemandReconciliationResult = { considered: 0, enqueued: [], held: [] };
+  const rows = await transaction(workspaceId, tx => tx<Array<{
+    id: string; host_id: string; actor_id: string; operation_id: string | null;
+    host_generation: number; controller_fence: number | null; state: string; last_activity_at: Date | string | null;
+    display_name: string; admission_input: unknown;
+  }>>`
+    SELECT customer.id, host.id AS host_id, customer.created_by_principal_id AS actor_id,
+           pending.id AS operation_id, host.host_generation, host.controller_fence,
+           customer.state, customer.last_activity_at, customer.display_name,
+           pending.admission_receipt->'input' AS admission_input
+    FROM harness_shared.customer_workspaces customer
+    JOIN harness_shared.workspace_hosts host
+      ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
+    LEFT JOIN harness_shared.workspace_host_operations pending
+      ON pending.workspace_id = host.workspace_id AND pending.host_id = host.id
+      AND pending.status = 'queued' AND pending.action IN ('provision', 'start', 'stop')
+      AND pending.admission_receipt IS NOT NULL
+    WHERE customer.workspace_id = ${workspaceId} AND customer.kind = 'hosted'
+      AND host.target IN ('gcp', 'aws')
+      AND ((customer.state = 'provisioning' AND (pending.id IS NOT NULL OR NOT EXISTS (
+        SELECT 1 FROM harness_shared.workspace_host_operations prior
+        WHERE prior.workspace_id = host.workspace_id AND prior.host_id = host.id)))
+        OR (customer.state = 'active' AND host.observed_state = 'running'
+          AND host.desired_state = 'running' AND customer.last_activity_at IS NOT NULL
+          AND customer.last_activity_at < ${new Date(Date.now() - 120_000).toISOString()}::timestamptz
+          AND host.pool_observation->'workload' IS NOT NULL))
+      AND NOT EXISTS (SELECT 1 FROM harness_shared.workspace_host_operations running
+        WHERE running.workspace_id = host.workspace_id AND running.host_id = host.id AND running.status = 'running')
+    ORDER BY (customer.state = 'provisioning') DESC, customer.created_at, customer.id, pending.id LIMIT 1`);
+  const row = rows[0];
+  if (!row) return out;
+  out.considered = 1;
+  // Only canonical signup placeholders can reconstruct a lost operation id.
+  // A legacy/foreign row is explicit residue, never an inferred cloud request.
+  const digest = /^host-([a-f0-9]{24})$/.exec(row.host_id)?.[1];
+  const idle = row.state === 'active';
+  if (!idle && !row.operation_id && (!digest || row.id !== `ws-${digest}`)) {
+    out.held.push({ hostId: row.host_id, reason: 'noncanonical-demand-identity' });
+    return out;
+  }
+  const observedAtMs = Date.now();
+  const target = await (deps.readTarget ?? readWorkspaceHostDestroyTarget)(workspaceId, row.host_id);
+  if (!target || target.hostGeneration !== row.host_generation ||
+      (target.controllerAuthority?.fence ?? 0) !== row.controller_fence || target.hostedCustomerWorkspaceId !== row.id) {
+    out.held.push({ hostId: row.host_id, reason: 'demand-generation-unverified' });
+    return out;
+  }
+  const operationId = row.operation_id ?? (idle ? `pool-idle-${createHash('sha256')
+    .update(JSON.stringify([workspaceId, row.host_id, target.desiredRevision, row.last_activity_at])).digest('hex').slice(0, 32)}`
+    : `prov-${digest}`);
+  try {
+    if (idle) {
+      const replay = await readHostedLifecycleAdmission({ workspaceId, customerWorkspaceId: row.id, operationId,
+        actorId: row.actor_id, request: { hostId: row.host_id, action: 'stop' } });
+      const receipt = replay ?? await admitHostedLifecycleJob({ workspaceId, customerWorkspaceId: row.id,
+        hostId: row.host_id, providerTarget: target.desired.target, action: 'stop', operationId,
+        actorId: required(row.actor_id, 'demand_actor'), riskTier: 'moderate', approvalStatus: 'not-required',
+        billingOwner: { kind: 'platform', id: workspaceId }, idleStop: true,
+        estimate: { cents: 0, currency: 'USD', source: 'idle-stop', evidenceRef: `host:${row.host_id}`, estimatedAt: new Date().toISOString() },
+        request: { hostId: row.host_id, action: 'stop' },
+        capacityReconcile: { hostGeneration: row.host_generation, controllerFence: row.controller_fence, observedAtMs } });
+      const stored = await connection(workspaceId, target.connectionId);
+      if (!stored) throw new Error('hosted_pool_idle_connection_missing');
+      const start = deps.startLifecycle ?? (await import('../dbos/workspace-host-provision-workflow')).startWorkspaceHostLifecycleWorkflow;
+      await start({ workspaceId, hostId: receipt.hostId, action: 'stop', operationId: receipt.operationId,
+        actorId: row.actor_id, connection: { ...stored.connection, scope: target.desired.scope }, hostedCustomerWorkspaceId: row.id });
+      out.enqueued.push(receipt.operationId);
+      return out;
+    }
+    const admitAndStart = deps.admitAndStart ?? (await import('../auth/hosted/workspace-admission-dependencies'))
+      .createDefaultHostedWorkspaceAdmissionDependencies({ pooled: true,
+        resolveDesiredSpec: async () => { throw new Error('reconciler must use persisted desired spec'); },
+        bringUp: { requestedAgents: [] },
+      }).admitAndStart!;
+    const saved = isObject(row.admission_input) && isObject(row.admission_input.request)
+      ? row.admission_input.request : null;
+    if (row.operation_id && (!saved || typeof saved.connectionId !== 'string' || typeof saved.name !== 'string' ||
+        !isObject(saved.desired) || !isObject(row.admission_input) || typeof row.admission_input.actorId !== 'string')) {
+      throw new Error('hosted_pool_saved_demand_request_unverified');
+    }
+    // A mutable display name, catalog or desired row cannot change an admitted
+    // operation's request identity. The normal adapter verifies the saved actor
+    // and request before replaying the immutable placement receipt.
+    await admitAndStart({ controlPlaneWorkspaceId: workspaceId, customerWorkspaceId: row.id,
+      connectionId: saved?.connectionId as string ?? target.connectionId,
+      hostId: row.host_id, name: saved?.name as string ?? row.display_name,
+      desiredSpec: saved ? saved.desired as typeof target.desired : target.desired,
+      operationId, actorId: required(isObject(row.admission_input) && saved
+        ? row.admission_input.actorId as string : row.actor_id, 'demand_actor'),
+      capacityReconcile: { hostGeneration: row.host_generation, controllerFence: row.controller_fence, observedAtMs } });
+    out.enqueued.push(operationId);
+  } catch (error) {
+    out.held.push({ hostId: row.host_id, reason: error instanceof Error ? error.message : 'capacity-reconciliation-failed' });
+  }
+  return out;
 }
 
 export const HOSTED_LIFECYCLE_SPEND_RECONCILE_BATCH_LIMIT = 20;

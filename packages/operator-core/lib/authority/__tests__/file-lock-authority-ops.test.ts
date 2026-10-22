@@ -92,13 +92,16 @@ describe('hook operation authority protocol', () => {
     expect(coordinator.acquire).toHaveBeenCalledWith(expect.objectContaining({ operation, automatic: true }));
   });
 
-  it('finishes without a received lock token using the exact operation scope and outcome', async () => {
+  it('forwards edit proof and caller identity through a hook-operation finish', async () => {
     const coordinator = fakeCoordinator();
     const handlers = buildFileLockAuthorityHandlers(coordinator);
-    const finish = { ...operation, paths: ['a.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, outcome: 'cancelled' };
-    await handlers[FILE_LOCK_OP_KINDS.release]({ owner: 'A', coordinationDomain: '/repo', operation: finish }, 'h');
+    const finish = { ...operation, paths: ['a.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, outcome: 'completed' };
+    const nativeEditProof = { success: true as const, source: 'codex' as const, tool: 'apply_patch', paths: ['a.ts'] };
+    await handlers[FILE_LOCK_OP_KINDS.release]({ owner: 'A', coordinationDomain: '/repo', operation: finish,
+      nativeEditProof, workspaceId: 'ws-1', contributor: 'user-1' }, 'h');
     expect(coordinator.release).toHaveBeenCalledWith({ owner: 'A', coordinationDomain: '/repo',
-      lockId: undefined, paths: undefined, allMine: undefined, operation: finish });
+      lockId: undefined, paths: undefined, allMine: undefined, operation: finish, nativeEditProof,
+      workspaceId: 'ws-1', contributor: 'user-1' });
   });
 
   it('rejects a malformed operation or a broad selector before calling the store', async () => {

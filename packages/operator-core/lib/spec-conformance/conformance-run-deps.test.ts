@@ -35,7 +35,7 @@ vi.mock('../work-items', async (importOriginal) => {
   };
 });
 
-import { lifecycleOnlyAdmissionRefusal, productionConformanceDeps } from './conformance-run-deps';
+import { judgeTestsFromLedger, lifecycleOnlyAdmissionRefusal, productionConformanceDeps } from './conformance-run-deps';
 
 const PLAN = 'cloud-portal-chat-and-guide-recovery-2026-10-09';
 const CONDITION = `spec-conformance-drift:papercusp/${PLAN}/R-9`;
@@ -138,5 +138,50 @@ describe('production conformance blocks links', () => {
     expect(lifecycleOnlyAdmissionRefusal(admissionError([{ ...NO_GRAPH_DEFECTS, stranded: [{}], lifecycleConflicts: [LIFECYCLE_CONFLICT] }]))).toBeNull();
     expect(lifecycleOnlyAdmissionRefusal(new Error('plain'))).toBeNull();
     expect(lifecycleOnlyAdmissionRefusal('not an error')).toBeNull();
+  });
+});
+
+describe('conformance test-run evidence', () => {
+  beforeEach(() => {
+    sqlCalls.length = 0;
+    sqlMock.mockClear();
+  });
+
+  const file = 'packages/operator-core/lib/storage/retention-pins.test.ts';
+  const finishedAt = new Date('2026-10-22T05:30:51.536Z');
+  const testRunRow = (status: 'error' | 'fail') => ({
+    id: status === 'error' ? 21720473 : 21720474,
+    file_path: file,
+    status,
+    finished_at: finishedAt,
+    commit_sha: null,
+    worktree_dirty: status === 'error',
+    execution_details: {
+      schemaVersion: 1,
+      testLayer: 'unit',
+      passed: status === 'error' ? 18 : 17,
+      failed: status === 'error' ? 0 : 1,
+      skipped: 0,
+      collectionFailed: false,
+    },
+  });
+
+  it('keeps a run-level error unevaluable while preserving actual test failures', async () => {
+    sqlMock.mockImplementationOnce(async () => [testRunRow('error')] as never[]);
+    const error = await judgeTestsFromLedger({
+      files: [file],
+      workspaceId: 'workspace',
+      now: () => finishedAt,
+    });
+    expect(error).toMatchObject({ kind: 'tests', verdict: 'error', value: null, unit: 'files' });
+    expect(error.detail).toContain(`${file} (test run status is error, test_runs #21720473)`);
+
+    sqlMock.mockImplementationOnce(async () => [testRunRow('fail')] as never[]);
+    const failure = await judgeTestsFromLedger({
+      files: [file],
+      workspaceId: 'workspace',
+      now: () => finishedAt,
+    });
+    expect(failure).toMatchObject({ kind: 'tests', verdict: 'fail', value: 0, unit: 'files' });
   });
 });

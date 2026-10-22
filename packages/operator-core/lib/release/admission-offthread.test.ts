@@ -133,6 +133,53 @@ describe('admission off-thread host (WI-10005223)', () => {
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   }, 60_000);
 
+  it('reads an admitted gitlink from the canonical submodule object store when the generation clone lacks its pin', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'admission-canonical-pin-'));
+    const canonical = join(fixture, 'canonical');
+    const generation = join(fixture, 'generation');
+    const init = (cwd: string) => {
+      execFileSync('git', ['init', '-q'], { cwd });
+      execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd });
+      execFileSync('git', ['config', 'user.name', 'test'], { cwd });
+    };
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    try {
+      mkdirSync(canonical);
+      init(canonical);
+      const canonicalChild = join(canonical, 'component');
+      mkdirSync(canonicalChild);
+      init(canonicalChild);
+      writeFileSync(join(canonicalChild, 'api.mjs'), 'export const value = 1;\n');
+      writeFileSync(join(canonicalChild, 'component.test.mjs'), 'export const pinnedTest = true;\n');
+      git(canonicalChild, 'add', '.');
+      git(canonicalChild, 'commit', '-q', '-m', 'pinned submodule');
+      const pin = git(canonicalChild, 'rev-parse', 'HEAD');
+      git(canonical, 'update-index', '--add', '--cacheinfo', '160000,' + pin + ',component');
+      git(canonical, 'commit', '-q', '-m', 'frozen gitlink');
+      const commit = git(canonical, 'rev-parse', 'HEAD');
+
+      git(canonical, 'worktree', 'add', '--detach', generation, commit);
+      const generationChild = join(generation, 'component');
+      rmSync(generationChild, { recursive: true, force: true });
+      mkdirSync(generationChild);
+      init(generationChild);
+      writeFileSync(join(generationChild, 'stale.txt'), 'generation clone without the frozen pin\n');
+      git(generationChild, 'add', '.');
+      git(generationChild, 'commit', '-q', '-m', 'stale submodule clone');
+
+      expect(git(generation, 'rev-parse', '--path-format=absolute', '--git-common-dir')).toBe(join(canonical, '.git'));
+      expect(git(canonicalChild, 'cat-file', '-t', pin)).toBe('commit');
+      expect(() => git(generationChild, 'cat-file', '-e', pin + '^{commit}')).toThrow();
+
+      const result = executeAdmissionJob({ kind: 'precheck-population', input: {
+        root: generation, commit, admittedPaths: ['component'], signature: [],
+      } });
+      if (!result.ok) throw new Error('canonical pin inventory failed: ' + result.detail);
+      expect(result.ok).toBe(true);
+      expect(result.population.files).toContain('component/component.test.mjs');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }, 60_000);
+
   it('WI-8351 refuses a gitlink with native tests but no router-supported inventory', async () => {
     const fixture = mkdtempSync(join(tmpdir(), 'admission-native-inventory-'));
     try {

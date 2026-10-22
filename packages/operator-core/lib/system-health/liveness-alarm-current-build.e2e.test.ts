@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it, type TestContext } from 'vitest';
+import { AGENT_STRANDED_ALARM_THRESHOLD } from './agent-strand-census';
 import {
   captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof,
 } from '../../test/isolated-integration-proof';
@@ -12,8 +13,8 @@ const options = isolatedWorkerOptions(480_000);
 
 // R-12 needs a real request worker and durable ledger, independently of the unit
 // alarm seam. Reuse the maintained private operator profile and lifetime proof.
-async function verifyAlarm(subject: 'agents-wedged' | 'hosted-control-plane-degraded' |
-  'hosted-reverse-connector-lost' | 'platform-lifecycle-budget-exceeded', context: TestContext) {
+async function verifyAlarm(subject: 'agents-wedged' | 'agents-stranded' | 'hosted-control-plane-degraded' |
+  'hosted-reverse-connector-lost' | 'platform-lifecycle-budget-exceeded', context?: TestContext) {
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/system-health/liveness-alarm-current-build.e2e.test.ts',
@@ -61,18 +62,23 @@ async function verifyAlarm(subject: 'agents-wedged' | 'hosted-control-plane-degr
       expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('LIVENESS_ALARM_HTTP_RECEIPT '.length));
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
-        signal: subject, threshold: subject === 'agents-wedged' ? 10 : 1,
-        alarmCount: 1, restartDedupCount: 1, belowThreshold: subject === 'agents-wedged' ? 9 : 0,
+        signal: subject, threshold: subject === 'agents-wedged' ? 10 : subject === 'agents-stranded' ? AGENT_STRANDED_ALARM_THRESHOLD : 1,
+        alarmCount: 1, restartDedupCount: 1, belowThreshold: subject === 'agents-wedged' ? 9 : subject === 'agents-stranded' ? AGENT_STRANDED_ALARM_THRESHOLD - 1 : 0,
         unknownPreserved: true, sourceUnchanged: true,
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         raised: { from: 'system:infra-liveness-alarm', livenessSignature: subject },
         recovered: { choice: 'auto-resolved', note: expect.stringContaining(subject === 'agents-wedged'
-          ? 'wedged=9' : subject === 'hosted-control-plane-degraded'
+          ? 'wedged=9' : subject === 'agents-stranded' ? 'stranded=' + (AGENT_STRANDED_ALARM_THRESHOLD - 1) : subject === 'hosted-control-plane-degraded'
             ? 'freshly unhealthy hosts 0' : 'heartbeat lost 0, platform budget breaches 0') },
       });
       if (subject === 'agents-wedged') expect(receipt.raised.agentStrandObservation)
         .toMatchObject({ wedged: 10, thresholds: { wedged: 10 } });
-      else if (subject === 'hosted-control-plane-degraded') expect(receipt.raised.hostedControlPlaneObservation)
+      else if (subject === 'agents-stranded') {
+        expect(receipt.raised.agentStrandObservation).toMatchObject({ wedged: 0,
+          stranded: AGENT_STRANDED_ALARM_THRESHOLD, thresholds: { stranded: AGENT_STRANDED_ALARM_THRESHOLD } });
+        expect(receipt).toMatchObject({ belowBoundaryVerified: true, independentOfWedged: true,
+          preservedModes: ['unreadable-both-legs', 'errored-panel', 'missing-census'] });
+      } else if (subject === 'hosted-control-plane-degraded') expect(receipt.raised.hostedControlPlaneObservation)
         .toMatchObject({ responder: { ownerSelector: '@role:mug' }, reading: { hosts: { unhealthy: 1 } } });
       else {
         expect(receipt.raised.hostedControlPlaneObservation.responder).toMatchObject({ ownerSelector: '@role:mug' });
@@ -92,9 +98,20 @@ async function verifyAlarm(subject: 'agents-wedged' | 'hosted-control-plane-degr
       console.info('LIVENESS_ALARM_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
   });
-  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  if (context) Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('LIVENESS_ALARM_HTTP_PROOF_RUN ' + runId);
+  return runId;
 }
+
+// Both BAR clauses cite one original isolated journey. Either exact case also
+// works alone; selecting both must not rebuild and repeat the same proof.
+let strandedProof: Promise<string> | undefined;
+async function verifyStranded(context: TestContext) {
+  const runId = await (strandedProof ??= verifyAlarm('agents-stranded'));
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+}
+it('activates agents-stranded at the configured threshold independently of wedged', verifyStranded, options.testTimeoutMs);
+it('preserves the active agents-stranded alarm when its census leg is unobservable', verifyStranded, options.testTimeoutMs);
 
 it('keeps a request-worker wedged alarm standing across restart and resolves only a measured recovery',
   context => verifyAlarm('agents-wedged', context), options.testTimeoutMs);

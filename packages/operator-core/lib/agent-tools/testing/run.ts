@@ -81,6 +81,7 @@ import {
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
@@ -525,7 +526,9 @@ export function buildDetachedTestRunRequest(opts: {
       requestedFiles: requestedLedgerFilePaths(opts.root, opts.files),
       command: process.execPath,
       args: ['--import', 'tsx', '--input-type=module', '-e', [
-        `const { runTestFilesCore } = await import(${JSON.stringify(import.meta.url)});`,
+        // import.meta.url names the host bundle in a serving operator. Replaying
+        // that bundle boots a second server instead of entering this leaf core.
+        `const { runTestFilesCore } = await import(${JSON.stringify(pathToFileURL(join(REPO_ROOT, 'packages/operator-core/lib/agent-tools/testing/run.ts')).href)});`,
         `const result = await runTestFilesCore({ ...${JSON.stringify(replay)}, runId: process.env.PAPERCUSP_TEST_RUN_GROUP }, { reportDirectories: ${JSON.stringify(reportDirectories)} });`,
         'console.log(JSON.stringify(result));',
         'process.exitCode = result.ok ? 0 : 1;',

@@ -3952,6 +3952,8 @@ export async function setWorkItemState(
     completionEvidence?: PersistedCompletionEvidence;
     /** Typed output for a successful accepted blueprint operation. */
     outputPayload?: unknown;
+    /** Internal replay of a retained authenticated operation completion. */
+    deferredOperationCompletion?: import('./blueprint/operation-service').DeferredOperationCompletionFence;
     /** Trusted DBOS program-root close. The immutable receipt and admission
      * epoch are checked again in the terminal UPDATE; never exposed as a tool arg. */
     acceptedProgramAttempt?: import('./blueprint/operation-worker-binding').AcceptedProgramRootAttempt;
@@ -4084,6 +4086,13 @@ export async function setWorkItemState(
     : null;
   const blueprintPin = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
     ? (wi.payload as Record<string, unknown>).blueprintOperation : null;
+  if (opts.deferredOperationCompletion) {
+    if (opts.skipCompletionGate || opts.force || !blueprintPin ||
+        opts.by !== opts.deferredOperationCompletion.ownerId || !isSettledWorkItemState(state)) {
+      throw new Error('deferred operation completion requires a governed claimed terminal write');
+    }
+    (await import('./blueprint/operation-service')).assertDeferredOperationCompletionFence(opts.deferredOperationCompletion, wi);
+  }
   let blueprintResult: Awaited<ReturnType<typeof import('./blueprint/operation-service').prepareDirectOperationCompletion>> | undefined;
   if (!opts.skipCompletionGate && (state === 'done' || state === 'passed' || state === 'resolved') && blueprintPin) {
     const priorResult = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
@@ -4555,6 +4564,7 @@ export async function setWorkItemState(
     const updated = await setIssueState(id, state as IssueState, opts.by, opts.completionRef, {
       completionEvidence: opts.completionEvidence,
       blueprintResult,
+      deferredOperationCompletion: opts.deferredOperationCompletion,
       acceptedProgramAttempt: opts.acceptedProgramAttempt,
       externalRuntimeCompletion,
       // P-008 (d): forwarded, or the issue family would silently drop every
@@ -4598,7 +4608,10 @@ export async function setWorkItemState(
         );
       }
     }
-    const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions, blueprintResult);
+    const completionPayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions, blueprintResult);
+    const evidencePayloadJson = opts.deferredOperationCompletion && blueprintResult
+      ? JSON.stringify({ ...JSON.parse(completionPayloadJson ?? '{}'), out: blueprintResult.output })
+      : completionPayloadJson;
     // EI-21184699633369991 (issue-family twin): a force ref-only correction must not turn a
     // valid completion into an authority:null row. Hoisted out of the SQL below so the
     // derivation and the CASE arm that honours it read the SAME condition.
@@ -4709,7 +4722,7 @@ export async function setWorkItemState(
                             THEN payload
                             ELSE COALESCE(payload, '{}'::jsonb) || (
                                    jsonb_strip_nulls(
-                                     ${evidencePayloadJson}::text::jsonb - '_completionEvidence' - 'blueprintResult'
+                                     ${evidencePayloadJson}::text::jsonb - '_completionEvidence' - 'blueprintResult' - 'out'
                                    )
                                    || CASE WHEN ${evidencePayloadJson}::text::jsonb ? '_completionEvidence'
                                            THEN jsonb_build_object(
@@ -4718,6 +4731,9 @@ export async function setWorkItemState(
                                                 )
                                            ELSE '{}'::jsonb
                                       END
+                                   || CASE WHEN ${evidencePayloadJson}::text::jsonb ? 'out'
+                                           THEN jsonb_build_object('out', ${evidencePayloadJson}::text::jsonb -> 'out')
+                                           ELSE '{}'::jsonb END
                                    || CASE WHEN ${evidencePayloadJson}::text::jsonb ? 'blueprintResult'
                                            THEN jsonb_build_object(
                                                   'blueprintResult',
@@ -4728,6 +4744,13 @@ export async function setWorkItemState(
                                  )
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${opts.deferredOperationCompletion ? tx`
+           taken_by = ${opts.deferredOperationCompletion.ownerId}
+           AND taken_at IS NOT DISTINCT FROM ${opts.deferredOperationCompletion.claimStamp ?? opts.deferredOperationCompletion.takenAt}::text::timestamptz
+           AND updated_ts = ${Date.parse(opts.deferredOperationCompletion.updatedAt)}
+           AND payload = ${JSON.stringify(opts.deferredOperationCompletion.payloadSnapshot)}::text::jsonb
+           AND clock_timestamp() < to_timestamp(${opts.deferredOperationCompletion.deadlineAt}::double precision / 1000)
+         ` : tx`TRUE`}
          AND ${externalRuntimeCompletion
            ? (await import('./blueprint/operation-worker-binding')).externalRuntimeCompletionEffectWhereSql(tx, externalRuntimeCompletion, {
                payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',

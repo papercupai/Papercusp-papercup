@@ -42,7 +42,7 @@ import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { resolveAgentMcpBaseUrl, resolveLongLivedSessionMcpBaseUrl } from './mcp-base-url';
 import { advSessionsByTranscriptHandles } from './adv-sessions';
 import { wakeAccountRouteFromArgv } from './inference-gateway/spawn-env';
-import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import {
   resolveContextEnv,
   resolveProjectDir,
@@ -500,10 +500,26 @@ export async function buildConsoleEnvelope(
     // explicit account route across the resume boundary. Without this, the
     // envelope's default marker and psu's default resume choice silently undo an
     // ACCOUNT-pill auto/pin selection (EI-21593716361630275).
-    const accountRoute = backend === 'claude-code'
+    const accountRoute = backend === 'claude-code' || backend === 'codex'
       ? wakeAccountRouteFromArgv(row?.launchArgv, coordOwnerId)
       : null;
-    if (accountRoute) Object.assign(env, accountRoute.env);
+    if (backend === 'claude-code' && accountRoute) Object.assign(env, accountRoute.env);
+    if (backend === 'codex' && row) {
+      // A tracked Codex rollout and its gateway provider live in the
+      // per-session CODEX_HOME, not the shell's ambient ~/.codex. Resuming
+      // with the default home loses both the native transcript and the
+      // launch-time model_provider selection.
+      env.CODEX_HOME = codexHomeForSessionKey(row.id);
+      if (accountRoute) {
+        env.PAPERCUSP_ACCOUNT_ROUTING_MODE = accountRoute.mode;
+        if (accountRoute.mode === 'auto' || accountRoute.mode === 'pin') {
+          env.PAPERCUSP_CODEX_GATEWAY = '1';
+        }
+        if (accountRoute.mode === 'pin' && accountRoute.accountId) {
+          env.PAPERCUSP_ACCOUNT_ID = accountRoute.accountId;
+        }
+      }
+    }
     // BARE interactive binary for the backend — deliberately NOT resolveAgentBin
     // (that returns the operator's "-p"/automation-model AGENT_CMD).
     const bin = backend === 'omp' ? 'omp' : backend === 'codex' ? 'codex' : 'claude';

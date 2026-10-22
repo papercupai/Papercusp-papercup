@@ -78,7 +78,7 @@ export function parseTicketFilingIntegration(stdout: string): number | null {
   if (suites.length !== 1) return null;
   const suite = suites[0]!;
   if (typeof suite.name !== 'string' ||
-      !suite.name.replaceAll('\\', '/').endsWith('/lib/capability-verbs/ticket.integration.test.ts') ||
+      !suite.name.replaceAll('\\', '/').endsWith('/' + TICKET_FILING_SUITE) ||
       suite.status !== 'passed' || !Array.isArray(suite.assertionResults)) return null;
   const assertions = suite.assertionResults as Array<Record<string, unknown>>;
   if (assertions.length !== TICKET_FILING_CASE_COUNT ||

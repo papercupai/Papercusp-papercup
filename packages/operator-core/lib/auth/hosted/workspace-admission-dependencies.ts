@@ -175,6 +175,7 @@ export function createDefaultHostedWorkspaceAdmissionDependencies(
         hostId: input.hostId, providerTarget: input.desiredSpec.target, action: 'provision',
         operationId: input.operationId, actorId: input.actorId, request,
         riskTier: 'moderate', approvalStatus: 'not-required',
+        ...(input.capacityReconcile ? { capacityReconcile: input.capacityReconcile } : {}),
         billingOwner: { kind: 'platform', id: input.controlPlaneWorkspaceId },
         ...await (options.resolvePoolAdmission ?? resolveHostedPoolAdmission)(input, stored),
       });

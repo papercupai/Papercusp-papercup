@@ -9,7 +9,8 @@ import { readProcessIdentity } from '../lib/process-identity';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { writeSharedSnapshot } from '../lib/derived-reads/shared-snapshot';
 import { createPrivateHealthSnapshot } from './private-http-workspace-preflight';
-import type { AgentStrandHealth } from '../lib/system-health/agent-strand-census';
+import { AGENT_STRANDED_ALARM_THRESHOLD, AGENT_WEDGED_ALARM_THRESHOLD,
+  type AgentStrandHealth } from '../lib/system-health/agent-strand-census';
 import type { CoordinationHealth, InfraHealth } from '../lib/system-health/types';
 
 let host: ChildProcess | undefined;
@@ -31,10 +32,11 @@ async function stopHost() {
 async function main() {
   const e = process.env;
   const requested = e.LIVENESS_ALARM_HTTP_SUBJECT;
-  const signal = ['hosted-control-plane-degraded', 'hosted-reverse-connector-lost',
+  const signal = ['agents-stranded', 'hosted-control-plane-degraded', 'hosted-reverse-connector-lost',
     'platform-lifecycle-budget-exceeded'].includes(requested ?? '') ? requested! : 'agents-wedged';
-  const hostedSubject = signal !== 'agents-wedged';
-  const threshold = hostedSubject ? 1 : 10;
+  const strandedSubject = signal === 'agents-stranded';
+  const hostedSubject = signal !== 'agents-wedged' && !strandedSubject;
+  const threshold = hostedSubject ? 1 : strandedSubject ? AGENT_STRANDED_ALARM_THRESHOLD : AGENT_WEDGED_ALARM_THRESHOLD;
   const workspace = e.PAPERCUSP_WORKSPACE_ID!;
   const base = e.PAPERCUSP_OPERATOR_URL!;
   assert.match(workspace, /^test-runtime-/);
@@ -92,14 +94,41 @@ async function main() {
     return { pid: host.pid!, identity: hostIdentity, health };
   }
   const { sql } = getOrgPg();
-  async function snapshot(wedged: number | null) {
+  type CensusMode = 'unreadable-both-legs' | 'errored-panel' | 'missing-census';
+  const witnessSignals = ['hosted-control-plane-degraded', 'hosted-reverse-connector-lost',
+    'platform-lifecycle-budget-exceeded'] as const;
+  async function snapshot(count: number | null, mode?: CensusMode, otherWedged: number | null = 0,
+    witness?: typeof witnessSignals[number]) {
     const at = Date.now();
     const health = createPrivateHealthSnapshot(workspace, false, at);
+    const wedged = strandedSubject ? otherWedged : count;
     const strand: AgentStrandHealth = { checked: wedged ?? 0, wedged: wedged ?? 0,
       wedgedByClass: { 'auth-blocked': 0, 'quota-blocked': wedged ?? 0, 'unbound-successor': 0, 'pending-turn-stuck': 0 },
-      wedgedSample: [], stranded: 0, strandedSample: [], wedgedUnreadable: wedged === null, strandedUnreadable: false };
+      wedgedSample: [], stranded: strandedSubject ? count ?? 0 : 0, strandedSample: [],
+      wedgedUnreadable: wedged === null, strandedUnreadable: strandedSubject && count === null };
     health.panels.coordination.status = 'warn';
     health.panels.coordination.data = { agentStrand: strand } as CoordinationHealth;
+    if (mode === 'errored-panel') {
+      health.panels.coordination.status = 'unknown';
+      health.panels.coordination.error = 'private census read failed';
+      health.panels.coordination.data = null;
+    } else if (mode === 'missing-census') {
+      health.panels.coordination.data = {} as CoordinationHealth;
+    }
+    if (strandedSubject) {
+      // A new, independently observed alarm proves this exact snapshot reached
+      // the real worker. Alarm reconciliation precedes escalation in the tick,
+      // so its durable receipt also witnesses the unknown-preservation check.
+      health.panels.infra.data = { hostedControlPlane: {
+        observedAt: at, windowMs: 3_600_000, lifecycle: null, api: null,
+        hosts: { expectedRunning: 1, unhealthy: witness === witnessSignals[0] ? 1 : 0,
+          unobserved: 0, platformOwnedRunning: 1 },
+        providerConnections: { connected: 1, degraded: 0 },
+        reverseConnectors: { active: 1, lost: witness === witnessSignals[1] ? 1 : 0 },
+        ownedCost: { estimatedUsdCents: 0, estimates: 1, unpriced: 0,
+          breachedBudgets: witness === witnessSignals[2] ? 1 : 0 },
+      } } as InfraHealth;
+    }
     if (hostedSubject) {
       health.panels.coordination.status = 'unknown';
       health.panels.coordination.data = null;
@@ -121,10 +150,11 @@ async function main() {
     await writeSharedSnapshot('system.health', workspace, health, 1);
     return at;
   }
-  const raises = async () => (await sql`SELECT body FROM harness_shared.coord_event_log
+  const raisesFor = async (signature: string) => (await sql`SELECT body FROM harness_shared.coord_event_log
     WHERE workspace_id = ${workspace} AND surface = 'escalations'
-      AND body->>'from' = 'system:infra-liveness-alarm' AND body->>'livenessSignature' = ${signal}
+      AND body->>'from' = 'system:infra-liveness-alarm' AND body->>'livenessSignature' = ${signature}
     ORDER BY ts`).map(row => row.body);
+  const raises = () => raisesFor(signal);
   const resolutions = async (id: string) => (await sql`SELECT body FROM harness_shared.coord_event_log
     WHERE workspace_id = ${workspace} AND surface = 'escalations'
       AND body->>'kind' = 'escalation_resolved' AND body->>'related_msg_id' = ${id}
@@ -140,15 +170,25 @@ async function main() {
     } while (Date.now() < deadline);
     throw new Error(name + ' did not converge: ' + JSON.stringify(value!));
   }
-  async function standing(id: string) {
+  async function standing(id: string, signature = signal) {
     const rows = await sql`SELECT body FROM harness_shared.coord_open_escalations
       WHERE workspace_id = ${workspace} AND body->>'msg_id' = ${id}`;
     assert.equal(rows.length, 1, 'threshold alarm must remain durably open');
     assert.equal((await resolutions(id)).length, 0, 'absence of evidence cannot resolve a standing alarm');
-    assert.equal((await raises()).length, 1, 'one threshold episode must have one alarm');
+    assert.equal((await raisesFor(signature)).length, 1, 'one threshold episode must have one alarm');
   }
-  const thresholdAt = await snapshot(threshold);
+  // The below/at boundary is witnessed on the same worker and independently of
+  // any wedged sessions, rather than inferred from a timer with no pickup proof.
+  const belowAt = strandedSubject ? await snapshot(threshold - 1, undefined, 0, witnessSignals[0]) : null;
+  let thresholdAt = strandedSubject ? null : await snapshot(threshold);
   const first = await startHost();
+  if (strandedSubject) {
+    await until('below-threshold snapshot witness', () => raisesFor(witnessSignals[0]),
+      rows => rows.some(row => row.hostedControlPlaneObservation?.snapshotAtMs === belowAt));
+    assert.equal((await raises()).length, 0, 'stranded alarm fired below its configured threshold');
+    assert.equal((await raisesFor('agents-wedged')).length, 0, 'stranded boundary must be independent of wedged');
+  }
+  if (strandedSubject) thresholdAt = await snapshot(threshold);
   console.log('LIVENESS_ALARM_HTTP_PHASE threshold-worker-ready');
   const raised = (await until('threshold alarm', raises, rows => rows.length === 1))[0];
   assert.ok(raised.body.includes('Signal: ' + signal));
@@ -168,9 +208,14 @@ async function main() {
         AND body->>'from' = 'system:infra-liveness-alarm' AND body->>'livenessSignature' = 'panel:infra'
         AND body->>'severity' = 'blocker'`;
     assert.equal(duplicates.length, 0);
+  } else if (strandedSubject) {
+    assert.equal(observation.stranded, threshold);
+    assert.equal(observation.thresholds.stranded, threshold);
+    assert.equal(observation.wedged, 0);
+    assert.equal((await raisesFor('agents-wedged')).length, 0);
   } else {
-    assert.equal(observation.wedged, 10);
-    assert.equal(observation.thresholds.wedged, 10);
+    assert.equal(observation.wedged, AGENT_WEDGED_ALARM_THRESHOLD);
+    assert.equal(observation.thresholds.wedged, AGENT_WEDGED_ALARM_THRESHOLD);
   }
   await new Promise(done => setTimeout(done, intervalMs * 4));
   await standing(raised.msg_id);
@@ -180,10 +225,29 @@ async function main() {
   await new Promise(done => setTimeout(done, intervalMs * 4));
   await standing(raised.msg_id);
   console.log('LIVENESS_ALARM_HTTP_PHASE restart-dedup-verified');
-  await snapshot(null);
-  await new Promise(done => setTimeout(done, intervalMs * 4));
-  await standing(raised.msg_id);
-  await snapshot(threshold - 1);
+  const preservedModes: CensusMode[] = [];
+  let wedgedAlarm: { msg_id: string } | undefined;
+  if (strandedSubject) {
+    // Add the other population only AFTER witnessing independent stranded
+    // activation. Both alarms must survive each unobserved census shape.
+    await snapshot(threshold, undefined, AGENT_WEDGED_ALARM_THRESHOLD);
+    wedgedAlarm = (await until('wedged preservation control', () => raisesFor('agents-wedged'), rows => rows.length === 1))[0];
+    const modes: CensusMode[] = ['unreadable-both-legs', 'errored-panel', 'missing-census'];
+    for (const [index, mode] of modes.entries()) {
+      const at = await snapshot(mode === 'unreadable-both-legs' ? null : 0, mode,
+        mode === 'unreadable-both-legs' ? null : 0, witnessSignals[index]);
+      await until(mode + ' snapshot witness', () => raisesFor(witnessSignals[index]),
+        rows => rows.some(row => row.hostedControlPlaneObservation?.snapshotAtMs === at));
+      await standing(raised.msg_id);
+      await standing(wedgedAlarm!.msg_id, 'agents-wedged');
+      preservedModes.push(mode);
+    }
+  } else {
+    await snapshot(null);
+    await new Promise(done => setTimeout(done, intervalMs * 4));
+    await standing(raised.msg_id);
+  }
+  await snapshot(threshold - 1, undefined, strandedSubject ? AGENT_WEDGED_ALARM_THRESHOLD - 1 : 0);
   const recovered = (await until('measured below-threshold recovery', () => resolutions(raised.msg_id), rows => rows.length === 1))[0];
   assert.equal(recovered.choice, 'auto-resolved');
   if (signal === 'hosted-control-plane-degraded') {
@@ -192,6 +256,11 @@ async function main() {
   } else if (signal === 'agents-wedged') {
     assert.match(recovered.note, /wedged=9/);
     assert.match(recovered.note, /alarm threshold >= 10/);
+  } else if (strandedSubject) {
+    assert.ok(recovered.note.includes('stranded=' + (threshold - 1)));
+    assert.ok(recovered.note.includes('alarm threshold >= ' + threshold));
+    const wedgedRecovery = await until('readable wedged recovery', () => resolutions(wedgedAlarm!.msg_id), rows => rows.length === 1);
+    assert.match(wedgedRecovery[0].note, /wedged=9/);
   } else {
     assert.match(recovered.note, /heartbeat lost 0, platform budget breaches 0/);
   }
@@ -201,7 +270,8 @@ async function main() {
   await stopHost();
   console.log('LIVENESS_ALARM_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostStopped: true,
     signal, threshold, belowThreshold: threshold - 1, alarmCount: 1, restartDedupCount: 1,
-    unknownPreserved: true, sourceUnchanged: true, sourceFingerprints: sourceBefore,
+    unknownPreserved: true, preservedModes, belowBoundaryVerified: strandedSubject,
+    independentOfWedged: strandedSubject, sourceUnchanged: true, sourceFingerprints: sourceBefore,
     bundleSha256, intervalMs, first, second, raised, recovered }));
 }
 

@@ -1,8 +1,16 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import * as childProcess from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { costFromTokens, PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import { capacityRow, parseRampLog } from './capacity-table';
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
 import {
   buildRows,
   allocatePoolBill,
@@ -15,6 +23,9 @@ import {
   recordedInferenceCost,
   trialTaskMonth,
   trialMonthlyCostCoverage,
+  trialEconomicsCoverage,
+  readTrialEconomics,
+  type TrialEconomicsDossier,
   TRIAL_MONTH_PROFILES,
   TRIAL_COST_CATEGORIES,
   type TrialMonthlyCostInput,
@@ -193,6 +204,148 @@ describe('P544 monthly coding-task workload', () => {
     expect(() => trialTaskMonth(input)).toThrow(/duplicate/);
     expect(() => trialTaskMonth({ ...workload(), activeVmHours: 0.01 })).toThrow(/population hours/);
     expect(() => trialTaskMonth({ ...workload(), assignedAgents: 0 })).toThrow(/assignedAgents/);
+  });
+});
+
+describe('P544 retained qualification and monthly economics composition', () => {
+  const sha = 'a'.repeat(40), artifact = 'b'.repeat(64);
+  const fixture = () => {
+    const sources: Record<string, Record<string, unknown>> = {};
+    const dossier: TrialEconomicsDossier = {
+      schemaVersion: 'p544-economics-v1', sources: {}, selected: Object.fromEntries(TRIAL_MONTH_PROFILES.map(p => [p.id, 'gcp'])),
+      options: [], alternatives: {
+        backends: ['cloud-run', 'fargate', 'lambda', 'managed-db'].map(name => {
+          const limits = Object.fromEntries(['arbitraryCli', 'durableWritableData', 'longLivedSessions', 'extensions', 'isolation']
+            .map(k => [k, `fixture: ${name} ${k} requires a functional trial`]));
+          const sourceRef = `backend:${name}`;
+          sources[sourceRef] = { kind: 'backend-fit', name, limits, equivalence: 'not-established' };
+          return { name, limits, equivalence: 'not-established' as const, sourceRef };
+        }),
+        iac: { foundationScope: 'fixture: slow-changing foundation only', lifecycleWriter: 'fixture: existing durable lifecycle', sourceRef: 'iac' },
+      },
+    };
+    sources.iac = { kind: 'iac-fit', ...dossier.alternatives.iac };
+    for (const provider of ['gcp', 'aws']) {
+      const identity = { runId: provider, provider, profile: 'fixture-2cpu8g', projectOrAccount: 'fixture-project', zone: 'fixture-zone',
+        instanceId: `fixture-${provider}`, customerWorkspaceId: 'fixture-workspace', model: 'fixture-model', effort: 'low',
+        candidateSha: sha, artifactSha256: artifact };
+      const storage = [4, 8, 16].map(dbGiB => {
+        const economicalDiskRef = `${provider}:disk:${dbGiB}`;
+        const s = { dbGiB, purchasedGiB: dbGiB + 20, usedGiB: dbGiB, economicalDiskRef };
+        sources[economicalDiskRef] = { kind: 'purchased-storage', identity, ...s, sourceRef: 'fixture: provider inventory' };
+        return s;
+      });
+      const profiles = TRIAL_MONTH_PROFILES.map(p => {
+        const workload: TrialTaskMonthInput = { assignedAgents: 50, activeVmHours: p.activeVmHours,
+          strata: (['light', 'typical', 'heavy'] as const).map(profile => ({ id: profile, profile, cli: 'codex',
+            model: identity.model, effort: identity.effort, monthlyTasks: p.monthlyTasks * (profile === 'heavy' ? 0.2 : 0.4),
+            observedTasks: 1, completedTasks: 1, taskWallSeconds: 1, estimatedInferenceUsd: 0, billedInferenceUsd: 0,
+            sourceRef: 'fixture: native task record' })) };
+        const costs: TrialMonthlyCostInput['costs'] = {};
+        for (const category of TRIAL_COST_CATEGORIES) {
+          const prefix = `${provider}:${p.id}:${category}`;
+          const exposure = category === 'compute' ? p.activeVmHours : ['inference', 'network'].includes(category) ? p.monthlyTasks : 1;
+          const price = provider === 'gcp' ? 1 : 2;
+          sources[`${prefix}:usage`] = { kind: 'usage', identity, profileId: p.id, category, sourceRef: 'fixture: observed usage',
+            unit: 'fixture-unit', observedQuantityMicros: 1_000_000, observedExposureMicros: 1_000_000,
+            monthQuantityMicros: exposure * 1_000_000, provenance: 'observed-to-month',
+            projectionBasis: category === 'compute' ? 'active-hours' : ['inference', 'network'].includes(category) ? 'tasks' : 'retained-month',
+            windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
+          sources[`${prefix}:rate`] = { kind: 'rate', unit: 'fixture-unit', currency: 'USD', microsPerUnit: price,
+            creditsExcluded: true, sourceRef: 'fixture: provider effective rate' };
+          sources[`${prefix}:allocation`] = { kind: 'allocation', identity, profileId: p.id, category,
+            numerator: 1, denominator: 1, includesRetainedAndShared: true, sourceRef: 'fixture: allocation ledger' };
+          costs[category] = { amountMicros: exposure * price, currency: 'USD', basis: 'measured-usage',
+            usageRef: `${prefix}:usage`, rateRef: `${prefix}:rate`, allocationRef: `${prefix}:allocation` };
+        }
+        return { profileId: p.id, workload, costs };
+      });
+      dossier.options.push({ id: provider, identity, storage, profiles, warmFloor: 0, qualification: { directory: provider, dossier: `${provider}.json` } });
+    }
+    return { dossier, sources };
+  };
+  const grade = (f: ReturnType<typeof fixture>, native = (o: TrialEconomicsDossier['options'][number]) => ({ status: 'pass', identity: o.identity })) =>
+    trialEconomicsCoverage(f.dossier, sha, artifact, ref => { if (!f.sources[ref]) throw new Error('missing'); return f.sources[ref]; }, native);
+
+  it('composes both providers and four scenarios without claiming independent qualification', () => {
+    const result = grade(fixture());
+    expect(result).toMatchObject({ comparison: 'pass', trialCost: 'pass', qualification: 'independent-review-required', gaps: [] });
+    expect(result.selected).toHaveLength(4);
+    expect(result.selected.find(p => p.profileId === '240h')?.totalMicros).toBe(1203);
+  });
+  it.each(['qualification', 'candidate', 'provider', 'model', 'storage', 'population', 'zero-warm', 'selection', 'backend', 'iac'])(
+    'keeps %s evidence incomplete', kind => {
+      const f = fixture();
+      if (kind === 'candidate') f.dossier.options[0].identity.candidateSha = 'c'.repeat(40);
+      if (kind === 'provider') f.dossier.options[0].identity.provider = 'other';
+      if (kind === 'model') f.dossier.options[0].profiles[0].workload.strata[0].model = 'other';
+      if (kind === 'storage') f.dossier.options[0].storage.pop();
+      if (kind === 'population') f.dossier.options[0].profiles.pop();
+      if (kind === 'zero-warm') f.dossier.options[0].warmFloor = 1;
+      if (kind === 'selection') f.dossier.selected['60h'] = 'aws';
+      if (kind === 'backend') f.dossier.alternatives.backends.pop();
+      if (kind === 'iac') delete f.sources.iac;
+      const result = grade(f, o => ({ status: kind === 'qualification' ? 'unknown' : 'pass', identity: o.identity }));
+      expect(result.comparison).toBe('unknown');
+      expect(result.trialCost).toBe('unknown');
+    });
+  it.each(['missing', 'identity', 'projection', 'window', 'rate', 'allocation', 'amount', 'retained-basis'])(
+    'recomputes sources and rejects %s corruption', kind => {
+      const f = fixture(), prefix = 'gcp:60h:compute';
+      if (kind === 'missing') delete f.sources[`${prefix}:usage`];
+      if (kind === 'identity') f.sources[`${prefix}:usage`].identity = { runId: 'foreign' };
+      if (kind === 'projection') f.sources[`${prefix}:usage`].monthQuantityMicros = 0;
+      if (kind === 'window') f.sources[`${prefix}:usage`].windowEnd = 'invalid';
+      if (kind === 'rate') f.sources[`${prefix}:rate`].creditsExcluded = false;
+      if (kind === 'allocation') f.sources[`${prefix}:allocation`].numerator = 0;
+      if (kind === 'amount') f.dossier.options[0].profiles[1].costs.compute!.amountMicros = 0;
+      if (kind === 'retained-basis') f.sources['gcp:60h:retained-disks:usage'].projectionBasis = 'active-hours';
+      expect(grade(f).comparison).toBe('unknown');
+    });
+  it('preserves a valid comparison while the strict $20 trial gate fails at equality', () => {
+    const f = fixture();
+    for (const option of f.dossier.options) {
+      const others = TRIAL_COST_CATEGORIES.filter(c => c !== 'compute')
+        .reduce((sum, c) => sum + option.profiles[3].costs[c]!.amountMicros!, 0);
+      const amount = 20_000_000 - others;
+      option.profiles[3].costs.compute!.amountMicros = amount;
+      Object.assign(f.sources[`${option.id}:240h:compute:usage`], {
+        observedQuantityMicros: amount, observedExposureMicros: 240_000_000, monthQuantityMicros: amount });
+      f.sources[`${option.id}:240h:compute:rate`].microsPerUnit = 1_000_000;
+    }
+    const result = grade(f);
+    expect(result.comparison).toBe('pass');
+    expect(result.trialCost).toBe('fail');
+    expect(result.selected[3].totalMicros).toBe(20_000_000);
+  });
+  it('rehashes retained sources and invokes native qualification with independently pinned candidate arguments', () => {
+    const f = fixture(), root = mkdtempSync(join(tmpdir(), 'p544-economics-'));
+    const native = vi.mocked(childProcess.spawnSync);
+    native.mockClear();
+    try {
+      for (const [ref, source] of Object.entries(f.sources)) {
+        const bytes = Buffer.from(JSON.stringify(source)), name = `${Object.keys(f.dossier.sources).length}.json`;
+        writeFileSync(join(root, name), bytes);
+        f.dossier.sources[ref] = { path: name, sha256: createHash('sha256').update(bytes).digest('hex') };
+      }
+      const path = join(root, 'dossier.json');
+      writeFileSync(path, JSON.stringify(f.dossier));
+      const responses = () => {
+        for (const option of f.dossier.options) native.mockReturnValueOnce({ status: 0, signal: null, error: undefined,
+          stdout: JSON.stringify({ status: 'pass', identity: option.identity }), stderr: '', pid: 1, output: [] });
+      };
+      responses();
+      expect(readTrialEconomics(path, sha, artifact).comparison).toBe('pass');
+      expect(native.mock.calls[0][1]).toEqual(expect.arrayContaining(['--expected-sha', sha, '--expected-artifact-sha256', artifact]));
+      // Editing the source without its retained hash must invalidate the cost.
+      writeFileSync(join(root, f.dossier.sources['gcp:60h:compute:usage'].path), '{}');
+      responses();
+      expect(readTrialEconomics(path, sha, artifact)).toMatchObject({ comparison: 'unknown', trialCost: 'unknown' });
+    } finally { native.mockReset(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it('does not read a saved pass as retained native or cost evidence', () => {
+    expect(readTrialEconomics('/nonexistent/p544-economics.json', sha, artifact)).toMatchObject({
+      comparison: 'unknown', trialCost: 'unknown', qualification: 'independent-review-required' });
   });
 });
 

@@ -21,15 +21,19 @@ describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-on
 
   beforeAll(async () => {
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
-    // This acceptance route is intentionally local staging, with no deployment,
-    // worker dispatch, publication, permissions or scheduler mutation.
-    expect(profile.origin).toBe('http://127.0.0.1:3170');
-    expect(profile.runtimeUnits).toEqual(['hono-host:3170']);
+    // Both maintained read-only routes name the process actually serving the
+    // request. BG-host evidence must never inherit staging's runtime selector.
+    const runtimeByOrigin: Record<string, string> = {
+      'http://127.0.0.1:3170': 'hono-host:3170',
+      'http://127.0.0.1:3271': 'hono-host:3271',
+    };
+    expect(runtimeByOrigin[profile.origin], 'Unsupported live acceptance origin').toBeDefined();
+    expect(profile.runtimeUnits).toEqual([runtimeByOrigin[profile.origin]]);
     origin = profile.origin;
     const readRuntime = await prepareRuntimeReader();
     const witness = await readRuntime!();
     expect(witness, 'The actual execution runtime must be independently measurable').not.toBeNull();
-    expect(witness?.units).toEqual(['hono-host:3170']);
+    expect(witness?.units).toEqual(profile.runtimeUnits);
   });
 
   async function read(script: string, missingReportExpected = false) {

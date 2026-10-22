@@ -69,7 +69,7 @@ beforeEach(() => {
 });
 
 describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
-  it('memory:list maps neutral entries to {id, memory, metadata, score} rows', async () => {
+  it('memory:list maps neutral entries to stable wire rows with nullable outcome counts', async () => {
     const b = fakeBackend([
       { id: 'm1', text: 'prefers rust', kind: 'preference', scope: 'user-1', metadata: { kind: 'preference', a: 1 } },
       { id: 'm2', text: 'tz is ET', scope: 'user-1' },
@@ -79,8 +79,8 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
 
     expect(out.ok).toBe(true);
     expect(out.results).toEqual([
-      { id: 'm1', memory: 'prefers rust', metadata: { kind: 'preference', a: 1 } },
-      { id: 'm2', memory: 'tz is ET' },
+      { id: 'm1', memory: 'prefers rust', metadata: { kind: 'preference', a: 1 }, outcomeCounts: null },
+      { id: 'm2', memory: 'tz is ET', outcomeCounts: null },
     ]);
   });
 

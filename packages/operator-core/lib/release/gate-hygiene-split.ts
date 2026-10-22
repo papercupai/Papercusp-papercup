@@ -554,6 +554,18 @@ export type GateReplayBaselineTransition =
 
 export const GATE_REPLAY_BASELINE_TRANSITIONS: readonly GateReplayBaselineTransition[] = Object.freeze([
   {
+    decisionRef: 'green-main-cycle-time-2026-10-08#D-085',
+    reason: 'WI-6554700010018739 added targeted failure diagnostics; the recorded repair verdict, failures, execution coverage and inputs remain unchanged.',
+    fieldAddition: {
+      candidate: '4224bf7c89d8a1e492dd747cb5bd8272fb7046a3',
+      runId: '22fd4b4a-e5d8-4883-9aea-9f1b35324d28',
+      measuredAtMs: 1792583215816,
+      decisionIndex: 2,
+      decisionKind: 'repair-measurements',
+      fields: [{ path: ['failureTails'] }],
+    },
+  },
+  {
     decisionRef: 'green-main-cycle-time-2026-10-08#D-005',
     reason: 'P-014 added measured repair-leg output and round failure identities; preserve only pipeline_events row 695659 and its unchanged frozen-repair decision.',
     fieldAddition: {

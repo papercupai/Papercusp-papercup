@@ -73,6 +73,39 @@ describe('receipt-backed test source snapshots', () => {
     expect(gitProbe).not.toHaveBeenCalled();
   });
 
+  it.each(['sync', 'async'] as const)('qualifies the declared archive mutation at both %s reporter boundaries', async mode => {
+    const { root, receipt } = archive();
+    vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+    vi.stubEnv('PAPERCUSP_MUTATION_PROBE_SUBJECT', join(root, 'journey.ts'));
+    const capture = () => mode === 'sync' ? captureTestSourceSnapshot(root) : captureTestSourceSnapshotAsync(root);
+    const before = await capture();
+    writeFileSync(join(root, 'journey.ts'), 'export const task = "intentional mutant";\n');
+    const after = await capture();
+    expect(before).toEqual({ commit: receipt.sourceCommit, porcelain: '' });
+    expect(after).toEqual(before);
+    expect(computeWorktreeDirty(before, after)).toBe(false);
+    expect(gitProbe).not.toHaveBeenCalled();
+    expect(asyncGit).not.toHaveBeenCalled();
+  });
+
+  it.each(['inactive-probe', 'relative-subject', 'outside-subject', 'extra-source'])(
+    'refuses archive mutation provenance with %s through both reporter entry points', async failure => {
+      const { root } = archive();
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE', failure === 'inactive-probe' ? '' : '1');
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE_SUBJECT', failure === 'relative-subject' ? 'journey.ts'
+        : failure === 'outside-subject' ? join(root, '..', 'journey.ts') : join(root, 'journey.ts'));
+      writeFileSync(join(root, 'journey.ts'), 'export const task = "mutant";\n');
+      if (failure === 'extra-source') writeFileSync(join(root, 'unrecorded.ts'), 'unrelated change');
+      const before = captureTestSourceSnapshot(root);
+      const after = await captureTestSourceSnapshotAsync(root);
+      for (const snapshot of [before, after]) expect(snapshot).toMatchObject({ commit: null, porcelain: null,
+        provenanceError: expect.stringContaining('tampered verification source archive') });
+      expect(computeWorktreeDirty(before, after)).toBe(true);
+      expect(gitProbe).not.toHaveBeenCalled();
+      expect(asyncGit).not.toHaveBeenCalled();
+    },
+  );
+
   it('refuses missing independent receipts and receipts placed inside the source archive', () => {
     const { root, external } = archive();
     vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', '');

@@ -26,6 +26,10 @@ vi.mock('./adv-sessions', async (orig) => ({ ...(await orig<typeof import('./adv
   advSessionsByTranscriptHandles: vi.fn(async ({ sessionIds }: { sessionIds?: string[] }) => {
     const id = sessionIds?.[0];
     if (id === 'ffffffff-0000-0000-0000-000000000000') return [];
+    if (id === '44444444-0000-0000-0000-000000000000') {
+      return [{ id: 42, agent: 'codex', coordOwnerId: 'su-codex-1', cwd: process.cwd(),
+        launchArgv: ['psu', '--account=auto'] }];
+    }
     const launchArgv = id === '11111111-0000-0000-0000-000000000000'
       ? ['psu', '--account=auto']
       : id === '22222222-0000-0000-0000-000000000000'
@@ -37,6 +41,7 @@ vi.mock('./adv-sessions', async (orig) => ({ ...(await orig<typeof import('./adv
   }),
 }));
 vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({
+  codexHomeForSessionKey: (sessionKey: string | number) => `/tmp/su-codex-homes/session-${sessionKey}`,
   sessionClaudeConfigDir: (owner: string) => `/tmp/session-claude/${owner}`,
 }));
 vi.mock('./session-archive', () => ({
@@ -102,6 +107,15 @@ describe('buildConsoleEnvelope resume launch-context (WI-3988/WI-3989)', () => {
     expect(env.env.PAPERCUSP_ACCOUNT_ID).toBe('acct-source');
     expect(env.greetingCmd).toContain('--account=acct-source');
     expect(env.greetingCmd).toContain('--fork');
+  });
+
+  it('resumes tracked Codex from its isolated home and preserves the gateway route', async () => {
+    const id = '44444444-0000-0000-0000-000000000000';
+    const env = await buildConsoleEnvelope({ ...BASE, resumeSessionId: id });
+    expect(env.env.CODEX_HOME).toBe('/tmp/su-codex-homes/session-42');
+    expect(env.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    expect(env.env.PAPERCUSP_CODEX_GATEWAY).toBe('1');
+    expect(env.greetingCmd).toContain(`exec codex -r ${id}`);
   });
 
   it('rejects an unsafe recorded account before embedding it in the resume command', async () => {

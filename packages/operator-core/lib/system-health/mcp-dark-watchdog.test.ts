@@ -431,15 +431,17 @@ describe('headlessMcpRecoveryWakeText', () => {
     }
   });
 
-  it('gives headless owners psu-resume guidance and headed owners the in-place /mcp action', () => {
+  it('gives headless owners psu-resume guidance and headed owners a capability-aware fallback', () => {
     const headless = interactiveDarkRecoveryInstructions('headless', 'no-cap');
     expect(headless).toContain('no interactive /mcp dialog');
     expect(headless).toContain('psu --resume <session-id>');
     expect(headless).toContain('Do not start a second CLI');
 
     const headed = interactiveDarkRecoveryInstructions('headed', 'no-cap');
-    expect(headed).toContain('type /mcp in that session\'s terminal');
-    expect(headed).not.toContain('carry-respawn');
+    expect(headed).toContain('scripts/mcp-reconnect.mjs');
+    expect(headed).toContain('carry-respawn command');
+    expect(headed).toContain('keeps this terminal open');
+    expect(headed).not.toContain('type /mcp');
   });
 });
 
@@ -533,7 +535,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  it('uses carry-respawn only for headless hosts and keeps headed sessions on /mcp', async () => {
+  it('uses forced /mcp only for capable headed hosts and carry-respawns headless hosts', async () => {
     const headedOwner = 'su-headed-dark';
     const headlessOwner = 'su-headless-dark';
     const dir = mkdtempSync(join(tmpdir(), 'mcp-dark-watchdog-headless-dispatch-'));
@@ -552,7 +554,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         startedAt: INOW - 60 * M,
         lastActivityAt: INOW - 1 * M,
         bridgeTty: true,
-        caps: ['mcp-reconnect', 'carry-respawn'],
+        caps: ['mcp-reconnect', 'mcp-reconnect-force', 'carry-respawn'],
         sock: '/tmp/headed-dark.sock',
       },
       {
@@ -570,7 +572,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       const out = await checkInteractiveMcpDark(tag, {
         jitterMaxMs: 0,
         sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
-        buildHeadlessRecoverySpec: async () => ({ firstPrompt: null, systemPromptAddendum: 'deterministic carry' }),
+        buildRecoverySpec: async () => ({ firstPrompt: null, systemPromptAddendum: 'deterministic carry' }),
       });
 
       expect(out.healSent).toEqual(expect.arrayContaining([headedOwner, headlessOwner]));
@@ -602,9 +604,67 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     }
   });
 
+  it('carry-respawns a headed legacy host that cannot honor force reconnect', async () => {
+    const owner = 'su-headed-legacy-dark';
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-dark-watchdog-headed-legacy-'));
+    const previousProvenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    process.env.PAPERCUSP_TURN_PROVENANCE_DIR = dir;
+    const { tag } = fakeSql({
+      openPhases: [],
+      presenceByOwner: { [owner]: INOW - 45 * M },
+    });
+    listLiveHostsMock.mockReturnValue([
+      {
+        ownerId: owner,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+        bridgeTty: true,
+        caps: ['mcp-reconnect', 'carry-respawn'],
+        sock: '/tmp/headed-legacy-dark.sock',
+      },
+    ]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+    try {
+      const out = await checkInteractiveMcpDark(tag, {
+        jitterMaxMs: 0,
+        sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+        buildRecoverySpec: async () => ({ firstPrompt: null, systemPromptAddendum: 'deterministic carry' }),
+      });
+
+      expect(out.healSent).toContain(owner);
+      expect(out.notified).not.toContain(owner);
+      expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
+      expect(injectIntoHostMock).toHaveBeenCalledTimes(1);
+      const [sock, message] = injectIntoHostMock.mock.calls[0];
+      expect(sock).toBe('/tmp/headed-legacy-dark.sock');
+      expect(message).toMatchObject({
+        mode: 'carry-respawn',
+        ownerId: owner,
+        systemPromptAddendum: 'deterministic carry',
+      });
+      const parsed = parseEnvelope(message.data);
+      expect(parsed?.origin).toBe('watchdog');
+      expect(parsed?.payload).toContain('headed session ' + owner);
+      expect(parsed?.payload).toContain('kept the terminal open');
+
+      const ledger = readFileSync(join(dir, owner + '.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { sid: string; nonce: string; origin: string });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]).toMatchObject({ sid: owner, nonce: parsed?.nonce, origin: 'watchdog' });
+    } finally {
+      vi.useRealTimers();
+      if (previousProvenanceDir == null) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+      else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = previousProvenanceDir;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not alarm or carry-respawn a fresh headless session with no MCP calls', async () => {
     const owner = 'su-fresh-headless-no-mcp';
-    const buildHeadlessRecoverySpec = vi.fn(async () => ({ firstPrompt: null, systemPromptAddendum: 'carry' }));
+    const buildRecoverySpec = vi.fn(async () => ({ firstPrompt: null, systemPromptAddendum: 'carry' }));
     const { tag } = fakeSql({
       openPhases: [],
       // No coord_presence row means the session has not proven it ever used
@@ -631,12 +691,12 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       const out = await checkInteractiveMcpDark(tag, {
         jitterMaxMs: 0,
         sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
-        buildHeadlessRecoverySpec,
+        buildRecoverySpec,
       });
 
       expect(out.darkOwners).toEqual([]);
       expect(out.healSent).toEqual([]);
-      expect(buildHeadlessRecoverySpec).not.toHaveBeenCalled();
+      expect(buildRecoverySpec).not.toHaveBeenCalled();
       expect(injectIntoHostMock).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -746,7 +806,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         startedAt: INOW - 60 * M,
         lastActivityAt: INOW - 1 * M,
         bridgeTty: true,
-        caps: ['mcp-reconnect'],
+        caps: ['mcp-reconnect', 'mcp-reconnect-force'],
         sock: '/tmp/toolless-turns.sock',
       },
     ]);
@@ -800,6 +860,8 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         ownerId,
         startedAt: INOW - 60 * M,
         lastActivityAt: INOW - 1 * M,
+        bridgeTty: true,
+        caps: ['mcp-reconnect', 'mcp-reconnect-force'],
       })),
     );
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -853,7 +915,13 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     // the shared window drains; a fixed timestamp would age past the 10m PTY
     // freshness gate while virtual time advances.
     listLiveHostsMock.mockImplementation(() =>
-      owners.map((ownerId) => ({ ownerId, startedAt: INOW - 60 * M, lastActivityAt: Date.now() - 1 * M })),
+      owners.map((ownerId) => ({
+        ownerId,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: Date.now() - 1 * M,
+        bridgeTty: true,
+        caps: ['mcp-reconnect', 'mcp-reconnect-force'],
+      })),
     );
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
@@ -889,7 +957,13 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       presenceByOwner: Object.fromEntries(owners.map((owner) => [owner, INOW - 45 * M])),
     });
     listLiveHostsMock.mockReturnValue(
-      owners.map((ownerId) => ({ ownerId, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M })),
+      owners.map((ownerId) => ({
+        ownerId,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+        bridgeTty: true,
+        caps: ['mcp-reconnect', 'mcp-reconnect-force'],
+      })),
     );
     mcpReconnectViaPtyMock.mockClear();
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });

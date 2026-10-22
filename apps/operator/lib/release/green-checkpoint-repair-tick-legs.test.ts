@@ -21,12 +21,18 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createFrozenCandidateQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import {
+  createFrozenCandidateQueue,
+  createFrozenCandidateRepairQueue,
+  frozenRepairRoundExecution,
+  selectFrozenRepairAdmissionPaths,
+} from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import {
   augmentWithRepairTickLegs,
   checkNpmScript,
   DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
   FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS,
+  interpretRepairHeadMeasurements,
   isTransientSetupLockContention,
   measureRepairTickLegs,
   NON_TEST_GATE_SCRIPTS,
@@ -38,11 +44,13 @@ import {
   REPAIR_TICK_LEGS_MIN_WINDOW_MS,
   REPAIR_TICK_LEGS_TAIL_RESERVE_MS,
   REPAIR_TICK_SETUP_LOCK_MAX_RETRIES,
+  repairFailureTailMeasurements,
   repairTickLegFailureTails,
   repairTickLegsDeadline,
   type CheckpointDeps,
   type CheckpointResult,
   type RepairTickLegs,
+  type TargetedGateResult,
 } from "./green-checkpoint";
 
 /** The git fatal observed in the 2026-09-21T17:23Z papercusp gate log — a live writer
@@ -452,6 +460,95 @@ describe("repairTickLegFailureTails", () => {
     expect(repairTickLegFailureTails(measuredAtHead, HEAD.slice(0, 12)).size).toBe(2);
   });
 
+  it("merges targeted and round-one tails only at the routed head; the hold-tick result wins ties", () => {
+    const additional = [
+      {
+        head: HEAD,
+        legs: [
+          { id: "lint:condition-rail", status: "fail", outputTail: "older targeted tail" },
+          { id: "lint:round-one", status: "failed", outputTail: "round-one tail" },
+          { id: "lint:targeted", status: "errored", outputTail: "targeted tail" },
+          { id: "lint:passed", status: "pass", outputTail: "must be ignored" },
+        ],
+      },
+      {
+        head: OTHER,
+        legs: [{ id: "lint:stale", status: "fail", outputTail: "must be ignored" }],
+      },
+    ];
+    expect(repairTickLegFailureTails(measuredAtHead, HEAD, additional)).toEqual(
+      new Map([
+        ["lint:condition-rail", "sqlstate=28P01"],
+        ["lint:round-one", "round-one tail"],
+        ["lint:targeted", "targeted tail"],
+        ["lint:tsc", "spawn failed"],
+      ]),
+    );
+  });
+
+  it("extracts bounded round-one output and targeted tails with their measured heads", () => {
+    expect(repairFailureTailMeasurements({
+      redLegsAtR1: { candidate: HEAD },
+      postSuiteLegs: [{
+        id: "lint:round-one",
+        status: "failed",
+        executionIdentity: { result: { output: "round-one output, capped by its writer" } },
+      }],
+      repairVerificationHead: HEAD,
+      repairVerificationFailureTails: { "lint:targeted": "targeted output" },
+    })).toEqual([
+      {
+        head: HEAD,
+        legs: [{
+          id: "lint:round-one",
+          status: "failed",
+          outputTail: "round-one output, capped by its writer",
+        }],
+      },
+      {
+        head: HEAD,
+        legs: [{ id: "lint:targeted", status: "fail", outputTail: "targeted output" }],
+      },
+    ]);
+  });
+
+  it("keeps validated targeted gate output tails on the red verification result", () => {
+    const id = "lint:condition-rail";
+    const queue = createFrozenCandidateRepairQueue({
+      candidate: HEAD,
+      base: null,
+      failingTests: [id],
+      nowMs: 1_000,
+    });
+    const gateRun: TargetedGateResult = {
+      pass: false,
+      summary: "one targeted lint failed",
+      measuredHead: queue.repairHead,
+      coverageComplete: true,
+      perGate: [{ id, status: "fail", outputTail: "targeted lint failure details" }],
+    };
+    const verification = interpretRepairHeadMeasurements({
+      queue,
+      fileList: [],
+      gateList: [id],
+      fileRun: undefined,
+      gateRun,
+      selection: selectFrozenRepairAdmissionPaths(queue),
+      radiusCoverageComplete: true,
+      radiusNote: "no admitted paths",
+      executed: frozenRepairRoundExecution({
+        mode: "targeted",
+        fileKeys: [],
+        gateIds: [id],
+        radiusMode: "cumulative",
+      }),
+    });
+    expect(verification.kind).toBe("red");
+    if (verification.kind === "red") {
+      expect(verification.failureTails).toEqual({ [id]: "targeted lint failure details" });
+    }
+  });
+
   it("carries nothing from a measurement taken at a different head", () => {
     const other = HEAD === "f".repeat(40) ? "e".repeat(40) : "f".repeat(40);
     expect(repairTickLegFailureTails(measuredAtHead, other).size).toBe(0);
@@ -466,9 +563,12 @@ describe("repairTickLegFailureTails", () => {
     const source = readFileSync(new URL("./green-checkpoint.ts", import.meta.url), "utf8");
     const run = source.slice(source.indexOf("export async function runGreenCheckpoint"));
     const route = run.slice(run.indexOf("routeLegs({"));
-    expect(route.slice(0, 400)).toMatch(
-      /failureTails: repairTickLegFailureTails\(\s*finalResult\.repairTickLegs,\s*queueForRouting\?\.repairHead,?\s*\)/,
+    expect(route.slice(0, 600)).toMatch(
+      /failureTails: repairTickLegFailureTails\(\s*finalResult\.repairTickLegs,\s*queueForRouting\?\.repairHead,\s*failureTailMeasurements,?\s*\)/,
     );
+    expect(run).toContain("const failureTailMeasurements = repairFailureTailMeasurements(finalResult);");
+    expect(source).toContain("repairVerificationFailureTails");
+    expect(source).toContain("outputTail: leg.executionIdentity?.result?.output");
   });
 });
 

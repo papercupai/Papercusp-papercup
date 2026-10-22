@@ -24,6 +24,10 @@
  *                                  only with near-perfect packing, so it is a lower bound
  */
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { costFromTokens, PRICE_TABLE_VERSION, USAGE_LEDGER_PRICING, type TokenUsage } from '@papercusp/model-pricing';
 import { hourlyPriceUsd, parseMachineType, SPOT_PRICES_2026_10_01 } from './gcp-rails';
 import { decodeChunk, type RecordedExchange } from './record-proxy';
@@ -806,12 +810,202 @@ export function renderMarkdown(rows: Row[], month: CostReportMonth = {}): string
   return out.join('\n');
 }
 
+type TrialEvidenceRef = { path: string; sha256: string };
+type TrialNativeIdentity = Record<string, string>;
+export interface TrialEconomicOption {
+  id: string;
+  identity: TrialNativeIdentity;
+  warmFloor: number;
+  qualification: { directory: string; dossier: string };
+  profiles: TrialMonthlyCostInput[];
+  /** Purchased capacity, not sparse-file bytes. The supported DB ladder is explicit. */
+  storage: { dbGiB: number; purchasedGiB: number; usedGiB: number; economicalDiskRef: string }[];
+}
+export interface TrialEconomicsDossier {
+  schemaVersion: 'p544-economics-v1';
+  options: TrialEconomicOption[];
+  /** Cost usage/rate/allocation refs resolve to these hashed, retained JSON sources. */
+  sources: Record<string, TrialEvidenceRef>;
+  selected: Record<string, string>;
+  alternatives: {
+    backends: { name: string; limits: Record<string, string>; sourceRef: string;
+      equivalence: 'not-established' | 'trial-backed'; trialRef?: string }[];
+    iac: { foundationScope: string; lifecycleWriter: string; sourceRef: string };
+  };
+}
+
+/** R-14/R-16 evidence consistency, never provider/billing authenticity or acceptance.
+ * The CLI supplies readers that hash retained sources and re-execute the native
+ * qualification detector. Pure fixture calls cannot qualify an actual VM.
+ */
+export function trialEconomicsCoverage(dossier: TrialEconomicsDossier, expectedSha: string, expectedArtifact: string,
+  readSource: (ref: string) => Record<string, unknown>,
+  qualify: (option: TrialEconomicOption) => { status: string; identity?: TrialNativeIdentity | null }) {
+  const gaps: string[] = [];
+  const integer = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+  const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  const sameIdentity = (a: unknown, b: TrialNativeIdentity) => object(a) &&
+    Object.keys(a).length === Object.keys(b).length && Object.entries(b).every(([k, v]) => a[k] === v);
+  if (!/^[a-f0-9]{40}$/.test(expectedSha) || !/^[a-f0-9]{64}$/.test(expectedArtifact)
+    || !dossier || dossier.schemaVersion !== 'p544-economics-v1' || !Array.isArray(dossier.options)
+    || !dossier.options.length || dossier.options.length > 16) throw new Error('invalid economics identity/population');
+  const ids = new Set<string>();
+  const options = dossier.options.map(option => {
+    if (!option || !text(option.id) || ids.has(option.id)) throw new Error('duplicate/invalid economic option');
+    ids.add(option.id);
+    const local: string[] = [];
+    const identity = option.identity;
+    if (!object(identity) || !['gcp', 'aws'].includes(identity.provider) ||
+      !['runId', 'profile', 'projectOrAccount', 'zone', 'instanceId', 'customerWorkspaceId', 'model', 'effort'].every(k => text(identity[k])) ||
+      identity.candidateSha !== expectedSha || identity.artifactSha256 !== expectedArtifact ||
+      !integer(option.warmFloor)) local.push('admitted-option-identity');
+    const native = qualify(option);
+    if (native.status !== 'pass' || !sameIdentity(native.identity, identity)) local.push('native-qualification');
+    if (!Array.isArray(option.storage) || option.storage.length !== 3 ||
+      [4, 8, 16].some(dbGiB => option.storage.filter(s => s.dbGiB === dbGiB).length !== 1) ||
+      option.storage.some(s => !integer(s.purchasedGiB) || !integer(s.usedGiB) || s.usedGiB > s.purchasedGiB ||
+        s.purchasedGiB < s.dbGiB || !text(s.economicalDiskRef))) local.push('purchased-storage-ladder');
+    for (const storage of option.storage ?? []) {
+      try {
+        const source = readSource(storage.economicalDiskRef);
+        if (source.kind !== 'purchased-storage' || !sameIdentity(source.identity, identity) ||
+          !text(source.sourceRef) || ['dbGiB', 'purchasedGiB', 'usedGiB'].some(k =>
+            source[k] !== storage[k as 'dbGiB' | 'purchasedGiB' | 'usedGiB'])) local.push('storage-source');
+      } catch { local.push('storage-source'); }
+    }
+    const coverage = trialMonthlyCostCoverage(option.profiles);
+    for (const profile of option.profiles) {
+      const duty = TRIAL_MONTH_PROFILES.find(p => p.id === profile.profileId)!;
+      if (profile.workload.strata.some(s => s.model !== identity.model || s.effort !== identity.effort)) local.push('workload-model-effort');
+      // Full source amounts are recomputed. An inline passing cost summary is insufficient.
+      for (const category of TRIAL_COST_CATEGORIES) {
+        const cost = profile.costs[category];
+        const label = `${profile.profileId}:${category}`;
+        if (!cost?.usageRef || !cost.rateRef || !cost.allocationRef) { local.push(`${label}:sources`); continue; }
+        try {
+          const usage = readSource(cost.usageRef), rate = readSource(cost.rateRef), allocation = readSource(cost.allocationRef);
+          if (usage.kind !== 'usage' || !sameIdentity(usage.identity, identity) || usage.profileId !== profile.profileId ||
+            usage.category !== category || !text(usage.sourceRef) || !text(usage.unit) ||
+            !integer(usage.observedQuantityMicros) || usage.observedQuantityMicros === 0 ||
+            !integer(usage.monthQuantityMicros) || usage.provenance !== 'observed-to-month' ||
+            !integer(usage.observedExposureMicros) || usage.observedExposureMicros === 0 ||
+            !['active-hours', 'tasks', 'retained-month'].includes(String(usage.projectionBasis)) ||
+            !text(usage.windowStart) || !text(usage.windowEnd) ||
+            !Number.isFinite(Date.parse(usage.windowStart)) || Date.parse(usage.windowEnd) <= Date.parse(usage.windowStart) ||
+            !Number.isFinite(Date.parse(usage.windowEnd)) ||
+            rate.kind !== 'rate' || rate.unit !== usage.unit || rate.currency !== 'USD' || !text(rate.sourceRef) ||
+            !integer(rate.microsPerUnit) || rate.creditsExcluded !== true ||
+            allocation.kind !== 'allocation' || !sameIdentity(allocation.identity, identity) ||
+            allocation.profileId !== profile.profileId || allocation.category !== category || !text(allocation.sourceRef) ||
+            !integer(allocation.numerator) || !integer(allocation.denominator) || allocation.denominator === 0 ||
+            allocation.numerator === 0 || allocation.numerator > allocation.denominator || allocation.includesRetainedAndShared !== true) {
+            local.push(`${label}:source-contract`); continue;
+          }
+          const requiredBasis = category === 'compute' ? 'active-hours' : category === 'inference' ? 'tasks'
+            : ['retained-disks', 'backups', 'control-plane'].includes(category) ? 'retained-month' : null;
+          if (requiredBasis !== null && usage.projectionBasis !== requiredBasis) { local.push(`${label}:projection-basis`); continue; }
+          const exposure = usage.projectionBasis === 'active-hours' ? duty.activeVmHours + 730 * option.warmFloor
+            : usage.projectionBasis === 'tasks' ? duty.monthlyTasks : 1;
+          if (!Number.isSafeInteger(exposure)) { local.push(`${label}:projection-overflow`); continue; }
+          const projected = (BigInt(usage.observedQuantityMicros) * BigInt(exposure) * 1_000_000n
+            + BigInt(usage.observedExposureMicros) - 1n) / BigInt(usage.observedExposureMicros);
+          if (projected !== BigInt(usage.monthQuantityMicros)) { local.push(`${label}:usage-projection`); continue; }
+          const numerator = BigInt(usage.monthQuantityMicros) * BigInt(rate.microsPerUnit) * BigInt(allocation.numerator);
+          const denominator = 1_000_000n * BigInt(allocation.denominator);
+          const amount = (numerator + denominator - 1n) / denominator;
+          if (amount > BigInt(Number.MAX_SAFE_INTEGER) || Number(amount) !== cost.amountMicros) local.push(`${label}:arithmetic`);
+        } catch { local.push(`${label}:unreadable-source`); }
+      }
+    }
+    if (coverage.profiles.some(p => p.gaps.length)) local.push('monthly-cost-coverage');
+    for (const gap of local) gaps.push(`${option.id}:${gap}`);
+    return { id: option.id, provider: identity?.provider, warmFloor: option.warmFloor, coverage, gaps: local };
+  });
+  // Both providers must have a measured zero-warm-floor alternative; a missing
+  // competitor cannot make the available option the economic winner.
+  for (const provider of ['gcp', 'aws']) {
+    if (!options.some(o => o.provider === provider && o.warmFloor === 0)) gaps.push(`${provider}:zero-warm-floor`);
+  }
+  if (!object(dossier.selected) || Object.keys(dossier.selected).length !== TRIAL_MONTH_PROFILES.length) gaps.push('selection-population');
+  const selected = TRIAL_MONTH_PROFILES.map(profile => {
+    const option = options.find(o => o.id === dossier.selected?.[profile.id]);
+    const cost = option?.coverage.profiles.find(p => p.id === profile.id);
+    const all = options.map(o => o.coverage.profiles.find(p => p.id === profile.id)?.totalMicros);
+    if (!option || !cost || all.some(c => c === null || c === undefined) ||
+      (cost.totalMicros !== null && all.some(c => c! < cost.totalMicros!))) gaps.push(`${profile.id}:economic-selection`);
+    return { profileId: profile.id, optionId: option?.id ?? null, totalMicros: cost?.totalMicros ?? null,
+      underLimit: cost?.status === 'under-limit' };
+  });
+  const alternatives = dossier.alternatives;
+  const limits = ['arbitraryCli', 'durableWritableData', 'longLivedSessions', 'extensions', 'isolation'];
+  const backendNames = ['cloud-run', 'fargate', 'lambda', 'managed-db'];
+  if (!alternatives || !Array.isArray(alternatives.backends) || alternatives.backends.length !== backendNames.length ||
+    backendNames.some(name => alternatives.backends.filter(b => b.name === name).length !== 1) ||
+    alternatives.backends.some(b => !text(b.sourceRef) || !object(b.limits) || limits.some(k => !text(b.limits[k])) ||
+      b.equivalence !== 'not-established') ||
+    !alternatives.iac || !text(alternatives.iac.foundationScope) || !text(alternatives.iac.lifecycleWriter) ||
+    !text(alternatives.iac.sourceRef)) gaps.push('backend-and-iac-fit');
+  for (const backend of alternatives?.backends ?? []) {
+    try {
+      const source = readSource(backend.sourceRef);
+      const observedLimits = source.limits;
+      if (source.kind !== 'backend-fit' || source.name !== backend.name || source.equivalence !== 'not-established' ||
+        !object(observedLimits) || limits.some(k => observedLimits[k] !== backend.limits[k])) gaps.push('backend-source');
+    } catch { gaps.push('backend-source'); }
+  }
+  if (alternatives?.iac) {
+    try {
+      const source = readSource(alternatives.iac.sourceRef);
+      if (source.kind !== 'iac-fit' || source.foundationScope !== alternatives.iac.foundationScope ||
+        source.lifecycleWriter !== alternatives.iac.lifecycleWriter) gaps.push('iac-source');
+    } catch { gaps.push('iac-source'); }
+  }
+  const comparison = gaps.length ? 'unknown' as const : 'pass' as const;
+  return { scope: 'P544-composite-economics' as const, qualification: 'independent-review-required' as const,
+    comparison, trialCost: comparison === 'unknown' ? 'unknown' as const
+      : selected.every(p => p.underLimit) ? 'pass' as const : 'fail' as const,
+    gaps: [...new Set(gaps)].sort(), selected, options };
+}
+
+/** Read-only route used by the CLI: retained bytes and native measurements, not saved verdicts. */
+export function readTrialEconomics(path: string, expectedSha: string, expectedArtifact: string) {
+  const root = dirname(resolve(path));
+  try {
+    const dossier: TrialEconomicsDossier = JSON.parse(readFileSync(path, 'utf8'));
+    return trialEconomicsCoverage(dossier, expectedSha, expectedArtifact, ref => {
+      const source = dossier.sources[ref];
+      if (!source || !/^[a-f0-9]{64}$/.test(source.sha256) || !source.path) throw new Error('missing hashed source');
+      const bytes = readFileSync(resolve(root, source.path));
+      if (createHash('sha256').update(bytes).digest('hex') !== source.sha256) throw new Error('source hash mismatch');
+      return JSON.parse(bytes.toString('utf8'));
+    }, option => {
+      const result = spawnSync('python3', [join(dirname(fileURLToPath(import.meta.url)), 'vm/swap-tier.py'),
+        'evaluate-workload', '--out', resolve(root, option.qualification.directory),
+        '--qualification', resolve(root, option.qualification.dossier), '--expected-sha', expectedSha,
+        '--expected-artifact-sha256', expectedArtifact], { encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+      if (result.error || result.signal || result.status !== 0) return { status: 'unknown' };
+      return JSON.parse(result.stdout);
+    });
+  } catch {
+    return { scope: 'P544-composite-economics' as const, qualification: 'independent-review-required' as const,
+      comparison: 'unknown' as const, trialCost: 'unknown' as const,
+      gaps: ['unreadable-or-invalid-economics-evidence'], selected: [], options: [] };
+  }
+}
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
 if (process.argv[1] && /cost-model\.ts$/.test(process.argv[1])) {
+  const evidence = arg('qualification-economics');
+  if (evidence !== undefined) {
+    const result = readTrialEconomics(evidence, arg('expected-sha') ?? '', arg('expected-artifact-sha256') ?? '');
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(result.comparison === 'unknown' || result.trialCost === 'unknown' ? 2 : result.trialCost === 'fail' ? 1 : 0);
+  }
   const agents = Number(arg('agents') ?? TARGET.agents);
   const savedArg = arg('p532-saved-gib');
   const rows = buildRows(agents, savedArg === undefined ? null : Number(savedArg));

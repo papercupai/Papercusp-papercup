@@ -3526,6 +3526,7 @@ async function completeOne(
   it: CompleteItem,
   ident: { ownerId: string; ownerLabel?: string; adoptedName?: string | null },
   ctx: UnifiedToolContext,
+  recoveredAttempt?: import('../../blueprint/operation-service').DeferredOperationCompletionFence & { invocationId: string },
 ): Promise<BulkItemResult> {
   // EI-20724228359175431: pull the truncation marker off BEFORE anything downstream
   // sees it (rendering, evidence extraction, the broadcast record). It is purely an
@@ -3559,6 +3560,9 @@ async function completeOne(
   if (nulBytesStripped) it.completion = sanitizedCompletion;
 
   const existing = await getWorkItem(it.id, it.harness);
+  if (existing && recoveredAttempt) {
+    (await import('../../blueprint/operation-service')).assertDeferredOperationCompletionFence(recoveredAttempt, existing);
+  }
   if (!existing) {
     // EI-26068584723658382: a model copied a shortened WI id from its live context and
     // received only `not found`, even though the exact item was still held by that same
@@ -5387,6 +5391,8 @@ async function completeOne(
   // the commitment (the item stays claimable) without costing the caller the
   // write-up. `set_state` has no narrative to lose, so it throws.
   let resolvedAssumptions: StoredAssumptionDeclaration | undefined;
+  let deferredCompletion: { eventId: string; deadlineAt: number } | undefined;
+  let retainPendingModelEvidence = false;
   let assumptionsError: string | undefined;
   if (it.assumptions !== undefined) {
     try {
@@ -5486,6 +5492,7 @@ async function completeOne(
           // call's return value.
           completionEvidence: completionEvidenceToPersist,
           outputPayload: it.outputPayload,
+          ...(recoveredAttempt ? { deferredOperationCompletion: recoveredAttempt } : {}),
           // P-008 (d): the resolved declaration, persisted under
           // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
           assumptions: resolvedAssumptions,
@@ -5502,6 +5509,10 @@ async function completeOne(
       appliedState = res.appliedState;
     } catch (e) {
       stateError = e instanceof Error ? e.message : String(e);
+      const operationCompletion = await import('../../blueprint/operation-service');
+      if (e instanceof operationCompletion.OperationModelEvidenceError && e.pending) {
+        retainPendingModelEvidence = true;
+      }
       if (closeIntentRequested && isPlanGateRejection(stateError)) {
         try {
           const releaseContract = await buildDurableParkReleaseContract(
@@ -6059,8 +6070,28 @@ async function completeOne(
   // the emitted reaction event. Best-effort (mergeWorkItemOutputPayload never
   // throws): a payload-persist failure must never turn an already-recorded
   // completion into a failed one.
-  if (it.outputPayload !== undefined) {
+  if (it.outputPayload !== undefined && !retainPendingModelEvidence) {
     await mergeWorkItemOutputPayload(it.id, it.outputPayload, { harness: it.harness });
+  }
+  if (retainPendingModelEvidence) {
+    try {
+      // Keep the pending output on the immutable event. A failed close must
+      // neither mutate payload.out nor refresh the item attempt stamp.
+      const current = await getWorkItem(it.id, it.harness);
+      if (!current || current.assignee !== ident.ownerId) throw new Error('completion claim changed');
+      const service = await import('../../blueprint/operation-service');
+      service.assertDeferredOperationCompletionFence({ ownerId: ident.ownerId,
+        updatedAt: existing.updatedAt, takenAt: existing.takenAt,
+        payloadSnapshot: existing.payload as Record<string, unknown>, deadlineAt: Date.now() + 30 * 60_000 }, current);
+      deferredCompletion = await service.retainDeferredOperationCompletion(getOrgPg().sql, {
+        item: current, ctx, state: effectiveState!, output: it.outputPayload,
+        completionEvidence: completionEvidenceToPersist, completionAuthority,
+        assumptions: resolvedAssumptions,
+        sourceInvocationId: recoveredAttempt?.invocationId,
+      });
+    } catch (retentionError) {
+      stateError += `; deferred completion not retained: ${retentionError instanceof Error ? retentionError.message : String(retentionError)}`;
+    }
   }
 
   // Reflect-and-capture STEP at the completion boundary (self-learning-central P-001/B).
@@ -6214,6 +6245,8 @@ async function completeOne(
     id: it.id,
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     ...(stateError ? { stateError } : {}),
+    ...(deferredCompletion ? { deferredCompletion: { ...deferredCompletion, state: 'pending',
+      advice: 'The authenticated attempt is retained. Transcript ingestion will retry strict canonical settlement; do not retry the worker, publish or notify again.' } } : {}),
     ...(boundaryNoteEligible ? { boundaryNotePosted, ...(boundaryNoteError ? { boundaryNoteError } : {}) } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     ...(planGateParkWarning ? { planGateParkWarning } : {}),
@@ -6774,5 +6807,82 @@ const workItemsCompleteTool = defineTool({
   },
 });
 
+
+/** Internal recovery accepts ONLY a durable invocation id. The caller cannot
+ * supply an actor, output or completion. Re-adjudicate the original arguments
+ * through completeOne; preserve the current applied-worker and SQL attempt
+ * fences. This is replay of an authenticated request, not a new worker action. */
+export async function readAuthenticatedOperationCompletionInvocation(
+  workspaceId: string, invocationId: string,
+) {
+  if (!/^[1-9][0-9]*$/.test(invocationId)) throw new Error('invalid original completion invocation');
+  const { runWithWorkspace } = await import('../../workspace-als');
+  return runWithWorkspace(workspaceId, async () => {
+    const sql = getOrgPg().sql;
+    const [original] = await sql<Array<{
+      coord_owner_id: string; role: string; harness_slug: string; run_id: string;
+      invoked_at: Date; args_json: unknown;
+    }>>`
+      SELECT coord_owner_id, role, harness_slug, run_id, invoked_at, args_json
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id = ${workspaceId} AND id = ${invocationId}
+         AND tool_name = 'work_items:complete' AND status = 'ok'
+         AND principal_kind = 'harness' AND principal_auth_method = 'spawn-url'
+         AND principal_trust = 'trusted'
+    `;
+    if (!original?.coord_owner_id || !original.role || !original.run_id) {
+      throw new Error('original authenticated completion invocation is unavailable');
+    }
+    const parsed = itemSpec.parse(original.args_json);
+    if (parsed.validateOnly || parsed.recordOnly || !parsed.outputPayload ||
+        !['done', 'passed', 'resolved'].includes(parsed.state ?? '')) {
+      throw new Error('original invocation is not a direct successful operation close');
+    }
+    const item = await getWorkItem(parsed.id, parsed.harness);
+    const { readActiveOperationWorkerClaimBinding, matchOperationWorkerClaim } = await import('../../blueprint/operation-worker-binding');
+    const active = await readActiveOperationWorkerClaimBinding(workspaceId, original.coord_owner_id);
+    if (!item || active.status !== 'bound' || !matchOperationWorkerClaim(active, item).allowed ||
+        item.assignee !== original.coord_owner_id || !item.takenAt ||
+        Date.parse(item.takenAt) > new Date(original.invoked_at).getTime() ||
+        Date.parse(item.updatedAt) > new Date(original.invoked_at).getTime() ||
+        original.harness_slug !== active.binding.harnessSlug) {
+      throw new Error('original completion actor, pin, claim or item attempt changed');
+    }
+    const [launch] = await sql`
+      SELECT id, (SELECT taken_at::text FROM harness_shared.work_items w
+        WHERE w.workspace_id = ${workspaceId} AND w.feature_id = ${item.id}
+          AND w.harness_slug = ${item.harness!} AND w.taken_by = ${original.coord_owner_id}
+          AND w.updated_ts = ${Date.parse(item.updatedAt)}) AS claim_stamp
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${workspaceId} AND id = ${active.receipt.sessionId}
+         AND coord_owner_id = ${original.coord_owner_id} AND role = ${original.role}
+         AND ended_at IS NULL AND ended_by IS NULL
+    `;
+    if (!launch) throw new Error('original completion execution identity changed');
+    const ctx = { workspaceId, harnessSlug: original.harness_slug, role: original.role,
+      runId: original.run_id, uiClientId: original.coord_owner_id, sigVerifiedSpawn: true,
+      principal: { kind: 'harness', slug: `system:${original.role}`, workspaceId,
+        authMethod: 'spawn-url', trust: 'trusted' },
+      signal: new AbortController().signal, log: () => {}, progress: () => {}, emit: () => {},
+    } as unknown as UnifiedToolContext;
+    return { item, request: parsed, ctx, invocationId, ownerId: original.coord_owner_id,
+      claimStamp: launch.claim_stamp as string | null };
+  });
+}
+
+export async function recoverAcceptedOperationCompletionFromInvocation(
+  workspaceId: string, invocationId: string,
+): Promise<BulkItemResult> {
+  const { runWithWorkspace } = await import('../../workspace-als');
+  return runWithWorkspace(workspaceId, async () => {
+    const original = await readAuthenticatedOperationCompletionInvocation(workspaceId, invocationId);
+    return completeOne(original.request, { ownerId: original.ownerId }, original.ctx, {
+      ownerId: original.ownerId, updatedAt: original.item.updatedAt, takenAt: original.item.takenAt,
+      payloadSnapshot: original.item.payload as Record<string, unknown>, deadlineAt: Date.now() + 30 * 60_000,
+      claimStamp: original.claimStamp,
+      invocationId,
+    });
+  });
+}
 
 export default workItemsCompleteTool;

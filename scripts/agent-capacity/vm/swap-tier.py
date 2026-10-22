@@ -1265,7 +1265,11 @@ def evaluate_native_workload(rows, probe):
         failures.append("native-failure")
     if starts and ends and number(starts[0].get("t")) and number(ends[0].get("t")):
         if ends[0]["t"] <= starts[0]["t"] or any(
-                not number(r.get("t")) or not starts[0]["t"] <= r["t"] <= ends[0]["t"] for r in rows):
+                not number(r.get("t")) or not (
+                    starts[0]["t"] <= r["t"] <= ends[0]["t"] or
+                    (r.get("kind") in ("server-population-preflight", "active-swap-preflight") and r["t"] <= starts[0]["t"]) or
+                    (r.get("kind") in ("active-swap-postflight", "active-swap-postflight-failed") and r["t"] >= ends[0]["t"]))
+                for r in rows):
             gaps.append("run-clock-or-appended-evidence")
     else:
         gaps.append("run-clock")
@@ -1324,6 +1328,9 @@ def evaluate_native_workload(rows, probe):
             samples.extend(p[1] for p in observed)
         block = {"agents": len({w.get("agent") for w in ws}), "tasks": len(ws),
                  "echoSec": pctl(echo, 95), "taskWallSec": pctl(total, 95), "probeExecMs": pctl(samples, 95)}
+        for key, values in (("rawEchoSec", echo), ("rawTaskWallSec", total), ("rawProbeExecMs", samples)):
+            block[key] = {"p50": pctl(values, 50), "p95": pctl(values, 95),
+                          "max": pctl(values, 100), "samples": len(values)}
         if block["echoSec"] is not None and block["echoSec"] > (3 if phase == "storm" else 1):
             failures.append(phase + ":echo")
         if phase != "storm":
@@ -1356,6 +1363,167 @@ def read_workload_acceptance(out_dir):
     except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
         return {"scope": "D075-native-workload-only", "qualification": "not-evaluated",
                 "status": "unknown", "gaps": ["unreadable-raw-evidence:" + type(error).__name__],
+                "failures": [], "metrics": {}}
+
+
+def qualification_identity(value):
+    """Identity recorded before native launch, also pinned by the admission dossier."""
+    keys = ("runId", "provider", "projectOrAccount", "zone", "instanceId", "profile",
+            "customerWorkspaceId", "candidateSha", "artifactSha256", "model", "effort")
+    if not isinstance(value, dict) or set(value) != set(keys):
+        raise ValueError("qualification identity fields")
+    if any(not isinstance(value[k], str) or not value[k].strip() for k in keys):
+        raise ValueError("qualification identity values")
+    if (value["provider"] not in ("gcp", "aws") or
+            not re.fullmatch(r"[a-f0-9]{40}", value["candidateSha"]) or
+            not re.fullmatch(r"[a-f0-9]{64}", value["artifactSha256"])):
+        raise ValueError("qualification candidate/provider identity")
+    return value
+
+
+def evaluate_native_qualification(rows, probe, evidence, expected_sha, expected_artifact):
+    """Compose the maintained workload detector with retained lifecycle observations.
+
+    This checks evidence consistency, not the authenticity of a provider receipt.
+    Independent review must resolve the dossier's hashed sources and the admitted
+    candidate. A fixture passing this function is never a qualified cloud run.
+    Archive BYTES are additionally rechecked by read_native_qualification.
+    """
+    workload = evaluate_native_workload(rows, probe)
+    gaps, failures = list(workload["gaps"]), list(workload["failures"])
+    number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+    sha256 = lambda v: isinstance(v, str) and re.fullmatch(r"[a-f0-9]{64}", v) is not None
+    starts = [r for r in rows if r.get("kind") == "run-start"]
+    try:
+        identity = qualification_identity(evidence.get("identity"))
+    except (AttributeError, ValueError):
+        identity = None
+        gaps.append("qualification-identity")
+    if (not isinstance(evidence, dict) or evidence.get("schemaVersion") != "swap-tier-qualification-v1" or
+            identity is None or len(starts) != 1 or starts[0].get("identity") != identity or
+            starts[0].get("model") != identity["model"] or starts[0].get("effort") != identity["effort"] or
+            identity["candidateSha"] != expected_sha or identity["artifactSha256"] != expected_artifact):
+        gaps.append("admitted-candidate-and-run-binding")
+    data = evidence if isinstance(evidence, dict) else {}
+    # Each source has a content hash, not merely a boolean assertion or a path.
+    sources = data.get("sources")
+    required = {"provider-inventory", "footprint", "cold-wake", "grow", "resize", "reconnect", "teardown"}
+    if (not isinstance(sources, dict) or set(sources) != required or any(
+            not isinstance(v, dict) or not isinstance(v.get("path"), str) or not v["path"].strip() or
+            not sha256(v.get("sha256")) for v in sources.values())):
+        gaps.append("hashed-source-population")
+    inventory = data.get("providerInventory", {})
+    if (not isinstance(inventory, dict) or identity is None or inventory.get("identity") != identity or
+            inventory.get("market") != "on-demand" or inventory.get("customerWorkspaces") != [identity["customerWorkspaceId"]]):
+        gaps.append("ordinary-exclusive-real-vm")
+    footprint = data.get("footprint", {})
+    if (not isinstance(footprint, dict) or type(footprint.get("serverProcesses")) is not int or footprint["serverProcesses"] != 1 or
+            identity is None or footprint.get("identity") != identity or
+            any(not number(footprint.get(k)) for k in ("measuredAt", "dbBytes", "repositoryBytes", "activeHours")) or
+            footprint.get("freshInstall") is not True or footprint.get("activeHours", 0) <= 0):
+        gaps.append("fresh-server-db-repository-footprint")
+    elif len(starts) == 1:
+        ends = [r for r in rows if r.get("kind") == "run-end"]
+        if (not number(starts[0].get("t")) or footprint["measuredAt"] > starts[0]["t"] or
+                len(ends) != 1 or not number(ends[0].get("t")) or
+                footprint["activeHours"] * 3600 < ends[0]["t"] - starts[0]["t"]):
+            gaps.append("footprint-and-active-hours-run-window")
+    preflight = [r for r in rows if r.get("kind") == "active-swap-preflight"]
+    postflight = [r for r in rows if r.get("kind") == "active-swap-postflight"]
+    ends = [r for r in rows if r.get("kind") == "run-end"]
+    if (len(preflight) != 1 or len(postflight) != 1 or
+            preflight[0].get("device") != postflight[0].get("device") or
+            not isinstance(preflight[0].get("devices"), list) or preflight[0].get("devices") != postflight[0].get("devices")):
+        gaps.append("swap-through-native-shutdown")
+    elif (len(starts) != 1 or len(ends) != 1 or not all(number(r.get("t")) for r in [preflight[0], starts[0], ends[0], postflight[0]]) or
+          not preflight[0]["t"] <= starts[0]["t"] < ends[0]["t"] <= postflight[0]["t"]):
+        gaps.append("swap-observation-order")
+    population = [r for r in rows if r.get("kind") == "server-population-preflight"]
+    if (len(population) != 1 or type(population[0].get("count")) is not int or population[0]["count"] != 1 or
+            not population[0].get("expected") or population[0].get("active") != [population[0]["expected"]]):
+        gaps.append("measured-server-population")
+    operations = data.get("lifecycle", [])
+    if not isinstance(operations, list):
+        operations = []
+    if (len(operations) != 4 or {o.get("kind") for o in operations if isinstance(o, dict)} !=
+            {"cold-wake", "grow", "resize", "reconnect"}):
+        gaps.append("lifecycle-operation-population")
+    for operation in operations:
+        if not isinstance(operation, dict):
+            gaps.append("invalid-lifecycle-operation")
+            continue
+        kind = operation.get("kind")
+        if identity is None or operation.get("identity") != identity:
+            gaps.append(str(kind) + ":identity")
+        times = [operation.get(k) for k in ("requestedAt", "readyAt")]
+        if not all(number(t) for t in times) or times[1] < times[0]:
+            gaps.append(str(kind) + ":clock")
+        elif kind == "cold-wake" and times[1] - times[0] > 120:
+            failures.append("cold-wake:application-ready")
+        health = operation.get("health", {})
+        if (not isinstance(health, dict) or health.get("ok") is not True or
+                health.get("service") != "papercusp-operator" or health.get("sha") != expected_sha):
+            gaps.append(str(kind) + ":candidate-api-readiness")
+        before, after = operation.get("witnessBefore", {}), operation.get("witnessAfter", {})
+        if (not isinstance(before, dict) or not isinstance(after, dict) or before.get("created") is not True or
+                after.get("verified") is not True or after.get("sqlReadOnly") is not True or
+                not sha256(before.get("manifestSha256")) or before.get("manifestSha256") != after.get("manifestSha256") or
+                not isinstance(before.get("files"), int) or isinstance(before.get("files"), bool) or
+                before["files"] < 1 or type(after.get("files")) is not int or before["files"] != after.get("files")):
+            gaps.append(str(kind) + ":acknowledged-file-and-sql-witness")
+    teardown = data.get("teardown", {})
+    # Instance names are project/account scoped. A same-named deletion in a
+    # different project is not cleanup of the admitted VM, even with a copied runId.
+    if (not isinstance(teardown, dict) or identity is None or teardown.get("identity") != identity or
+            teardown.get("runId") != identity["runId"] or
+            teardown.get("deleted") != [identity["instanceId"]] or teardown.get("verified") is not True or
+            teardown.get("remainingInstances") != [] or teardown.get("orphanDisks") != []):
+        gaps.append("provider-confirmed-cleanup")
+    return {"scope": "D075-composite-evidence", "qualification": "independent-review-required",
+            "status": "fail" if failures else "unknown" if gaps else "pass",
+            "identity": identity, "gaps": sorted(set(gaps)), "failures": sorted(set(failures)),
+            "metrics": workload["metrics"]}
+
+
+def read_native_qualification(out_dir, dossier_path, expected_sha, expected_artifact):
+    """Recompute from retained bytes; never accept a saved passing summary instead."""
+    try:
+        with open(dossier_path) as source:
+            evidence = json.load(source)
+        with open(os.path.join(out_dir, "results.jsonl")) as source:
+            rows = [json.loads(line) for line in source if line.strip()]
+        with open(os.path.join(out_dir, "probe.csv")) as source:
+            probe = [tuple(float(part) for part in line.strip().split(",")) for line in source if line.strip()]
+        if any(not isinstance(row, dict) for row in rows) or any(len(row) != 3 for row in probe):
+            raise ValueError("invalid raw observation")
+        result = evaluate_native_qualification(rows, probe, evidence, expected_sha, expected_artifact)
+        if not isinstance(evidence.get("sources"), dict):
+            raise ValueError("missing source population")
+        root = os.path.dirname(os.path.abspath(dossier_path))
+        # Reparse each hashed source and compare its whole payload to the observation
+        # being graded. A copied hash cannot authenticate an edited inline summary.
+        for kind, ref in evidence["sources"].items():
+            path = os.path.join(root, ref["path"])
+            if durability_file(path)["sha256"] != ref["sha256"]:
+                raise ValueError("source hash mismatch")
+            with open(path) as source:
+                observed = json.load(source)
+            inline = (evidence.get("providerInventory") if kind == "provider-inventory" else
+                      evidence.get("footprint") if kind == "footprint" else
+                      evidence.get("teardown") if kind == "teardown" else
+                      next((o for o in evidence.get("lifecycle", []) if o.get("kind") == kind), None))
+            if observed != inline:
+                raise ValueError("source observation mismatch")
+        for name, key in (("results.jsonl", "resultsSha256"), ("probe.csv", "probeSha256")):
+            if durability_file(os.path.join(out_dir, name))["sha256"] != evidence.get(key):
+                raise ValueError("raw run hash mismatch")
+        archive = verify_native_archive(os.path.join(out_dir, "native-evidence.tar.gz"), os.path.join(out_dir, "results.jsonl"))
+        if archive["archiveSha256"] != evidence.get("archiveSha256") or archive["assignedAgents"] != 50:
+            raise ValueError("archive identity mismatch")
+        return result
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RuntimeError, tarfile.TarError) as error:
+        return {"scope": "D075-composite-evidence", "qualification": "independent-review-required",
+                "status": "unknown", "gaps": ["unreadable-or-foreign-evidence:" + type(error).__name__],
                 "failures": [], "metrics": {}}
 
 
@@ -1410,6 +1578,10 @@ def probe(out_path):
 # ---------------------------------------------------------------- main
 
 def run(a):
+    identity = None
+    if getattr(a, "identity_file", None):
+        with open(a.identity_file) as source:
+            identity = qualification_identity(json.load(source))
     population = server_population(a.server_cgroup) if getattr(a, "server_cgroup", None) else None
     arms = [parse_arm(s) for s in a.arm]
     # Fail before recorder/probe/agent mutation. Active runs share a live Server;
@@ -1441,7 +1613,8 @@ def run(a):
                 resumeNative=a.resume_native,
                 single=a.single, active=a.active, activeRounds=a.active_rounds, arms=arms, idleSec=IDLE_SEC,
                 kernel=os.uname().release, host=host_stats(), cli=a.cli, model=a.model if REAL_MODEL else None,
-                effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub")
+                effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub",
+                identity=identity)
         stop_agents()
         if not a.active:
             swap_off()
@@ -1456,6 +1629,12 @@ def run(a):
         rec.rec("run-end")
     finally:
         stop_agents()
+        if a.active:
+            try:
+                rec.rec("active-swap-postflight", **active_swap(arms[0], a.ram_gb))
+            except (OSError, RuntimeError, ValueError) as error:
+                # Preserve both this observation and any original native failure.
+                rec.rec("active-swap-postflight-failed", error=type(error).__name__)
         for p in procs:
             p.terminate()
         if not a.active:
@@ -1480,6 +1659,7 @@ def main(argv=None):
     r = sub.add_parser("run")
     r.add_argument("--out", required=True)
     r.add_argument("--server-cgroup", help="require exactly this one live Server service before launching agents")
+    r.add_argument("--identity-file", help="admitted real-VM/candidate identity JSON, recorded before native launch")
     r.add_argument("--agents", type=int, default=24)
     r.add_argument("--warm", type=int, default=8)
     r.add_argument("--warm-concurrency", type=int, help="limit warm-up requests; wake storm still uses all agents")
@@ -1504,6 +1684,9 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p = sub.add_parser("evaluate-workload", help="check raw D075 workload; does not qualify the VM")
     p.add_argument("--out", required=True)
+    p.add_argument("--qualification", help="compose hashed lifecycle/source observations and native archive")
+    p.add_argument("--expected-sha", help="independently pinned admitted candidate commit")
+    p.add_argument("--expected-artifact-sha256", help="independently pinned admitted artifact digest")
     q = sub.add_parser("probe")
     q.add_argument("--out", required=True)
     v = sub.add_parser("verify-archive")
@@ -1544,7 +1727,11 @@ def main(argv=None):
     elif a.cmd == "report":
         report(a.out)
     elif a.cmd == "evaluate-workload":
-        receipt = read_workload_acceptance(a.out)
+        if a.qualification and (not re.fullmatch(r"[a-f0-9]{40}", a.expected_sha or "") or
+                                not re.fullmatch(r"[a-f0-9]{64}", a.expected_artifact_sha256 or "")):
+            ap.error("--qualification requires exact --expected-sha and --expected-artifact-sha256")
+        receipt = (read_native_qualification(a.out, a.qualification, a.expected_sha, a.expected_artifact_sha256)
+                   if a.qualification else read_workload_acceptance(a.out))
         print(json.dumps(receipt))
         return {"pass": 0, "fail": 1, "unknown": 2}[receipt["status"]]
     elif a.cmd == "probe":
