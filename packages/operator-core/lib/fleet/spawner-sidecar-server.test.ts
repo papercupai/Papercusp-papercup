@@ -5,10 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSpawnerSidecarLoopDelay } from './spawner-sidecar-loop-delay';
 
+const invocation = vi.hoisted(() => ({ loaded: vi.fn(), run: vi.fn() }));
 vi.mock('../flag-override-store-boot-effect', () => ({}));
 vi.mock('../flag-override-store', () => ({ installFlagOverrideStore: () => {} }));
 vi.mock('../flag-change-listener', () => ({ ensureFlagChangeListener: async () => {} }));
-vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
+vi.mock('../dbos/orchestrator-runner', () => {
+  invocation.loaded();
+  return { spawnInvokeOnce: invocation.run };
+});
 vi.mock('./spawner-sidecar-spawn', () => ({ spawnSpawnerSidecar: async () => {} }));
 
 import { runSpawnerSidecarServer } from './spawner-sidecar-server';
@@ -56,6 +60,45 @@ describe('spawner sidecar health', () => {
       expect(after.eventLoopDelayP99Ms).toBeGreaterThan(before.eventLoopDelayP99Ms + 100);
       await new Promise((resolve) => setTimeout(resolve, 40));
       expect((await health()).eventLoopDelayP99Ms).toBeLessThan(after.eventLoopDelayP99Ms);
+    } finally {
+      client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('serves health before loading agent orchestration, then forwards the invocation and its notifications', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'sidecar-invoke-load-'));
+    const socketPath = join(directory, 'server.sock');
+    vi.stubEnv('PAPERCUSP_SPAWNER_IPC_SOCKET', socketPath);
+    const server = runSpawnerSidecarServer();
+    const client = new SpawnerIpcClient(socketPath);
+    const result = { output: 'agent result', exitCode: 0, stderr: '', rawStdoutTail: '' };
+    invocation.run.mockImplementation(async (...args: unknown[]) => {
+      const opts = args[4] as { onChildPid: (pid: number) => void; onOutputActivity: () => void };
+      opts.onChildPid(1234);
+      opts.onOutputActivity();
+      return result;
+    });
+    const onPid = vi.fn();
+    const onOutputActivity = vi.fn();
+    try {
+      await once(server, 'listening');
+      await client.call('spawn:cancel', {});
+      expect(invocation.loaded).not.toHaveBeenCalled();
+      const reply = await client.call('spawn:invokeOnce', {
+        projectDir: directory, role: 'test', extras: ['one'], extraEnv: { TEST: 'yes' },
+        timeoutMs: 5000, resultPath: 'result.json', forceSessionId: 'test-session', taskSpawnId: 'test-task',
+      }, { onPid, onOutputActivity });
+      expect(reply).toEqual(result);
+      expect(invocation.loaded).toHaveBeenCalledTimes(1);
+      expect(invocation.run).toHaveBeenCalledWith(directory, 'test', ['one'], { TEST: 'yes' }, expect.objectContaining({
+        signal: expect.any(AbortSignal), timeoutMs: 5000, resultPath: 'result.json',
+        forceSessionId: 'test-session', taskSpawnId: 'test-task',
+      }));
+      expect(onPid).toHaveBeenCalledWith(1234);
+      expect(onOutputActivity).toHaveBeenCalledTimes(1);
     } finally {
       client.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));

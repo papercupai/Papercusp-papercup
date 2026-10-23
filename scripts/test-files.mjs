@@ -2984,6 +2984,16 @@ export function runCapturedTestProcess(command, args, options = {}) {
       }
       const completeLines = combined.slice(0, lastNewline + 1);
       progressRemainders[channel] = combined.slice(lastNewline + 1).slice(-16_384);
+      // The parent signal handler must reap synchronously and cannot await the
+      // final capture. Forward completed failure receipts now, before a later
+      // heartbeat replaces lastOutputLine or another case stalls the batch.
+      for (const line of completeLines.split(/\r?\n/)) {
+        if (!line.startsWith('TEST_FILE_CASE_TRACE ')) continue;
+        try {
+          const detail = JSON.parse(line.slice('TEST_FILE_CASE_TRACE '.length));
+          if (detail.event === 'finished' && detail.state === 'failed') onProgress(line);
+        } catch { /* A malformed diagnostic must never change the test verdict. */ }
+      }
       // Captured stdout/stderr is returned only after close. Keep one bounded,
       // complete line in the existing progress sink before a parent can reap
       // this router. A partial line is never presented as completed output.

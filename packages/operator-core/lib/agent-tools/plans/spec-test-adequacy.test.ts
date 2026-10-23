@@ -458,6 +458,36 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
   return row;
 }
 
+function ledgerCensusEvidence(): SpecEvidenceForAdequacy {
+  const base = evidence();
+  return evidence({
+    evidenceRef: 'WI-101#manual-census',
+    evidenceKind: 'coverage-census',
+    coverageEvidenceRef: null,
+    testRunId: null,
+    testRunExecution: null,
+    fingerprints: {
+      sourceFingerprint: 'sha256-work-item-set-v1:ledger',
+      testFingerprint: null,
+      fixtureFingerprint: null,
+      rubricFingerprint: null,
+      environmentFingerprint: null,
+    },
+    details: {
+      evidencePlane: 'tree',
+      currentMeasurement: { schemaVersion: 1, kind: 'work-items', workItemIds: ['WI-101'] },
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed',
+        pathReachable: true, oracleIndependent: true },
+    },
+    currentness: {
+      ...base.currentness!,
+      dimensions: { ...base.currentness!.dimensions, test: 'not-applicable', fixture: 'not-applicable',
+        rubric: 'not-applicable', environment: 'not-applicable', coverageEvidence: 'not-applicable',
+        testRun: 'not-applicable' },
+    },
+  });
+}
+
 function successfulTestBinding(
   filePath: string,
   options: { layer?: string; testCases?: string[]; targeted?: boolean | string } = {},
@@ -3975,7 +4005,57 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(37);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(38);
+  });
+
+  it('accepts a non-automated ledger census without inventing executable fixture proof', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ behaviorClass: 'non-automated', requiredEvidence: ['tree'], requiredTestLayers: [] }),
+      evidence: [ledgerCensusEvidence()],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
+    expect(result.ratings.traceability.rating).toBe('pass');
+    expect(result.verdict).toBe('pass');
+  });
+
+  it.each(['executable', 'repo-files', 'test-run', 'test-execution', 'test-fingerprint', 'fixture-required',
+    'unmeasured', 'malformed-measurement'] as const)(
+    'keeps fixture classification required for a census with %s evidence', (control) => {
+      const row = ledgerCensusEvidence();
+      const spec = clause({ behaviorClass: 'non-automated', requiredEvidence: ['tree'], requiredTestLayers: [] });
+      if (control === 'executable') {
+        spec.behaviorClass = 'happy-path';
+        spec.requiredTestLayers = ['integration'];
+      } else if (control === 'repo-files') {
+        row.details.currentMeasurement = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/feature.ts'] };
+      } else if (control === 'test-run') row.testRunId = 43;
+      else if (control === 'test-execution') row.testRunExecution = evidence().testRunExecution;
+      else if (control === 'test-fingerprint') row.fingerprints.testFingerprint = 'sha256:test';
+      else if (control === 'fixture-required') spec.falsifier = { observation: 'The fixture produces a wrong count.' };
+      else if (control === 'unmeasured') row.currentness = { ...row.currentness!, provenance: 'not-supplied' };
+      else row.details.currentMeasurement = { schemaVersion: 1, kind: 'work-items', workItemIds: [] };
+
+      const result = evaluateSpecTestAdequacy({ clause: spec, evidence: [row], classRef: 'plan-class-bugfix' });
+
+      expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+      expect(result.verdict).not.toBe('pass');
+    },
+  );
+
+  it('still rejects uncalibrated fixture bytes on a non-automated ledger census', () => {
+    const row = ledgerCensusEvidence();
+    row.fingerprints.fixtureFingerprint = 'sha256:actual-fixture';
+    row.details.adequacy = { ...(row.details.adequacy as Record<string, unknown>), fixtureCalibrated: false };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ behaviorClass: 'non-automated', requiredEvidence: ['tree'], requiredTestLayers: [] }),
+      evidence: [row],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('fail');
+    expect(result.verdict).toBe('fail');
   });
 
   it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {

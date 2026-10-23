@@ -941,7 +941,7 @@ afterAll(async () => {
 });
 
 describe('repo-backed server measurement', () => {
-  it.each([false, true])('honors AST worker admission for a larger working-tree batch without weakening the census guard (broadScan=%s)', async (broadScan) => {
+  async function measureWorkingTreeCohorts(broadScan: boolean, cohortCount: number) {
     const previousRoot = h.measurementRoot;
     const root = await mkdtemp(join(tmpdir(), 'spec-scan-admission-'));
     try {
@@ -971,19 +971,31 @@ describe('repo-backed server measurement', () => {
         binding_fingerprint: `binding-${index}`, spec_is_current: true,
       }));
 
-      const rows = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+      const cohorts = await Promise.all(Array.from({ length: cohortCount }, () =>
+        listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] })));
 
-      expect(rows).toHaveLength(count);
-      for (const row of rows) {
-        expect(row.serverMeasurement, JSON.stringify(row.serverMeasurement)).toMatchObject(broadScan
-          ? { status: 'unavailable', reason: expect.stringContaining('repo_measurement_broad_tree_scan_requires_source_globs:') }
-          : { status: 'measured' });
-        if (!broadScan) expect(row.currentness.overall).toBe('current');
+      expect(cohorts).toHaveLength(cohortCount);
+      for (const rows of cohorts) {
+        expect(rows).toHaveLength(count);
+        for (const row of rows) {
+          expect(row.serverMeasurement, JSON.stringify(row.serverMeasurement)).toMatchObject(broadScan
+            ? { status: 'unavailable', reason: expect.stringContaining('repo_measurement_broad_tree_scan_requires_source_globs:') }
+            : { status: 'measured' });
+          if (!broadScan) expect(row.currentness.overall).toBe('current');
+        }
       }
     } finally {
       h.measurementRoot = previousRoot;
       await rm(root, { recursive: true, force: true });
     }
+  }
+
+  it.each([false, true])('honors AST worker admission for a larger working-tree batch without weakening the census guard (broadScan=%s)', async (broadScan) => {
+    await measureWorkingTreeCohorts(broadScan, 1);
+  });
+
+  it.each([false, true])('coordinates concurrent working-tree cohorts without weakening the census guard (broadScan=%s)', async (broadScan) => {
+    await measureWorkingTreeCohorts(broadScan, 2);
   });
 
   it('remeasures a final package on the deployed plane without caller testimony or a live PID', async () => {

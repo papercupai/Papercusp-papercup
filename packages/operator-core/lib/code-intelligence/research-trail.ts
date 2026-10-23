@@ -64,13 +64,14 @@ export async function recordResearchBatch(input: PushInput): Promise<void> {
 export async function persistResearchBatch(input: PushInput, incoming: ResearchSubject[]): Promise<void> {
   const harness = input.harness;
   if (!input.owner || !input.workspace || !harness) return;
-  const now = Date.now();
   await withWorkspace(input.workspace, async tx => {
     await tx`SELECT set_config('statement_timeout', '100ms', true)`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`research:${input.workspace}:${input.owner}:${harness}`}, 0))`;
     const rows = await tx<{ subjects: ResearchSubject[] }[]>`SELECT subjects FROM harness_shared.code_intel_research_trails
       WHERE workspace_id=${input.workspace} AND owner_id=${input.owner} AND harness_slug=${harness}`;
-    const subjects = mergeResearchSubjects(rows[0]?.subjects ?? [], incoming, now);
+    // A queued capture can read a newer batch after taking the lock. Use the
+    // merge-time clock so that batch is not discarded as a future timestamp.
+    const subjects = mergeResearchSubjects(rows[0]?.subjects ?? [], incoming, Date.now());
     await tx`INSERT INTO harness_shared.code_intel_research_trails (workspace_id,owner_id,harness_slug,client,subjects,captured_at)
       VALUES (${input.workspace},${input.owner},${harness},${input.client ?? null},${JSON.stringify(subjects)}::jsonb,now())
       ON CONFLICT (workspace_id,owner_id,harness_slug) DO UPDATE

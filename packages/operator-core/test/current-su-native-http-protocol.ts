@@ -81,13 +81,14 @@ export function createCurrentSuNativeProtocol() {
     get carryInputSeen() { return carryInputSeen; },
     get predecessorSessionId() { return predecessorSessionId; },
     census,
-    respond(body: Body, proof: { predecessorSessionId: string; editApplied: () => boolean }) {
+    async respond(body: Body, proof: { predecessorSessionId: string | null; editApplied: () => boolean;
+      binding?: { read: () => Promise<string | null>; deadlineMs: number } }) {
       const input = JSON.stringify(body.input) ?? '';
       const items = Array.isArray(body.input) ? body.input as Array<Record<string, unknown>> : [];
       const outputs = items.filter(item => item && ['function_call_output', 'custom_tool_call_output'].includes(String(item.type)));
       const result = (kind: 'edit' | 'compact') => outputs.find(item => item.call_id === 'call_private_' + kind);
       const expectedPredecessorSessionId = predecessorSessionId ?? proof.predecessorSessionId;
-      const lineage = input.includes('codex-carry-lineage predecessor:' + expectedPredecessorSessionId);
+      const lineage = Boolean(expectedPredecessorSessionId) && input.includes('codex-carry-lineage predecessor:' + expectedPredecessorSessionId);
       const tools = offeredTools(body);
       const row: Record<string, unknown> = { index: census.length + 1, at: new Date().toISOString(),
         stage, bodyKeys: Object.keys(body), inputBytes: Buffer.byteLength(input),
@@ -121,8 +122,31 @@ export function createCurrentSuNativeProtocol() {
           // Initial transport can precede native binding; after compaction the
           // same database row can name the successor. Freeze at the boundary
           // we actually drive, never infer identity from the carry text itself.
-          assert.ok(proof.predecessorSessionId, 'Native predecessor must be bound before compaction');
-          predecessorSessionId ??= proof.predecessorSessionId;
+          let boundId = predecessorSessionId ?? proof.predecessorSessionId;
+          if (!boundId && proof.binding) {
+            const binding = proof.binding;
+            assert.ok(Number.isFinite(binding.deadlineMs), 'Native binding needs the existing task deadline');
+            row.bindingWait = true;
+            row.action = 'awaiting-binding';
+            // The fast scripted edit can finish before the launcher's native
+            // persistence proof publishes its mapping. Hold THIS response,
+            // without granting another task budget or deriving an id from text.
+            while (!boundId) {
+              const remaining = binding.deadlineMs - Date.now();
+              assert.ok(remaining > 0, 'Native predecessor binding deadline expired before compaction');
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              try {
+                boundId = await Promise.race([binding.read(), new Promise<never>((_, reject) => {
+                  timer = setTimeout(() => reject(new Error('Native predecessor binding deadline expired before compaction')), remaining);
+                })]);
+              } finally { clearTimeout(timer); }
+              if (!boundId) await new Promise(resolve => setTimeout(resolve, Math.min(50,
+                Math.max(0, binding.deadlineMs - Date.now()))));
+            }
+            assert.ok(proof.editApplied(), 'Native scripted edit was not applied before compaction');
+          }
+          assert.ok(boundId, 'Native predecessor must be bound before compaction');
+          predecessorSessionId ??= boundId;
           row.expectedPredecessorSessionId = predecessorSessionId;
           stage = 'compact'; row.action = 'compact';
           return wire;

@@ -202,6 +202,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   let successorId: string | undefined;
   let stoppedAfterCarry = false;
   const protocol = createCurrentSuNativeProtocol();
+  const nativeDriveTimeoutMs = 180_000;
   // This service has no provider credential or forwarding path. The carry
   // variant supplies fixed protocol output solely to exercise the native host.
   const transport = guardedCurrentSuNativeHandler(async (req, res) => {
@@ -214,15 +215,30 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       const sessions = await sql`SELECT coord_owner_id FROM harness_shared.adv_sessions WHERE workspace_id=${workspace}`;
       if (sessions.length === 1) observedAuto = (await getModes(workspace, sessions[0].coord_owner_id)).some(mode => mode.mode === 'auto');
       if (managedCarry) {
-        const rows = await sql`SELECT a.id, a.coord_owner_id, a.session_id, t.task_id FROM harness_shared.adv_sessions a
+        const rows = await sql`SELECT a.id, a.coord_owner_id, a.session_id, t.task_id, t.started_at FROM harness_shared.adv_sessions a
           JOIN harness_shared.task_ledger t ON t.workspace_id=a.workspace_id AND t.detail->>'coordOwnerId'=a.coord_owner_id
           WHERE a.workspace_id=${workspace}`;
         assert.equal(rows.length, 1, JSON.stringify(rows));
         const row = rows[0];
         let wire: string;
         try {
-          wire = protocol.respond(body, { predecessorSessionId: row.session_id,
-            editApplied: () => readFileSync(join(taskCheckout, 'answer.txt'), 'utf8') === 'after\n' });
+          wire = await protocol.respond(body, { predecessorSessionId: row.session_id,
+            editApplied: () => readFileSync(join(taskCheckout, 'answer.txt'), 'utf8') === 'after\n',
+            binding: {
+              deadlineMs: new Date(row.started_at).getTime() + nativeDriveTimeoutMs,
+              read: async () => {
+                const bound = await sql`SELECT a.id, a.coord_owner_id, a.session_id, a.ended_at,
+                  t.task_id, t.ended_at AS task_ended_at FROM harness_shared.adv_sessions a
+                  JOIN harness_shared.task_ledger t ON t.workspace_id=a.workspace_id AND t.detail->>'coordOwnerId'=a.coord_owner_id
+                  WHERE a.workspace_id=${workspace} AND a.id=${row.id} AND t.task_id=${row.task_id}`;
+                assert.equal(bound.length, 1, 'Native predecessor binding lost its exact session/task');
+                const current = bound[0];
+                assert.equal(current.coord_owner_id, row.coord_owner_id, 'Native predecessor binding changed owner');
+                assert.equal(current.ended_at, null, 'Native predecessor session ended before binding');
+                assert.equal(current.task_ended_at, null, 'Native predecessor task ended before binding');
+                return current.session_id;
+              },
+            } });
           if (protocol.predecessorSessionId && !predecessor) {
             assert.match(protocol.predecessorSessionId, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i,
               'Managed carry requires the native predecessor bound before compaction');
@@ -275,7 +291,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       startAssignment: async () => { phase('assignment-start'); return {
         options: { workspaceId: workspace, runId: config.runId, armId: 'papercusp', seed: 1,
           agent: 'codex', model: 'gpt-6-luna', effort: 'max', account: 'auto', pollIntervalMs: 100,
-          driveTimeoutMs: 180000, preregistration: { config, preregHash: frozen.preregHash, repoRoot } },
+          driveTimeoutMs: nativeDriveTimeoutMs, preregistration: { config, preregHash: frozen.preregHash, repoRoot } },
         observations: { ...hosted, admit: async () => ({ admitted: true, receiptRef: 'private-no-spend-admission' }),
           observeIdentity: async () => null },
         checkout: { dir: checkout, repo: 'fixture/private', baseCommit: 'fixture', cleanup: async () => {} },

@@ -311,6 +311,43 @@ describe('original-item durable admission recovery', () => {
     expect(d.dispatch).not.toHaveBeenCalled();
   });
 
+  it.each(['pending', 'unreviewed'] as const)(
+    'preserves scope-held component priority while a %s original still needs admission review', async (admission) => {
+      const review = { state: 'pending', lastRetryAt: null };
+      await db.sql`UPDATE harness_shared.work_items SET admission = ${admission},
+        payload = payload || ${db.sql.json({ admissionReview: review })}`;
+      const first = await requestAdmissionRecovery({ ...input, authority: {
+        kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0, credentialSha256: 'a'.repeat(64),
+      } }, { authorize }, db.sql);
+      const d = deps({ screen: vi.fn(async () => ({
+        runId: 'scope-held-review',
+        guardRefusals: [
+          { itemId: 'WI-other', canonicalId: null, reason: 'claimed' as const, detail: 'unrelated holder' },
+          { itemId: scope.workItemId, canonicalId: null, reason: 'outside-mutation-scope' as const,
+            detail: 'component needs ordinary review of both endpoints' },
+        ],
+      })) });
+      await runAdmissionRecoveries(scope, d, db.sql);
+      const held = await current();
+      expect(held).toMatchObject({ admission, taken_by: null });
+      expect(held.payload.admissionReview).toEqual(review);
+      expect(held.payload._admissionRecovery).toMatchObject({
+        requestId: first.request.requestId, state: 'held', stage: 'screen', pickupConfirmed: false,
+        reason: expect.stringContaining('admission review is pending'),
+      });
+      expect(held.payload._admissionRecovery.reason).toContain('scope-held-review');
+      expect(held.payload._admissionRecovery.reason).toContain('outside-mutation-scope');
+      expect(held.payload._admissionRecovery.reason).not.toContain('unrelated holder');
+      expect(d.dispatch).not.toHaveBeenCalled();
+      expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([scope.workItemId]);
+      expect((await current()).payload).toEqual(held.payload);
+
+      authorize.mockRejectedValue(new AdmissionRecoveryRefused('revoked original authority'));
+      expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([]);
+      expect((await current()).payload).toEqual(held.payload);
+    },
+  );
+
   it('does not attribute another item\'s guard refusal to the original stored hold', async () => {
     await db.sql`UPDATE harness_shared.work_items
       SET payload = payload || ${db.sql.json({ admissionHold: { reason: 'needs review', runId: 'hold-run' } })}`;

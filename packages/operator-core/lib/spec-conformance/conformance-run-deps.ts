@@ -159,6 +159,10 @@ export async function judgeTestsFromLedger(
                        starts_with(lower(btrim(commit_sha)), ${matchingBuildSha}::text)
                        OR starts_with(${matchingBuildSha}::text, lower(btrim(commit_sha)))
                      )) THEN 0 ELSE 1 END,
+              -- A dirty passing run observes an uncommitted candidate, even when
+              -- its HEAD matches. Prefer this build's committed observation;
+              -- keep negative and name-filtered evidence fail-closed as before.
+              CASE WHEN status = 'pass' AND worktree_dirty IS TRUE THEN 1 ELSE 0 END,
               finished_at DESC NULLS LAST, id DESC
   `) as Array<{
     id: number | string;

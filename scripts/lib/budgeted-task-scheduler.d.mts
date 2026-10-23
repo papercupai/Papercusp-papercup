@@ -39,6 +39,12 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, in
       /** Diagnostic bytes and observed process/time binding; never a pass qualification. */
       reporter: { status: 'bound' | 'unknown'; gaps: string[];
         artifact: { ref: string; sha256: string; byteLength: number } | null;
+        /** Referenced protocol bytes only; duplicates retain their observation locations. */
+        evaluatorArtifacts?: { scope: 'referenced-evaluator-code'; status: 'retained' | 'partial' | 'unobserved';
+          referenceLimit: number; artifactByteLimit: number; totalByteLimit: number;
+          referencesVisited: number; bytesRead: number; bytesRetained: number; gaps: string[];
+          entries: Array<{ location: string; id: string;
+            artifact: { ref: string; sha256: string; byteLength: number } }> };
         process: { pid: number; ppid: number; processIdentity: string;
           entry: { ref: string; sha256: string; byteLength: number };
           exit: { ref: string; sha256: string; byteLength: number } | null;
@@ -129,7 +135,7 @@ export interface BudgetedTaskCommandPreparationPins {
   chains?: Array<{ task: string; receipt: { ref: string; sha256: string };
     logs: Record<"stdout" | "stderr", { ref: string; sha256: string }>;
     steps: Array<{ phase: "pre" | "test" | "post"; step: number | null;
-      format: "command-preparation" | "node-test" | "vitest-json";
+      format: "command-preparation" | "node-test" | "vitest-json" | "vitest-native-run";
       receipt: { ref: string; sha256: string };
       logs?: Record<"stdout" | "stderr" | "report", { ref: string; sha256: string }> }> }>;
 }

@@ -7,6 +7,7 @@ import {
   hasSameCaseTitleIdentity,
   readSpecEvidencePlane,
   repoFilesEvidenceMeasurementSchema,
+  workItemsEvidenceMeasurementSchema,
   SPEC_EVIDENCE_KINDS,
 } from './spec-evidence-store';
 import { readMeasurementPin } from './evidence-measurement-pin';
@@ -2657,8 +2658,9 @@ function appendRatingRerunProbes(
  *  35 — late automatic same/older receipts cannot hide the latest explicit proof correction.
  *  36 — explicitly registered source BAR named cases can establish shared suite coverage only.
  *  37 — files-only source BARs accept complete shared suites, rejecting filtered or skipped whole-file proof.
+ *  38 — non-automated work-item census proof without test bytes does not require executable fixture evidence.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 37;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 38;
 
 /** One key on which a fixture-free review fails to pair with the binding it cites. */
 export type FixtureAbsencePairingKey =
@@ -3233,10 +3235,18 @@ export function evaluateSpecTestAdequacy(input: {
   );
   const fixtureUseAttested = exactEvidence.some((row) => detailsOf(row).fixtureFree === false);
   // Binder-authored fixtureFree cannot establish fixture absence for test-backed evidence.
-  // Operational work-item evidence has no test bytes whose fixture use could contradict it.
+  // Operational work-item evidence and non-automated ledger censuses have no
+  // test bytes whose fixture use could contradict them. Keep executable,
+  // repo-backed, unmeasured and explicitly fixture-dependent proof classified.
   const unresolvedFixtureProof = exactEvidence.filter(
     (row) =>
       row.evidenceKind !== 'operational' &&
+      !(row.evidenceKind === 'coverage-census' &&
+        clause.behaviorClass === 'non-automated' && clause.requiredTestLayers.length === 0 &&
+        !fixtureUseRequired && row.testRunId === null && row.testRunExecution == null &&
+        row.fingerprints.testFingerprint === null &&
+        row.currentness?.provenance === 'server-measured' &&
+        workItemsEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement).success) &&
       EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
       row.fingerprints.fixtureFingerprint === null &&
       !(row.id && fixtureAbsenceVerifications.has(row.id) && !fixtureUseRequired),

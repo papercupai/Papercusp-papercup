@@ -3000,6 +3000,30 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     errSpy.mockRestore();
   });
 
+  it('persists completed failure details before a later child termination loses the final report', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 424242, stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    const lines: string[] = [];
+    const promise = runCapturedTestProcess('vitest', ['run', 'a.test.ts'], {
+      cwd: REPO_ROOT, files: ['a.test.ts'], spawnImpl: () => child,
+      systemdRunPath: null, setsidPath: null,
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+      onProgress: (line: string) => lines.push(line),
+    });
+    const failure = `TEST_FILE_CASE_TRACE ${JSON.stringify({ event: 'finished', file: 'a.test.ts',
+      name: 'fixture readiness', state: 'failed', errors: [{ message: 'phase=entry; READY missing' }] })}`;
+    child.stderr.write(failure.slice(0, 30));
+    expect(lines).not.toContain(failure);
+    child.stderr.write(`${failure.slice(30)}\nTEST_FILE_HEARTBEAT completedCases=2\n`);
+    // The diagnostic is durable while the batch is still running, rather than
+    // depending on the promise resolving and the caller flushing its buffers.
+    expect(lines).toContain(failure);
+    child.emit('close', null, 'SIGTERM');
+    expect(await promise).toMatchObject({ status: null, signal: 'SIGTERM', timedOut: false });
+    expect(lines.filter(line => line === failure)).toHaveLength(1);
+  });
+
   it('preserves the originating exception when admission fails before spawn', async () => {
     const origin = new ReferenceError('pinModuleState is not defined');
     origin.stack = 'ReferenceError: pinModuleState is not defined\n    at originalAdmission (/provider/execution.ts:12:3)';

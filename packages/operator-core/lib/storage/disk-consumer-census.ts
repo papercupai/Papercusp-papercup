@@ -411,7 +411,7 @@ function findTimestampMs(value: string): number | undefined {
 // Run beside find, inside sudo, so the progress observer can kill and reap its
 // own child. The outer native timeout also bounds the whole process group if
 // the observer itself stops responding. Reuse find's existing metadata stream;
-// partial records and noise do not renew the inactivity deadline. Capped walks
+// partial records and noise do not renew the inactivity deadline. Supervised walks
 // compact ordinary nested files inside this existing supervisor: Node needs
 // their allocation and newest timestamps, not one IPC record per inode. Keep
 // hardlinks, build tags and protection boundaries as original metadata records.
@@ -648,7 +648,7 @@ export async function inspectRetentionTrees(root: string, opts: {
   const argv = !sudo ? nativeArgs : progressSupervised
     ? ['-n', '--', timeout!, '--signal=KILL', '--verbose', `${Math.max(1, opts.timeoutMs ?? 15 * 60_000) / 1000}s`,
       python!, '-I', '-c', RETENTION_CENSUS_PROGRESS_WORKER, String(Math.max(1, opts.progressTimeoutMs!)), root,
-      opts.includeRecent ? 'compact' : 'raw', nativeCommand, ...nativeArgs]
+      'compact', nativeCommand, ...nativeArgs]
     : ['-n', '--', timeout!, '--foreground', '--signal=KILL', '--verbose',
       `${Math.max(1, opts.timeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs];
   return new Promise<RetentionTreeCensus>((done) => {
@@ -668,7 +668,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     const take = (row: string[]) => {
       const [type, dev, ino, mtime, ctime, blocks, owner, nlink, path] = row;
       const modifiedMs = findTimestampMs(mtime!), changedMs = findTimestampMs(ctime!);
-      const aggregate = type === 'a' && progressSupervised && opts.includeRecent === true;
+      const aggregate = type === 'a' && progressSupervised;
       if (!path?.startsWith(root + '/') || (!/^[fdlbcsp]$/.test(type!) && !aggregate) ||
           ![dev, ino, blocks, owner, nlink].every((v) => /^\d+$/.test(v!)) || modifiedMs === undefined || changedMs === undefined) {
         malformed = true; return;

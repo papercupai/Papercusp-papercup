@@ -19,9 +19,11 @@ function input(): HostedPoolQualificationPreflight {
     environment: { PAPERCUSP_WORKSPACE: workspaceId, PAPERCUSP_SKIP_PG_DISCOVERY: '1', PAPERCUSP_PG_PORT: '15492',
       HARNESS_ADMIN_DATABASE_URL: 'postgres://admin@127.0.0.1:15492/private',
       DATABASE_URL: 'postgres://app@localhost:15492/private', PAPERCUSP_DBOS_ENABLE: '1',
-      PAPERCUSP_BACKGROUND_WORKERS: '1', DBOS__APPVERSION: `p544-${runId}` },
+      PAPERCUSP_BACKGROUND_WORKERS: '1', DBOS__APPVERSION: `p544-${runId}`,
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 900_000) },
     systemDatabaseUrl: 'postgres://dbos@127.0.0.1:15492/private', artifact,
     expectedBundleSha256: createHash('sha256').update(contents).digest('hex'),
+    sourceRevision: { expected: 'a'.repeat(40), actual: 'a'.repeat(40) },
     desired: { hostId: 'host-p544', target: 'gcp', scope: { kind: 'project', id: 'qualification-project' },
       region: 'us-central1', zone: 'us-central1-a', size: 'e2-standard-2', image: { id: 'qualification-image' },
       data: { volumeGiB: 10, encrypted: true }, credentials: { cloudCredentialRef },
@@ -70,6 +72,10 @@ describe('positive hosted pool qualification preflight', () => {
     const value = input(); value.expectedBundleSha256 = '0'.repeat(64);
     expect(() => assertHostedPoolQualificationPreflight(value)).toThrow(/artifact differs/);
   });
+  it('rejects controller code from another source revision', () => {
+    const value = input(); value.sourceRevision.actual = 'b'.repeat(40);
+    expect(() => assertHostedPoolQualificationPreflight(value)).toThrow(/controller source differs/);
+  });
   it('rejects absent, expired, or insufficient deadlines and implicit spending', () => {
     for (const change of [
       (v: HostedPoolQualificationPreflight) => { v.canary.teardownDeadlineAt = ''; },
@@ -83,5 +89,11 @@ describe('positive hosted pool qualification preflight', () => {
     expect(() => assertHostedPoolQualificationPreflight(value)).toThrow(/papercusp_run_id/);
     const unapproved = input(); unapproved.canary.contractApproval.status = 'pending' as 'approved';
     expect(() => assertHostedPoolQualificationPreflight(unapproved)).toThrow(/approved/);
+  });
+  it('rejects an absent or earlier enclosing task deadline', () => {
+    for (const deadline of [undefined, 'invalid', String(Date.now() + 400_000)]) {
+      const value = input(); value.environment.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = deadline;
+      expect(() => assertHostedPoolQualificationPreflight(value)).toThrow(/enclosing task/);
+    }
   });
 });

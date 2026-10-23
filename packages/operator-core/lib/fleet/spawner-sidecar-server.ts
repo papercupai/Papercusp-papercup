@@ -53,7 +53,7 @@ import { StringDecoder } from 'node:string_decoder';
 // already resolved — too late). See flag-override-store-boot-effect.ts's
 // docblock for the full explanation.
 import '../flag-override-store-boot-effect';
-import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
+import type { SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
 import { installFlagOverrideStore } from '../flag-override-store';
 import { ensureFlagChangeListener } from '../flag-change-listener';
 import {
@@ -294,6 +294,11 @@ export function runSpawnerSidecarServer(deps: {
         requests.set(id, controller);
         requestMethods.set(id, req.method);
         try {
+          // Agent orchestration has a large import graph. Load it for its own
+          // RPC so process execution and health can listen without waiting for
+          // agent-only setup. The flag store is already installed above, and
+          // the original controller still fences cancellation during the load.
+          const { spawnInvokeOnce } = await import('../dbos/orchestrator-runner');
           const result: SpawnInvokeOnceResult = await spawnInvokeOnce(
             p.projectDir,
             p.role,

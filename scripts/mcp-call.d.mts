@@ -132,12 +132,13 @@ export function parseSse(raw: any, requestId?: number): {
 };
 /**
  * Resolve implicit bearer files in the same order as ptool. An explicit
- * PAPERCUSP_MCP_TOKEN_FILE is authoritative; otherwise an isolated
- * PAPERCUSP_HOME token precedes the shared per-home token.
+ * PAPERCUSP_MCP_TOKEN_FILE is authoritative; PAPERCUSP_OPERATOR_HOME names
+ * the real operator home, while a workspace-scoped PAPERCUSP_HOME uses the
+ * shared per-home token first.
  */
-export function superuserTokenPaths(env?: NodeJS.ProcessEnv, home?: string): string[];
+export function superuserTokenPaths(env?: NodeJS.ProcessEnv, home?: string): (string | null)[];
 /** The first candidate is used in diagnostics and for legacy callers. */
-export function superuserTokenPath(env?: NodeJS.ProcessEnv, home?: string): string;
+export function superuserTokenPath(env?: NodeJS.ProcessEnv, home?: string): string | null;
 /** Resolve the local operator port from the configured bare base URL. */
 export function resolveOperatorUrlPort(env?: NodeJS.ProcessEnv): string | null;
 /** Resolve the local resilient MCP proxy port using the same default as ptool. */

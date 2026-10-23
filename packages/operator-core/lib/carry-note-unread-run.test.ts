@@ -158,6 +158,30 @@ describe('describeUnreadRun', () => {
     expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['still running']);
   });
 
+  it('does not infer an active run from a negated inventory and a proposed scenario (EI-26699409305176974)', () => {
+    const body = '## Did\nNo product code or runtime launched this unit.\n' +
+      'Read-only inventory at /tmp/papercusp-focus-449b1-current.\n' +
+      '## Next\nProposed scenario: test run in flight while content reloads.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
+  it('does not infer a launched run from a conditional future step', () => {
+    const body = '## Next\nLaunch a test run; if the suite is still running, read /tmp/future.log.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
+  it('keeps actual unread admissions in Next and after hypothetical or negated clauses', () => {
+    for (const body of [
+      '## Next\nRead /tmp/active.log: the current suite is still running.',
+      'No product code or runtime launched this unit; a separate suite is still running at /tmp/active.log.',
+      'Proposed scenario: test run in flight; the current suite is still running at /tmp/active.log.',
+      'Proposed scenario: test run in flight but the current build is still running at /tmp/active.log.',
+      '## Did\nLaunched suite; output at /tmp/active.log.\n## Next\nRead its result.',
+    ]) expect(describeUnreadRun(body, 0), body).not.toBeNull();
+  });
+
   it('keeps affirmative unread admissions and negation of a different predicate actionable', () => {
     for (const status of [
       'not yet read',

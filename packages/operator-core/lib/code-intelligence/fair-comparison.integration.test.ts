@@ -28,7 +28,7 @@ import { runArm, scoreRuns } from './fair-comparison-run';
 import type { FairArm } from './fair-comparison-arms';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
-import { freshFactory, type FrozenFairInputs } from './fair-comparison-cli';
+import { dispatchFrozenGraphRequest, freshFactory, type FrozenFairInputs } from './fair-comparison-cli';
 import { absCgroupDir, sampleCgroup } from '../task-manager/cgroup-read';
 
 const source = 'export function frozenTarget() { return 1; }\n' +
@@ -82,6 +82,23 @@ afterAll(async () => {
 });
 
 describe('native frozen comparison through the compiler pipeline', () => {
+  it('uses the registered dispatch gates before native graph execution', async () => {
+    const ctx = { projectDir: root, role: 'operator' as const, transport: 'in_process' as const,
+      codeMode: true, contextTier: 'full' as const, transportCapExempt: true,
+      log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {} };
+    const request = { op: 'symbol', name: 'frozenTarget', file_path: 'src/fixture.ts', paths: ['src/fixture.ts'] };
+    await expect(dispatchFrozenGraphRequest(request, { ...ctx, role: 'not-an-admitted-role' as never }))
+      .rejects.toThrow(/role_not_allowed/);
+    await expect(dispatchFrozenGraphRequest({ ...request, op: 'not-a-graph-operation' }, ctx))
+      .rejects.toThrow(/invalid_input/);
+    const replay = await dispatchFrozenGraphRequest(request, ctx);
+    expect(replay.response.error, JSON.stringify(replay.response)).toBeNull();
+    expect(replay.response.sites.map(site => `${site.path}:${site.line1}`)).toEqual(['src/fixture.ts:1']);
+    expect(replay.dispatchWitness).toMatchObject({ entrypoint: 'dispatchProjectedTool',
+      transport: 'in_process', toolName: 'graph:query', callId: expect.any(String) });
+    expect(replay.dispatchWitness.callId.length).toBeGreaterThan(0);
+  }, 60_000);
+
   it('reconstructs the saved multilingual edition and refuses a changed measurement protocol before work', async () => {
     const saved = JSON.parse(readFileSync(new URL('../../../../docs/evidence/native-code-intelligence-preregistration-2026-10-09.json', import.meta.url), 'utf8')) as {
       cases: FairCase[]; keys: AnswerKey[]; preregistration: Preregistration; observations: unknown[]; verdict: string;
@@ -186,13 +203,15 @@ describe('native protocol real confined worker lifecycle', () => {
       }
       expect(repetition.nativeGraphQuery).toBeTypeOf('function');
       const nativeReplays = [];
-      // These are original frozen questions through the exposed graph handler
+      // These are original frozen questions through the registered graph dispatcher
       // inside the managed payload, not answers from the rg comparison arm.
       for (const kase of saved.cases.filter(candidate => candidate.source === 'repository-task' &&
         candidate.intent === 'definition')) {
         const replay = await repetition.nativeGraphQuery!(kase);
         const sites = replay.response.sites.map(site => `${site.path}:${site.line1}`).sort();
         expect(replay.tool).toBe('graph:query');
+        expect(replay.dispatchWitness).toMatchObject({ entrypoint: 'dispatchProjectedTool',
+          transport: 'in_process', toolName: 'graph:query', callId: expect.any(String) });
         expect(replay.question).toEqual(kase);
         expect(replay.sourceWitness.contentHash).toBe(kase.sourceFingerprint);
         expect(replay.tokenWitness.requestHash).toBe(createHash('sha256')
@@ -213,6 +232,22 @@ describe('native protocol real confined worker lifecycle', () => {
         const kase = selected(state), replay = await repetition.nativeGraphQuery!(kase);
         if (state === 'deleted') expect(replay.response.error).not.toBeNull();
         else expect(replay.response.error, JSON.stringify(replay.response)).toBeNull();
+        expect(replay.response.sites.map(site => `${site.path}:${site.line1}`).sort())
+          .toEqual([...saved.keys.find(key => key.caseId === kase.id)!.sites].sort());
+        nativeReplays.push(replay);
+      }
+      // Reuse one worker across configuration removal/restoration. A fresh
+      // process per question would conceal a stale compiler configuration cache.
+      for (const configuration of ['configured', 'unconfigured', 'configured']) {
+        const kase = saved.cases.find(candidate => candidate.language === 'typescript' &&
+          candidate.source === 'authored' && candidate.intent === 'callers' && candidate.subject === 'target' &&
+          candidate.sourceState === 'current' && candidate.configuration === configuration)!;
+        const replay = await repetition.nativeGraphQuery!(kase);
+        const control = replay.control as { configurationFiles: { path: string; hash: string | null }[] };
+        expect(control.configurationFiles.length).toBeGreaterThan(0);
+        expect(control.configurationFiles.every(file => configuration === 'configured'
+          ? /^[a-f0-9]{64}$/.test(file.hash ?? '') : file.hash === null)).toBe(true);
+        expect(replay.response.error, JSON.stringify(replay.response)).toBeNull();
         expect(replay.response.sites.map(site => `${site.path}:${site.line1}`).sort())
           .toEqual([...saved.keys.find(key => key.caseId === kase.id)!.sites].sort());
         nativeReplays.push(replay);

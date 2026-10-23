@@ -159,10 +159,17 @@ export async function decompressArchiveBlobBounded(
   if (row.codec !== 'zstd') return row.blob;
   const fn = zl.zstdDecompress as unknown as (
     buf: Buffer,
-    opts: { maxOutputLength: number },
+    opts: { maxOutputLength: number; chunkSize: number },
     cb: (err: Error | null, out: Buffer) => void,
   ) => void;
-  const raw = await promisify(fn)(row.blob, { maxOutputLength: maxRawBytes });
+  // Node submits another worker job only AFTER the main loop handles each
+  // output chunk. Its 16 KiB default turns a 10 MiB transcript into ~640
+  // sequential handoffs, multiplying unrelated callback delays into route
+  // timeouts. Keep decompression asynchronous, but bound output buffers to
+  // 1 MiB (and avoid that allocation for small manifests). The expansion cap
+  // remains independent of the claimed manifest length.
+  const chunkSize = Math.max(16 * 1024, Math.min(row.bytes_raw, 1024 * 1024));
+  const raw = await promisify(fn)(row.blob, { maxOutputLength: maxRawBytes, chunkSize });
   if (raw.length !== row.bytes_raw || raw.length > maxRawBytes) {
     throw new Error(`archive raw length mismatch: manifest=${row.bytes_raw} actual=${raw.length}`);
   }

@@ -8,6 +8,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV,
@@ -1888,6 +1889,22 @@ describe('background job deadlines (WI-6677)', () => {
     expect(isBackgroundTestCommand('FOO=1 pnpm exec playwright test')).toBe(true);
     expect(isBackgroundTestCommand('rg -n vitest packages/operator-core')).toBe(false);
     expect(isBackgroundTestCommand('printf "npx vitest run"')).toBe(false);
+  });
+
+  it.each([
+    ['unquoted assignment near miss', `REF=${'a'.repeat(80)} printf ready`, false],
+    ['unquoted assignment before a verifier', `REF=${'a'.repeat(80)} bash scripts/verify-tauri-headless.sh`, true],
+    ['absolute path near miss', `bash /${'segment/'.repeat(32)}scripts/unrelated.sh`, false],
+    ['absolute verifier path', `bash /${'segment/'.repeat(32)}scripts/verify-tauri-headless.sh`, true],
+    ['absolute verifier with repeated separators', 'bash /workspace//scripts/verify-tauri-headless.sh', true],
+  ])('bounds test classification for %s', (_label, command, expected) => {
+    // A synchronous regex stall cannot be interrupted by Vitest's async timeout.
+    // The VM deadline interrupts the actual imported classifier, keeping this
+    // regression from wedging the test runner as it did the operator main thread.
+    expect(runInNewContext('classify(command)', {
+      classify: isBackgroundTestCommand,
+      command,
+    }, { timeout: 1_000 })).toBe(expected);
   });
 
   it('budgets the multiline isolated-e2e npm launch before its verifier starts', () => {

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
 vi.mock('playwright', () => ({ chromium: { launch } }));
 vi.mock('@papercusp/operator-core/lib/voice-prefs', () => ({ loadVoicePrefs: async () => ({ elevenlabsVoiceId: 'cache-test-voice' }) }));
+// @ts-ignore — pure JS CLI, intentionally untyped in this regression (EI-26730317493759239).
 import { characterRenderKey, renderPreview } from '../tutorial-character-preview.mjs';
 
 const sha = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');

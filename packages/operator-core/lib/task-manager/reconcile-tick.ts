@@ -10,7 +10,9 @@
  * that hit its process cap, is indistinguishable ROW-BY-ROW from a box that
  * genuinely went idle. Acting on it would mass-strand every live task and report
  * a fleet-wide outage that did not happen. So a degraded scan updates what it can
- * positively confirm and declines to close anything, saying so in the summary.
+ * positively confirm and declines to close rows from scan absence alone. On the
+ * owning host, independent systemd release evidence can still close a scoped row
+ * when the owned scan hit its cap; a missing owned root blocks every closure.
  * "I could not tell" is a valid answer; a confident wrong one is not.
  *
  * REPORT-ONLY on residue (D-010): unaccounted processes are recorded and surfaced,
@@ -119,7 +121,7 @@ export interface ReconcileTickResult {
    * walk. Callers that only want the count keep reading `scan.processes`.
    */
   scannedProcesses: ScannedProcess[];
-  /** True when the scan could not be trusted enough to close rows. */
+  /** True when scan absence alone cannot justify closing rows. */
   degraded: boolean;
   degradedReason?: string;
   touched: number;
@@ -294,20 +296,31 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     ],
   );
 
-  // ── destructive writes only on a trustworthy scan ────────────────────────
+  // ── terminal writes need a healthy scan or independent release evidence ──
   let strandedCount = 0;
   let endedUnobservedCount = 0;
   let recoveredFromJobLogCount = 0;
   let unaccountedPersisted = 0;
   let residueCleared = 0;
-  if (!degraded) {
+  // Truncation makes an omitted process inconclusive, but does not invalidate
+  // the per-unit systemd probe above. Keep that positive evidence useful for a
+  // lost watcher without allowing unscoped absences or a wrong-host scan to
+  // close rows. Residue persistence/clearing still needs a complete owned scan.
+  const strandedToPersist = degraded ? [] : result.stranded;
+  const endedToPersist = degraded
+    ? result.endedUnobserved.filter((verdict) => {
+        const unit = byTaskId.get(verdict.taskId)?.scopeUnit;
+        return scan.ownedRootExists && Boolean(unit && releasedScopes.has(unit));
+      })
+    : result.endedUnobserved;
+  if (!degraded || endedToPersist.length > 0) {
     // Clean before terminal persistence; failure must remain eligible next tick.
-    for (const verdict of [...result.stranded, ...result.endedUnobserved]) {
+    for (const verdict of [...strandedToPersist, ...endedToPersist]) {
       const row = byTaskId.get(verdict.taskId);
       if (row) await cleanupEndedBrowserDirectory(row);
     }
-    strandedCount = await markStranded(result.stranded);
-    const endedWithTerminal = result.endedUnobserved.map((verdict) => {
+    strandedCount = await markStranded(strandedToPersist);
+    const endedWithTerminal = endedToPersist.map((verdict) => {
       const scopeUnit = byTaskId.get(verdict.taskId)?.scopeUnit;
       const terminalProvenance = scopeUnit ? (terminalByUnit.get(scopeUnit) ?? null) : null;
       return terminalProvenance ? { ...verdict, terminalProvenance } : verdict;
@@ -355,6 +368,9 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       }
     }
 
+  }
+
+  if (!degraded) {
     const groups = result.unaccounted.map((g) => {
       // A scope of OURS whose row already closed keeps its own id, so the history
       // stays attached to the real task instead of forking a phantom one.

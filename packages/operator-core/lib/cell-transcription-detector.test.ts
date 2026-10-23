@@ -212,6 +212,26 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(cellTranscriptionHint(text)).toBeNull();
   });
 
+  it('does not turn a clean local staging SHA into a pipeline hint, but keeps a serving claim', async () => {
+    const stagingSha = 'bbb84aeed6';
+    let resolverCalls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits(
+      'Current staging is clean at ' + stagingSha,
+      async () => {
+        resolverCalls += 1;
+        return true;
+      },
+    );
+
+    expect(hint).toBeNull();
+    expect(resolverCalls).toBe(0);
+    const serving = await cellTranscriptionHintResolvingCommits(
+      ':3170 is serving ' + stagingSha,
+      async () => true,
+    );
+    expect(serving).toContain('git.pipelinePosition');
+  });
+
   it('does not classify a local test HEAD as deployed when the same sentence disclaims deployment', async () => {
     const text =
       "Live coord injection reports git-sync is still quarantined after 665 ticks: 7 files failed the content check and the content-fixer could not repair them, so human intervention is needed. " +

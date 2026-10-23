@@ -124,7 +124,52 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
   });
 
   it('concurrent workers cannot spend the per-turn budget more than once', async () => {
-    const texts = await Promise.all(Array.from({ length: 6 }, (_, i) => deliver([fact(`fact-${i}`)])));
+    const diagnostics: unknown[] = [];
+    const trace = process.env.PAPERCUSP_PUSH_LEDGER_DIAGNOSTICS === '1';
+    const waits = new Map<string, { count: number; firstMs: number; lastMs: number }>();
+    const started = performance.now();
+    let sampling = true;
+    const sample = async () => {
+      while (sampling) {
+        const rows = await db.adminSql`SELECT pid, state, wait_event_type, wait_event, left(query, 100) AS query
+          FROM pg_stat_activity WHERE datname = current_database() AND usename = 'harness_app' AND state <> 'idle'`;
+        for (const row of rows) {
+          const key = JSON.stringify(row);
+          const at = performance.now() - started;
+          const old = waits.get(key);
+          waits.set(key, { count: (old?.count ?? 0) + 1, firstMs: old?.firstMs ?? at, lastMs: at });
+        }
+        if (sampling) await new Promise(resolve => setTimeout(resolve, 5));
+      }
+    };
+    const sampler = trace
+      ? sample().catch(error => { diagnostics.push({ samplerError: String(error) }); })
+      : Promise.resolve();
+    const previousOnResult = db.appSql.options.onresult;
+    db.appSql.options.onresult = result => {
+      previousOnResult?.(result);
+      diagnostics.push({ pid: result.backendPid, command: result.command,
+        query: result.query.replace(/\s+/g, ' ').trim().slice(0, 110),
+        elapsedMs: result.elapsedMs, preBuildMs: result.preBuildMs,
+        atMs: performance.now() - started,
+        status: result.status, errorCode: result.errorCode, serverRoutine: result.serverRoutine });
+    };
+    let texts: string[];
+    try {
+      // Drain every worker before restoring diagnostics or letting the next test
+      // reuse the fixture. A failed first worker must not leave its peers running.
+      const results = await Promise.allSettled(Array.from({ length: 6 }, (_, i) => deliver([fact(`fact-${i}`)])));
+      const failures = results.flatMap(result => result.status === 'rejected' ? [String(result.reason)] : []);
+      if (trace) {
+        console.info('PUSH_LEDGER_CONCURRENCY_DIAGNOSTICS', JSON.stringify({ statements: diagnostics, waits: [...waits] }));
+      }
+      expect(failures, JSON.stringify({ statements: diagnostics, waits: [...waits] })).toEqual([]);
+      texts = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+    } finally {
+      sampling = false;
+      await sampler;
+      db.appSql.options.onresult = previousOnResult;
+    }
     const rows = await db.adminSql<{ chars: number }[]>`SELECT chars FROM harness_shared.code_intel_pushes WHERE workspace_id = ${input.workspace}`;
     expect(rows.length).toBe(2);
     expect(texts.filter(Boolean)).toHaveLength(2);

@@ -102,6 +102,29 @@ describe('caller-session research replay through the push boundary', () => {
     expect((await readResearchTrail(fx.workspaceId, batch.owner, harness)).subjects.map(s => s.path).sort())
       .toEqual(['a.ts', 'b.ts']);
   });
+  it('retains a newer batch committed while an earlier capture waits for its transaction lock', async () => {
+    const batch = input({ owner: 'zzz-queued-owner' });
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    let queued: Promise<void> | undefined;
+    try {
+      await fx.admin.begin(async tx => {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`research:${fx.workspaceId}:${batch.owner}:${harness}`}, 0))`;
+        queued = persistResearchBatch(batch, [{ kind: 'path', requested: 'a.ts', path: 'a.ts', seenAt: now }]);
+        clock.mockReturnValue(now + 1);
+        const newer = [{ kind: 'path', requested: 'b.ts', path: 'b.ts', seenAt: now + 1 }];
+        await tx`INSERT INTO harness_shared.code_intel_research_trails
+          (workspace_id,owner_id,harness_slug,client,subjects,captured_at)
+          VALUES (${fx.workspaceId},${batch.owner},${harness},'claude',${JSON.stringify(newer)}::jsonb,now())`;
+      });
+      await queued;
+      expect((await readResearchTrail(fx.workspaceId, batch.owner, harness)).subjects.map(s => s.path).sort())
+        .toEqual(['a.ts', 'b.ts']);
+    } finally {
+      clock.mockRestore();
+      await queued;
+    }
+  });
   it('caps stored subjects, expires old subjects and hides expired capture markers', async () => {
     const now = Date.now();
     const subjects = Array.from({ length: RESEARCH_TRAIL_LIMIT + 2 }, (_, i) =>

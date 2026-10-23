@@ -140,11 +140,13 @@ BACKUP_MIGRATION_LOCK_HELD=false
 # into a stale-backup incident. Extend only when the directory archive grows,
 # and never beyond the absolute ceiling below. A genuinely stuck dump still
 # dies at the original floor. On 2026-10-15 the transcript tier reached 159 GB
-# at the former 5400s ceiling and was still growing; the 90-minute cap had become
-# shorter than a progressing dump. Keep a finite two-hour ceiling, with the
-# separate six-hour artifact-freshness probe as the recovery-point alarm.
+# at the former 5400s ceiling and was still growing. On 2026-10-22 it hit the
+# two-hour ceiling at 178,588,236,543 bytes; the retained, pg_restore-listable
+# transcript archive occupied 179,791,685,043 bytes. The measured ceiling was
+# too short for this workload. Allow 30 more minutes while preserving the 300s
+# no-progress abort, disk-headroom guard, and six-hour freshness alarm.
 TIMEOUT_SEC="${PC_BACKUP_TIMEOUT_SEC:-2700}"
-TIMEOUT_MAX_SEC="${PC_BACKUP_TIMEOUT_MAX_SEC:-7200}"
+TIMEOUT_MAX_SEC="${PC_BACKUP_TIMEOUT_MAX_SEC:-9000}"
 PROGRESS_STALE_SEC="${PC_BACKUP_PROGRESS_STALE_SEC:-300}"
 KILL_GRACE_SEC="${PC_BACKUP_KILL_GRACE_SEC:-5}"
 JOBS="${PC_BACKUP_JOBS:-4}"

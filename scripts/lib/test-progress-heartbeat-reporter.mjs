@@ -38,15 +38,23 @@ export default class TestProgressHeartbeatReporter {
   }
 
   traceCase(event, testCase) {
-    if (!this.trace || !testCase || this.traceRemaining <= 0) return;
+    if (!testCase) return;
     try {
       const result = event === 'finished' ? testCase.result() : undefined;
+      const failed = result?.state === 'failed';
+      // A later test can outlive the parent's deadline. Preserve completed
+      // failures immediately, even after optional startup tracing is exhausted.
+      if (!failed && (!this.trace || this.traceRemaining <= 0)) return;
       if (result?.state === 'skipped') return;
-      this.traceRemaining -= 1;
+      if (!failed) this.traceRemaining -= 1;
       this.write(`TEST_FILE_CASE_TRACE ${JSON.stringify({ event,
         file: String(testCase.module?.moduleId ?? '').slice(-300),
         name: String(testCase.fullName ?? testCase.name ?? '').slice(0, 600),
         ...(result ? { state: result.state } : {}),
+        ...(failed ? { errors: (result.errors ?? []).slice(0, 3).map(error => ({
+          message: String(error?.message ?? error).slice(0, 2048),
+          stack: String(error?.stack ?? '').slice(0, 1024),
+        })) } : {}),
       })}\n`);
     } catch { /* Passive diagnostics must never change a test verdict. */ }
   }

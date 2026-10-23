@@ -32,6 +32,103 @@ function freezeComparison(value) {
   return value;
 }
 
+// Retain only bytes referenced by the process-bound reporter protocol. This is
+// an archive of stated observations, never an enumeration of runtime inputs.
+function retainReporterEvaluatorArtifacts(payload, out, persist) {
+  const result = { scope: "referenced-evaluator-code", status: "unobserved",
+    referenceLimit: 4096, artifactByteLimit: 16 * 1024 * 1024,
+    totalByteLimit: 64 * 1024 * 1024, referencesVisited: 0,
+    bytesRead: 0, bytesRetained: 0, entries: [], gaps: [] };
+  const gaps = new Set(), retained = new Map();
+  const gap = reason => gaps.add(reason);
+  const modules = `${out}.modules`;
+  let observed = false;
+  const observe = (location, observation) => {
+    observed = true;
+    if (observation?.schemaVersion !== "vitest-evaluator-inputs-v1" ||
+        observation.scope !== "vitest-inlined-evaluator-inputs" ||
+        observation.basis !== "before-evaluator-call") {
+      gap("evaluator-protocol-unsupported"); return;
+    }
+    for (const role of ["entries", "vmInputs"]) {
+      if (role === "vmInputs" && observation[role] === undefined) continue;
+      const pins = observation[role];
+      if (!Array.isArray(pins)) { gap("evaluator-reference-population-malformed"); continue; }
+      for (let i = 0; i < pins.length; i++) {
+        if (result.referencesVisited === result.referenceLimit) {
+          gap("evaluator-reference-limit"); break;
+        }
+        result.referencesVisited++;
+        const pin = pins[i];
+        try {
+          if (!pin || typeof pin.id !== "string" || !comparisonDigest(pin.sha256) ||
+              !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0 ||
+              pin.byteLength > result.artifactByteLimit || typeof pin.codeRef !== "string")
+            throw new Error("malformed-or-oversized-reference");
+          const directory = lstatSync(modules);
+          if (!directory.isDirectory() || directory.isSymbolicLink() ||
+              realpathSync(modules) !== resolve(modules) ||
+              pin.codeRef !== join(resolve(modules), `${pin.sha256}.js`))
+            throw new Error("redirected-reference");
+          let artifact = retained.get(pin.sha256);
+          if (artifact && artifact.byteLength !== pin.byteLength)
+            throw new Error("length-mismatch");
+          if (!artifact) {
+            if (result.bytesRead + pin.byteLength > result.totalByteLimit)
+              throw new Error("total-byte-limit");
+            const fd = openSync(pin.codeRef, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+            let bytes;
+            try {
+              const stat = fstatSync(fd);
+              if (!stat.isFile() || stat.size !== pin.byteLength) throw new Error("length-or-file-type-mismatch");
+              const buffer = Buffer.alloc(Math.min(pin.byteLength + 1, result.totalByteLimit - result.bytesRead));
+              let length = 0, count;
+              while (length < buffer.length && (count = readSync(fd, buffer, length, buffer.length - length, null)) > 0) {
+                length += count;
+                result.bytesRead += count; // Rejected bytes consume the same IO budget as retained bytes.
+              }
+              const after = fstatSync(fd), current = lstatSync(pin.codeRef), rootAfter = lstatSync(modules);
+              if (length !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
+                  after.ctimeMs !== stat.ctimeMs || current.isSymbolicLink() ||
+                  current.dev !== stat.dev || current.ino !== stat.ino ||
+                  rootAfter.dev !== directory.dev || rootAfter.ino !== directory.ino ||
+                  realpathSync(modules) !== resolve(modules))
+                throw new Error("changed-during-capture");
+              bytes = buffer.subarray(0, length);
+            } finally { closeSync(fd); }
+            if (createHash("sha256").update(bytes).digest("hex") !== pin.sha256)
+              throw new Error("digest-mismatch");
+            artifact = persist(bytes, "evaluator.js");
+            retained.set(pin.sha256, artifact);
+            result.bytesRetained += bytes.length; // Unique archived artifacts, not reference occurrences.
+          }
+          result.entries.push({ location: `${location}/${role}/${i}`, id: pin.id, artifact });
+        } catch (error) {
+          gap(`evaluator-sidecar-rejected:${error?.code ?? error?.message ?? "unknown"}`);
+        }
+      }
+    }
+  };
+  const scan = (rows, location, getObservation, suffix) => {
+    if (rows === undefined) return;
+    if (!Array.isArray(rows)) { gap("evaluator-observation-population-malformed"); return; }
+    if (rows.length > result.referenceLimit) gap("evaluator-observation-limit");
+    for (let i = 0; i < Math.min(rows.length, result.referenceLimit); i++) {
+      const observation = getObservation(rows[i]);
+      if (observation !== undefined) observe(`${location}/${i}/${suffix}`, observation);
+    }
+  };
+  for (const key of ["rows", "diagnostics"])
+    scan(payload[key], `/${key}`, row => row?.moduleEvaluations, "moduleEvaluations");
+  scan(payload.nativeRun?.files, "/nativeRun/files", row => row?.proof?.inputs?.moduleEvaluations,
+    "proof/inputs/moduleEvaluations");
+  if (!observed) gap("evaluator-observations-unobserved");
+  else if (!result.referencesVisited) gap("evaluator-references-unobserved");
+  result.gaps = [...gaps];
+  result.status = result.gaps.length ? (observed ? "partial" : "unobserved") : "retained";
+  return result;
+}
+
 /** OUT diagnostics at the existing affected-test child boundary. This records
  * the real parent invocation and raw streams; it cannot certify unobserved npm
  * lifecycle/shell steps, executable resolution or runtime dependency closure.
@@ -279,7 +376,9 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
     npmLifecycle.gaps.push(`native-npm-lifecycle-unbound:${String(error?.message ?? error)}`);
   }
   npmLifecycle.gaps = [...new Set(npmLifecycle.gaps)];
-  // OUT is an existing reporter diagnostic, not a step receipt or pass token.
+  // OUT is a reporter callback artifact, not a standalone receipt or pass token.
+  // The ordered reader may qualify it only after binding it to the observed npm
+  // lifecycle, the reporter process, complete stream artifacts and source census.
   // Keep its failures independent from otherwise useful process observations.
   const reporter = processTrace.reporter = { status: "unknown", artifact: null, process: null,
     gaps: ["reporter-evaluator-sidecars-not-retained"] };
@@ -305,7 +404,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
         throw new Error("output changed or redirected during capture");
       bytes = buffer.subarray(0, length);
     } finally { closeSync(fd); }
-    const run = JSON.parse(bytes.toString("utf8"))?.nativeRun;
+    const payload = JSON.parse(bytes.toString("utf8")), run = payload?.nativeRun;
     if (!run || run.schemaVersion !== "native-vitest-run-v1" || run.scope !== "vitest-reporter-callbacks" ||
         !Number.isSafeInteger(run.pid) || run.pid <= 0 || !Number.isSafeInteger(run.ppid) || run.ppid <= 0 ||
         !Number.isSafeInteger(run.startedAtMs) || !Number.isSafeInteger(run.finishedAtMs) ||
@@ -344,6 +443,11 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       startedAtMs: run.startedAtMs, finishedAtMs: run.finishedAtMs };
     reporter.status = "bound";
     if (!exits.length) reporter.gaps.push("reporter-process-terminal-unobserved");
+    reporter.evaluatorArtifacts = retainReporterEvaluatorArtifacts(payload, path, persist);
+    if (reporter.evaluatorArtifacts.status !== "unobserved") {
+      reporter.gaps = reporter.gaps.filter(gap => gap !== "reporter-evaluator-sidecars-not-retained");
+      if (reporter.evaluatorArtifacts.status === "partial") reporter.gaps.push("reporter-evaluator-sidecars-partial");
+    }
   } catch (error) {
     reporter.gaps.push(`native-vitest-out-unbound:${String(error?.message ?? error)}`);
   }
@@ -899,7 +1003,7 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
   // standalone runs is not a chain: require the original parent to bind every
   // child receipt and to contain their non-overlapping execution intervals.
   const chainPopulation = selection.tasks.filter(task =>
-    Array.isArray(task.steps) && task.steps.length > 1 || task.lifecycleCommands?.length > 0)
+    Array.isArray(task.steps) && task.steps.length > 0 || task.lifecycleCommands?.length > 0)
     .map(task => task.id);
   require(new Set(chainPopulation).size === chainPopulation.length,
     "unique original ordered task population required");
@@ -914,6 +1018,21 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
     const path = await realpath(join(evidenceRoot, pin.ref));
     require(!usedArtifacts.has(path), "original chain artifact reused across roles or steps");
     usedArtifacts.add(path);
+  };
+  const samePin = (a, b) => Boolean(a && b && a.ref === b.ref && a.sha256 === b.sha256);
+  const readProcessEvent = async (trace, pin, event) => {
+    require(pin && comparisonPath(pin.ref) && comparisonDigest(pin.sha256),
+      `original native ${event} artifact pin required`);
+    const rows = trace.events.filter(row => row.event === event && samePin(row.artifact, pin));
+    require(rows.length === 1, `unique original native ${event} event required`);
+    const { artifact, ...projected } = rows[0];
+    const bytes = await readPinned(pin.ref, pin.sha256, false);
+    let observed;
+    try { observed = JSON.parse(bytes.toString("utf8")); }
+    catch { require(false, `malformed original native ${event} event`); }
+    require(same(observed, projected) && observed.kind === "native-node-process-event",
+      `original native ${event} event differs from its pinned artifact`);
+    return observed;
   };
   for (const chainPin of chainPins) {
     const tasks = selection.tasks.filter(task => task.id === chainPin.task);
@@ -932,35 +1051,81 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
       ...lifecycle.filter(row => row.script === `post${task.script}`).map(row =>
         ({ phase: "post", step: null, command: row.command, script: row.script })),
     ];
-    require(expected.length > 1 && expected.length <= 64 && Array.isArray(chainPin.steps) &&
+    require(expected.length > 0 && expected.length <= 64 && Array.isArray(chainPin.steps) &&
       chainPin.steps.length === expected.length, "every original ordered occurrence required");
     await uniqueArtifact(chainPin.receipt);
     const parent = await readPinned(chainPin.receipt.ref, chainPin.receipt.sha256);
-    const parentStart = Date.parse(parent.execution?.startedAt);
-    const parentEnd = Date.parse(parent.execution?.completedAt);
-    require(parent.kind === "original-native-command-execution" && parent.cwd === task.dir &&
-      parent.originalCommand === task.command &&
-      same(parent.execution?.command, ["npm", "run", task.script]) &&
-      parent.execution.exitCode === 0 && parent.execution.signal === null && parent.execution.error === null &&
+    const execution = parent.execution;
+    const parentStart = execution?.startedAtMs, parentEnd = execution?.finishedAtMs;
+    const trace = parent.processTrace;
+    const npmLifecycle = trace?.npmLifecycle;
+    const root = npmLifecycle?.root;
+    const allowedLifecycleGaps = new Set(["lifecycle-population-unqualified",
+      "lifecycle-shell-streams-unobserved", "lifecycle-step-reports-unobserved"]);
+    require(parent.kind === "affected-task-native-execution" && parent.task === task.id &&
+      parent.originalCommand === task.command && execution?.cwd === resolve(sourceRoot, task.dir) &&
+      same(execution?.command, ["npm", "run", task.script]) &&
+      execution.exitCode === 0 && execution.signal === null && execution.error === null &&
+      execution.captureComplete === true && parent.sourceInputsUnchanged === true &&
       Number.isSafeInteger(parentStart) && Number.isSafeInteger(parentEnd) && parentEnd > parentStart &&
-      same(parent.steps, chainPin.steps.map(({ phase, step, receipt }) => ({ phase, step, receipt }))),
-    "successful original parent must bind every native step receipt");
+      Array.isArray(trace?.events) && trace.population?.complete === true &&
+      npmLifecycle?.scope === "direct-root-npm-spawn-close" && npmLifecycle.status === "observed" &&
+      Array.isArray(npmLifecycle.spans) && npmLifecycle.spans.length === expected.length &&
+      Array.isArray(npmLifecycle.gaps) && npmLifecycle.gaps.every(gap => allowedLifecycleGaps.has(gap)) &&
+      root && Number.isSafeInteger(root.pid) && typeof root.processIdentity === "string" && root.processIdentity &&
+      Array.isArray(parent.before?.inputs) && Array.isArray(parent.after?.inputs) &&
+      same(parent.before.inputs, parent.after.inputs),
+    "complete native npm parent and process trace required for ordered evidence");
+    const rootEntry = await readProcessEvent(trace, root.entry, "node-entry");
+    require(rootEntry.pid === root.pid && rootEntry.processIdentity === root.processIdentity &&
+      rootEntry.cwd === execution.cwd && Array.isArray(rootEntry.argv) && rootEntry.argv.length === 4 &&
+      ["npm", "npm-cli.js"].includes(basename(rootEntry.argv[1] ?? "")) &&
+      rootEntry.argv[2] === "run" && rootEntry.argv[3] === task.script &&
+      Number.isSafeInteger(rootEntry.atMs) && rootEntry.atMs >= parentStart && rootEntry.atMs <= parentEnd,
+    "original npm root process entry differs");
+    let lastLifecycleEnd = parentStart;
+    for (let index = 0; index < expected.length; index++) {
+      const original = expected[index], span = npmLifecycle.spans[index];
+      require(span.event === original.script && span.script === original.command &&
+        typeof span.command === "string" && span.command.length > 0 &&
+        Array.isArray(span.argv) && same(span.argv, ["-c", original.command]) &&
+        span.cwd === execution.cwd && span.observerPid === root.pid &&
+        span.observerProcessIdentity === root.processIdentity && span.exitCode === 0 && span.signal === null &&
+        Number.isSafeInteger(span.startedAtMs) && Number.isSafeInteger(span.closedAtMs) &&
+        span.startedAtMs >= lastLifecycleEnd && span.closedAtMs >= span.startedAtMs &&
+        span.closedAtMs <= parentEnd && Number.isSafeInteger(span.childPid) && span.childPid > 0 &&
+        typeof span.childIdentity === "string" && span.childIdentity,
+      "observed npm lifecycle command differs from original order");
+      const spawn = await readProcessEvent(trace, span.spawn, "child-spawn");
+      const close = await readProcessEvent(trace, span.close, "child-close");
+      require(spawn.pid === root.pid && spawn.processIdentity === root.processIdentity &&
+        spawn.childPid === span.childPid && spawn.childIdentity === span.childIdentity &&
+        spawn.command === span.command && same(spawn.argv, span.argv) && spawn.cwd === span.cwd &&
+        spawn.lifecycle?.event === span.event && spawn.lifecycle?.script === span.script &&
+        spawn.atMs === span.startedAtMs && close.pid === root.pid &&
+        close.processIdentity === root.processIdentity && close.childPid === span.childPid &&
+        close.childIdentity === span.childIdentity && close.code === span.exitCode &&
+        close.signal === span.signal && close.atMs === span.closedAtMs,
+      "npm lifecycle summary differs from native spawn/close artifacts");
+      lastLifecycleEnd = span.closedAtMs;
+    }
     require(chainPin.logs && Object.keys(chainPin.logs).length === 2, "two original parent logs required");
     for (const role of ["stdout", "stderr"]) {
       const log = chainPin.logs[role];
       await uniqueArtifact(log);
-      require(parent.execution[role] === log.ref || parent.execution[role] === join(evidenceRoot, log.ref),
+      require(samePin(log, execution.logs?.[role]),
         "parent log absent from original execution");
       await readPinned(log.ref, log.sha256, false);
     }
     // Pin the actual npm entry point, including pre/post mappings, rather than
     // accepting a parent with an unrelated script which happened to be green.
     const packagePath = `${task.dir}/package.json`;
-    require(Array.isArray(parent.inputs) && parent.inputs.some(row => row.path === packagePath) &&
-      parent.inputs.every(row => comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
-      new Set(parent.inputs.map(row => row.path)).size === parent.inputs.length,
+    const parentInputs = parent.before.inputs;
+    require(parentInputs.some(row => row.path === packagePath) &&
+      parentInputs.every(row => comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
+      new Set(parentInputs.map(row => row.path)).size === parentInputs.length,
     "original parent wrapper inputs required");
-    await matchCurrentInputs(parent.inputs);
+    await matchCurrentInputs(parentInputs);
     const pkg = JSON.parse(await readFile(join(sourceRoot, packagePath), "utf8"));
     require(pkg.scripts?.[task.script] === task.command &&
       lifecycle.every(row => pkg.scripts?.[row.script] === row.command) &&
@@ -984,12 +1149,9 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
           same(pin.receipt, prepared[0].receipt), "exact qualified original command step required");
         step = { ...prepared[0], phase: original.phase };
       } else {
-        require(original.phase === "test" && ["node-test", "vitest-json"].includes(pin.format),
-          "native original test-step report required");
-        const words = scriptCommandWords(original.command);
-        require(pin.format === "node-test" ? basename(words[0] ?? "") === "node" && words.includes("--test") :
-          basename(words[0] ?? "") === "vitest" && words.includes("run"),
-        "native report format must match the original runner");
+        require(original.phase === "test" && pin.format === "vitest-native-run" &&
+          expected.filter(row => row.phase === "test").length === 1,
+        "one original Vitest reporter run is required per native parent");
         const occurrences = selection.fileOccurrences.filter(row => row.task === task.id &&
           (row.step ?? null) === original.step);
         const originalStep = task.steps ? task.steps[original.step] : task;
@@ -1000,65 +1162,104 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
           !selection.commandObligations.some(row => row.task === task.id &&
             (row.step ?? null) === original.step && row.kind === "command-check"),
         "complete original test-step occurrence population required");
-        const receipt = await readPinned(pin.receipt.ref, pin.receipt.sha256);
-        const execution = receipt.execution;
-        const startedAtMs = Date.parse(execution?.startedAt), finishedAtMs = Date.parse(execution?.completedAt);
-        require(receipt.kind === "original-native-command-execution" && receipt.cwd === task.dir &&
-          receipt.originalCommand === original.command &&
-          same(execution?.command, ["bash", "-lc", original.command]) && execution.exitCode === 0 &&
-          execution.signal === null && execution.error === null &&
-          Number.isSafeInteger(startedAtMs) && Number.isSafeInteger(finishedAtMs) && finishedAtMs > startedAtMs &&
-          Array.isArray(receipt.before?.inputs) && receipt.before.inputs.length > 0 &&
-          receipt.before.inputs.every(row => comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
-          new Set(receipt.before.inputs.map(row => row.path)).size === receipt.before.inputs.length &&
-          same(receipt.before.inputs, receipt.after?.inputs) &&
-          occurrences.every(row => receipt.before.inputs.some(input => input.path === row.file)),
-        "successful unchanged original test-step execution required");
+        const reporter = trace.reporter;
+        const reporterProcess = reporter?.process;
+        const testSpan = npmLifecycle.spans.find(row => row.event === original.script &&
+          row.script === original.command);
+        require(reporter?.status === "bound" && reporterProcess && testSpan &&
+          samePin(pin.receipt, reporter.artifact) && reporterProcess.lifecycle &&
+          samePin(reporterProcess.lifecycle.spawn, testSpan.spawn) &&
+          samePin(reporterProcess.lifecycle.close, testSpan.close) &&
+          reporterProcess.lifecycle.childPid === testSpan.childPid &&
+          reporterProcess.lifecycle.childIdentity === testSpan.childIdentity,
+        "Vitest reporter must be bound to the observed original npm test lifecycle");
+        const reporterEntry = await readProcessEvent(trace, reporterProcess.entry, "node-entry");
+        const reporterExit = await readProcessEvent(trace, reporterProcess.exit, "node-exit");
+        require(reporterEntry.pid === reporterProcess.pid && reporterEntry.ppid === reporterProcess.ppid &&
+          reporterEntry.processIdentity === reporterProcess.processIdentity &&
+          reporterEntry.cwd === execution.cwd,
+        "native Vitest process entry identity differs");
+        require(reporterExit.pid === reporterProcess.pid && reporterExit.ppid === reporterProcess.ppid &&
+          reporterExit.processIdentity === reporterProcess.processIdentity && reporterExit.code === 0 &&
+          reporterExit.exitListenersComplete === true,
+        "native Vitest process did not exit cleanly with complete listeners");
+        require(Array.isArray(reporterEntry.argv) && basename(reporterEntry.argv[1] ?? "") === "vitest.mjs" &&
+          reporterEntry.argv[2] === "run",
+        "native reporter process did not execute the original Vitest runner command");
+        const reportBytes = await readPinned(pin.receipt.ref, pin.receipt.sha256, false);
+        let reportEnvelope;
+        try { reportEnvelope = JSON.parse(reportBytes.toString("utf8")); }
+        catch { require(false, "malformed native Vitest reporter artifact"); }
+        const report = reportEnvelope?.nativeRun;
+        const testFiles = occurrences.map(row => row.file).sort();
+        require(report?.schemaVersion === "native-vitest-run-v1" &&
+          report.scope === "vitest-reporter-callbacks" && report.pid === reporterProcess.pid &&
+          report.ppid === reporterProcess.ppid && report.terminalHook === "onTestRunEnd" &&
+          report.reason === "passed" && report.unhandledErrorCount === 0 &&
+          report.modulePopulationMatched === true && Array.isArray(report.gaps) && report.gaps.length === 0 &&
+          Number.isSafeInteger(report.startedAtMs) && Number.isSafeInteger(report.finishedAtMs) &&
+          report.startedAtMs >= testSpan.startedAtMs && report.finishedAtMs <= testSpan.closedAtMs &&
+          Array.isArray(report.selectedManifest?.specifications) &&
+          same(report.selectedManifest.specifications.map(row => row.testFile).sort(), testFiles) &&
+          Array.isArray(report.reportedModulePaths) &&
+          same(report.reportedModulePaths.slice().sort(), testFiles) &&
+          Array.isArray(report.files) && report.files.length === occurrences.length,
+        "complete native Vitest reporter population required");
+        const sourceRowsByPath = new Map();
+        let testsPassed = 0;
+        for (const file of report.files) {
+          const sourceEvidence = file.proof?.sourceEvidence;
+          const exactSource = sourceEvidence?.sources?.filter(source =>
+            source.path === file.testFile && source.basis === "vite-pre-transform") ?? [];
+          require(file.state === "passed" && file.firstAttemptVerdict === "pass" &&
+            file.execution?.passed > 0 && file.execution.failed === 0 && file.execution.skipped === 0 &&
+            file.execution.collectionFailed === false && Array.isArray(file.cases) && file.cases.length > 0 &&
+            file.cases.every(test => test.status === "pass") &&
+            sourceEvidence?.schemaVersion === "vite-collected-source-evidence-v1" &&
+            sourceEvidence.scope === "repository-worker-vite-original-sources" &&
+            sourceEvidence.status === "stable" && Array.isArray(sourceEvidence.reasons) &&
+            sourceEvidence.reasons.length === 0 && exactSource.length === 1 &&
+            comparisonDigest(exactSource[0].sha256) && exactSource[0].currentSha256 === exactSource[0].sha256,
+          "Vitest step must have complete no-skip cases and stable original source evidence");
+          for (const source of sourceEvidence.sources) {
+            const prior = sourceRowsByPath.get(source.path);
+            require(!prior || prior.sha256 === source.sha256,
+              `conflicting native source evidence: ${source.path}`);
+            sourceRowsByPath.set(source.path, { path: source.path, sha256: source.sha256 });
+          }
+          testsPassed += file.execution.passed;
+        }
+        require(same(report.files.map(file => file.testFile).sort(), testFiles) &&
+          sourceRowsByPath.size > 0,
+        "native Vitest source population differs from selected files");
+        const sourceRows = [...sourceRowsByPath.values()];
+        await matchCurrentInputs(sourceRows);
         const logs = {};
         require(pin.logs && Object.keys(pin.logs).length === 3, "three original test-step logs required");
         for (const role of ["stdout", "stderr", "report"]) {
           const log = pin.logs[role];
-          await uniqueArtifact(log);
-          require(execution[role] === log.ref || execution[role] === join(evidenceRoot, log.ref),
-            "test-step log absent from original execution");
-          logs[role] = await readPinned(log.ref, log.sha256, role === "report");
-        }
-        const report = logs.report;
-        const reportRows = pin.format === "node-test" ? report.files : report.testResults;
-        require(Array.isArray(reportRows) && reportRows.length === occurrences.length,
-          "native report must contain every original file occurrence");
-        const reportFiles = [];
-        let testsPassed = 0;
-        for (const row of reportRows) {
-          const file = pin.format === "node-test" ? row.file : row.name;
-          require(typeof file === "string" && isAbsolute(file), "absolute native report file required");
-          const path = await realpath(file), within = relative(sourceRoot, path);
-          require(comparisonPath(within), "native report file escaped repository root");
-          reportFiles.push(within);
-          if (pin.format === "node-test") {
-            require(report.schemaVersion === 1 && Number.isSafeInteger(row.passed) && row.passed > 0 &&
-              row.failed === 0 && row.skipped === 0 && row.fileLevelFailure === null &&
-              Array.isArray(row.failedCases) && row.failedCases.length === 0,
-            "native node step must execute every assertion without skips or failures");
-            testsPassed += row.passed;
+          if (role === "report") {
+            require(samePin(log, reporter.artifact), "native reporter report pin differs");
+            logs[role] = reportEnvelope;
           } else {
-            require(row.status === "passed" && Array.isArray(row.assertionResults) && row.assertionResults.length > 0 &&
-              row.assertionResults.every(assertion => assertion.status === "passed" &&
-                Array.isArray(assertion.failureMessages) && assertion.failureMessages.length === 0),
-            "native Vitest step must execute every assertion without skips or failures");
-            testsPassed += row.assertionResults.length;
+            await uniqueArtifact(log);
+            const rows = trace.streams.filter(row => row.processIdentity === reporterProcess.processIdentity &&
+              row.pid === reporterProcess.pid && row.role === role);
+            const pin = rows[0]?.artifact;
+            const exitPin = reporterExit.streams?.[role];
+            require(rows.length === 1 && rows[0].scope === "node-writable-call-inputs" &&
+              rows[0].captureComplete === true && Number.isSafeInteger(rows[0].observedByteLength) &&
+              rows[0].observedByteLength === pin?.byteLength &&
+              exitPin?.scope === rows[0].scope && exitPin.captureComplete === true &&
+              exitPin.sha256 === pin?.sha256 && exitPin.byteLength === pin?.byteLength &&
+              samePin(log, pin), `complete native Vitest ${role} stream required`);
+            logs[role] = await readPinned(log.ref, log.sha256, false);
           }
         }
-        require(new Set(reportFiles).size === reportFiles.length &&
-          same(reportFiles.sort(), occurrences.map(row => row.file).sort()) &&
-          (pin.format === "node-test" || report.success === true && report.numPassedTests === testsPassed &&
-            report.numTotalTests === testsPassed && report.numFailedTests === 0 && report.numPendingTests === 0 &&
-            report.numTodoTests === 0 && report.numFailedTestSuites === 0),
-        "complete no-skip original runner report required");
-        await matchCurrentInputs(receipt.before.inputs);
         step = { task: task.id, phase: original.phase, step: original.step, command: original.command,
-          receipt: pin.receipt, fileOccurrences: occurrences, inputs: receipt.before.inputs,
-          startedAtMs, finishedAtMs, childWallMs: finishedAtMs - startedAtMs, testsPassed, format: pin.format };
+          receipt: pin.receipt, fileOccurrences: occurrences, inputs: sourceRows,
+          startedAtMs: report.startedAtMs, finishedAtMs: report.finishedAtMs,
+          childWallMs: report.finishedAtMs - report.startedAtMs, testsPassed, format: pin.format };
       }
       require(step.startedAtMs >= previousEnd && step.finishedAtMs <= parentEnd,
         "native chain step intervals overlap, reverse, or escape original parent");

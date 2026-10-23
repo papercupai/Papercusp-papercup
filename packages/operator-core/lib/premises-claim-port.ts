@@ -428,6 +428,22 @@ function hasUnfilteredLiveProcessCensus(probeText: string): boolean {
 /** The concrete probe attached to a derived premise. */
 function recheckFor(subject: string, claim: string): string {
   if (isCurrentUnaccountedProcessState(`${subject} ${claim}`)) return LIVE_PROCESS_CENSUS_RECHECK;
+  // A bounded containment claim needs evidence from that same file/ref/runtime.
+  // Repository-wide absence still needs the broader search, even when it cites
+  // one example file. Inspect the full sentence before its display is clamped.
+  const repositoryWide = /\b(?:(?:whole|entire)\s+(?:repo(?:sitory)?|codebase)|anywhere\s+in\s+(?:the\s+)?(?:repo(?:sitory)?|codebase)|across\s+(?:the\s+)?(?:repo(?:sitory)?|codebase))\b/i.test(claim);
+  const path = claim.match(/\b(?:[\w.-]+\/)*[\w.-]+\.(?:tsx?|[cm]?js|json|sql|md|ya?ml)\b/i)?.[0];
+  const ref = claim.match(/\b(?:commit|build|candidate|ref)\s*[:=]?\s*`?([0-9a-f]{7,40}|HEAD|origin\/[\w./-]+)/i)?.[1];
+  const fileScoped = path && /\b(?:in|inside|within|file|path|blob)\b/i.test(claim);
+  const runtimeScoped = /\b(?:served|serving|loaded|current|live)\b/i.test(claim)
+    && /\b(?:build|commit|candidate|runtime|handler)\b/i.test(claim);
+  if (!repositoryWide && (fileScoped || runtimeScoped)) {
+    const target = path ? `file ${path}` : 'the named serving runtime/handler';
+    const version = ref ? ` at ${ref}` : '';
+    const probe = path && ref ? ` Read it with git show ${ref}:${path}.` : '';
+    return `Verify the claim in ${target}${version}, preserving its stated file/ref/runtime scope.${probe} `
+      + 'For a serving build, confirm the loaded code identity before checking containment.';
+  }
   const scopeRule =
     'across the WHOLE repo (not the one file that suggested it), then state the scope you searched — ' +
     'an absence found in one module is not an absence.';
@@ -626,7 +642,8 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
       // subject — a report OF a claim, not a claim.
       if (REPORTED_SPEECH.has(subj.toLowerCase())) continue;
       const bounds = sentenceBoundsAt(prose, m.index ?? 0);
-      const claim = clampClaim(originalSpan(text ?? '', prose, bounds.start, bounds.end));
+      const fullClaim = originalSpan(text ?? '', prose, bounds.start, bounds.end);
+      const claim = clampClaim(fullClaim);
       if (!claim) continue;
       // P-014: the recheck names the subject to grep for, so it needs the identifier the
       // author actually wrote, not its redacted husk. The group sits at a known offset
@@ -661,7 +678,7 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
         // D-001 (c): name the SCOPE requirement, not just "verify this". Scope of
         // inference — a real search over too narrow a scope — is the measured
         // failure mode, so a recheck that omits its scope reproduces the bug.
-        recheck: recheckFor(subjForRecheck, claim),
+        recheck: recheckFor(subjForRecheck, fullClaim),
       });
       if (out.length >= MAX_PREMISES) return out;
     }

@@ -5,6 +5,7 @@ import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promis
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
 import fastGlob from 'fast-glob';
+import pLimit from 'p-limit';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import ts from 'typescript';
@@ -414,6 +415,11 @@ async function expandedRepoSourcePathsAtRoot(
  */
 export const detectBroadRepoTreeScan = detectBroadRepoTreeScanOffThread;
 
+// Evidence reads and replays share one worker budget. Wait for a slot before
+// loading source text so queued jobs retain paths, not source strings. The
+// worker still enforces its own source, request and deadline bounds.
+const limitRepoTreeScan = pLimit(TREE_SCAN_MAX_REQUESTS);
+
 async function readCommittedMeasurementText(
   root: string,
   commit: string,
@@ -443,12 +449,12 @@ async function broadRepoTreeScanGuard(
     const key = commit ? JSON.stringify([root, commit, path]) : null;
     let scan = key ? committedScans.get(key) : undefined;
     if (!scan) {
-      scan = (async () => {
+      scan = limitRepoTreeScan(async () => {
         const source = await (commit
           ? readCommittedMeasurementText(root, commit, path)
           : readFile(resolve(root, path), 'utf8')).catch(() => null);
         return source !== null && await detectBroadRepoTreeScan(source);
-      })();
+      });
       if (key) committedScans.set(key, scan);
     }
     if (await scan) {

@@ -100,6 +100,26 @@ describe('conformance test-ledger evidence population', () => {
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'fail', value: 0 });
   });
 
+  it('keeps a clean current-build pass after a newer dirty passing run', async () => {
+    await record('local', 'pass', 1);
+    await record('local', 'pass', 2, input.workspaceId, { worktreeDirty: true });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'pass', value: 1 });
+  });
+
+  it('does not let a dirty pass hide a newer clean current-build failure', async () => {
+    await record('local', 'pass', 1);
+    await record('local', 'fail', 2);
+    await record('local', 'pass', 3, input.workspaceId, { worktreeDirty: true });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'fail', value: 0 });
+  });
+
+  it('keeps dirty-only passing evidence unjudgeable', async () => {
+    await record('local', 'pass', 1, input.workspaceId, { worktreeDirty: true });
+    expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({
+      verdict: 'error', value: null, detail: expect.stringContaining('worktree was not proven clean'),
+    });
+  });
+
   it('still refuses foreign-build evidence when no matching run exists', async () => {
     await record('local', 'pass', 1, input.workspaceId, { commitSha: 'b'.repeat(40) });
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({

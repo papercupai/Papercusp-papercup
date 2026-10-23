@@ -104,6 +104,7 @@ export interface FairArmFactory {
       question: FairCase;
       request: Record<string, unknown>;
       response: CodeIntelAnswer;
+      dispatchWitness: { entrypoint: 'dispatchProjectedTool'; transport: string; toolName: 'graph:query'; callId: string };
       wallMs: number;
       control: unknown;
       sourceWitness: { path: string; contentHash: string | null; sourceCommit: string };

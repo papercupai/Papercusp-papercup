@@ -503,7 +503,7 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(checkScopesReleased).not.toHaveBeenCalled();
   });
 
-  it('persists and then resets a failed unit terminal snapshot in the same tick', async () => {
+  it.each([false, true])('persists and then resets a failed unit terminal snapshot (ownedTruncated=%s)', async (ownedTruncated) => {
     const terminal = {
       capturedAt: '2026-08-24T16:00:00.000Z',
       scopeUnit: 'pc-oom777.service',
@@ -523,7 +523,7 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
 
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'oom777', scopeUnit: terminal.scopeUnit })],
-      scan: () => scanResult([]),
+      scan: () => scanResult([], { ownedTruncated }),
       fs: memFs({}),
       inspectTaskUnitTerminals,
       resetFailedTaskUnit,
@@ -555,12 +555,12 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     peakMemorySource: 'unknown' as const,
   });
 
-  it('closes a collected unit from the runner JOB END in its log instead of ended_unobserved', async () => {
+  it.each([false, true])('closes a collected unit from the runner JOB END (ownedTruncated=%s)', async (ownedTruncated) => {
     const terminal = collected('pc-ok888.service');
     const readJobLogTerminal = vi.fn(() => ({ status: 'completed' as const, exitCode: 0 }));
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'ok888', scopeUnit: terminal.scopeUnit, logPath: '/logs/ok888.log' })],
-      scan: () => scanResult([]),
+      scan: () => scanResult([], { ownedTruncated }),
       fs: memFs({}),
       inspectTaskUnitTerminals: vi.fn(async () => new Map([[terminal.scopeUnit, terminal]])),
       resetFailedTaskUnit: vi.fn(async () => true),
@@ -620,11 +620,60 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(store.endedUnobserved[0]).toMatchObject({ taskId: 'held111', terminalProvenance: terminal });
   });
 
-  it('a degraded scan skips BOTH markStranded and markEndedUnobserved', async () => {
+  it('persists only positively released scopes during a truncated owned scan', async () => {
+    const released = row({ taskId: 'released', pid: 101, processIdentity: 'linux:old:101', logPath: '/logs/released.log' });
+    const unconfirmed = row({ taskId: 'unconfirmed', pid: 102, processIdentity: 'linux:old:102', logPath: '/logs/unconfirmed.log' });
+    const unscoped = row({ taskId: 'unscoped', scopeUnit: null, pid: 103, processIdentity: 'linux:old:103' });
+    const checkScopesReleased = vi.fn(async () => new Set([released.scopeUnit!]));
+    const readJobLogTerminal = vi.fn(() => null);
+    const out = await reconcileTick({
+      listLive: async () => [released, unconfirmed, unscoped],
+      scan: () => scanResult([proc({ pid: 99, cgroupPath: `${OURS}/papercusp-bash-job.slice` })], { ownedTruncated: true }),
+      fs: memFs({}),
+      checkScopesReleased,
+      readJobLogTerminal,
+    });
+
+    expect(out.degraded).toBe(true);
+    expect(checkScopesReleased).toHaveBeenCalledWith([released.scopeUnit, unconfirmed.scopeUnit]);
+    expect(out.result.endedUnobserved.map((v) => v.taskId)).toEqual(['released']);
+    expect(out.result.unresolved.map((v) => v.taskId)).toEqual(['unconfirmed']);
+    expect(out.result.stranded.map((v) => v.taskId)).toEqual(['unscoped']);
+    expect(out.endedUnobservedCount).toBe(1);
+    expect(store.endedUnobserved).toEqual([expect.objectContaining({ taskId: 'released' })]);
+    expect(readJobLogTerminal.mock.calls).toEqual([['/logs/released.log']]);
+    expect(out.strandedCount).toBe(0);
+    expect(store.stranded).toEqual([]);
+    expect(out.result.unaccounted).toHaveLength(1);
+    expect(store.upserted).toEqual([]);
+    expect(store.cleared).toEqual([]);
+  });
+
+  it('keeps positively released scopes read-only during a truncated dry run', async () => {
+    const readJobLogTerminal = vi.fn(() => ({ status: 'completed' as const, exitCode: 0 }));
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'dry-released', logPath: '/logs/dry-released.log' })],
+      scan: () => scanResult([], { ownedTruncated: true }),
+      fs: memFs({}),
+      checkScopesReleased: async (units) => new Set(units),
+      readJobLogTerminal,
+      dryRun: true,
+    });
+
+    expect(out.result.endedUnobserved.map((v) => v.taskId)).toEqual(['dry-released']);
+    expect(out.degraded).toBe(true);
+    expect(out.endedUnobservedCount).toBe(0);
+    expect(out.recoveredFromJobLogCount).toBe(0);
+    expect(store.endedUnobserved).toEqual([]);
+    expect(store.recovered).toEqual([]);
+    expect(readJobLogTerminal).not.toHaveBeenCalled();
+  });
+
+  it('a missing owned root blocks terminal persistence even with a positively released scope', async () => {
     const checkScopesReleased = vi.fn(async (units: readonly string[]) => new Set(units));
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'yyy666' })],
-      scan: () => scanResult([], { ownedRootExists: false }),
+      scan: () => scanResult([], { ownedRootExists: false, ownedTruncated: true }),
       fs: memFs({}),
       checkScopesReleased,
     });

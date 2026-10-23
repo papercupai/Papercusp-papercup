@@ -699,25 +699,28 @@ export async function runAdmissionRecoveries(
           }
           await assertAllowed();
           const screened = await readItem(sql, exact);
+          const refusals = screening?.guardRefusals?.filter(({ itemId }) => itemId === exact.workItemId) ?? [];
+          const screeningGuard = refusals.length > 0
+            ? ` (admission guard from run ${screening!.runId}: ${refusals.map(({ reason, detail }) => `${reason}: ${detail}`).join('; ')})`
+            : '';
           // Fail-open admission is not review clearance. The resume path also
           // blocks this pending review, even if screening changed admission.
+          // Preserve scope refusals so the authenticated ordinary component
+          // selector can find this same request while its review is pending.
           const review = screened.payload?.admissionReview as { state?: unknown } | undefined;
           if (review?.state === 'pending') {
             stage = 'screen';
             throw new AdmissionRecoveryRefused(
-              'original item admission review is pending; finish its ordinary admission review and retry this same item',
+              `original item admission review is pending${screeningGuard}; finish its ordinary admission review and retry this same item`,
             );
           }
           if (screened.admission === 'pending') {
             // Guarded component writes leave the rows unchanged, so their current
             // refusal lives in the screening receipt rather than admissionHold.
-            const refusals = screening?.guardRefusals?.filter(({ itemId }) => itemId === exact.workItemId) ?? [];
             const hold = screened.payload?.admissionHold as { reason?: unknown; runId?: unknown } | undefined;
-            const named = refusals.length > 0
-              ? ` (admission guard from run ${screening!.runId}: ${refusals.map(({ reason, detail }) => `${reason}: ${detail}`).join('; ')})`
-              : typeof hold?.reason === 'string' && hold.reason.trim()
+            const named = screeningGuard || (typeof hold?.reason === 'string' && hold.reason.trim()
                 ? ` (admission hold${typeof hold.runId === 'string' ? ` from run ${hold.runId}` : ''}: ${hold.reason.trim()})`
-                : ' (the promoter recorded no hold reason)';
+                : ' (the promoter recorded no hold reason)');
             const repair = refusals.some(({ reason }) => reason === 'outside-mutation-scope')
               ? 'use the ordinary component screening/review route, then retry this same item within its authorized scope'
               : 'repair its named admission hold and retry this same item';

@@ -648,6 +648,62 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
   // findLinuxTerminal's _resetTerminalCacheForTests exists for).
   const noSystemdRun = { spawnCommandProbes: { hasSystemdRun: () => false } };
 
+  it('cancels before enrolment when the caller becomes stale during the install-boundary wait', async () => {
+    let current = true;
+    let releaseInstallWait!: () => void;
+    const release = vi.fn();
+    const beforeSpawn = vi.fn(() => current);
+    spawnMock.mockImplementation(() => fakeChild());
+    const result = spawnHeadless({
+      envelope,
+      beforeSpawn,
+      installBoundary: async () => {
+        await new Promise<void>((resolve) => { releaseInstallWait = resolve; });
+        return { outcome: 'acquired', waitedMs: 1, release };
+      },
+      bootProbes: { windowMs: 0 },
+      ...noSystemdRun,
+    });
+
+    await vi.waitFor(() => expect(releaseInstallWait).toBeTypeOf('function'));
+    expect(beforeSpawn).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+    current = false;
+    releaseInstallWait();
+
+    expect(await result).toMatchObject({ status: 'error', cancelled: true });
+    expect(beforeSpawn).toHaveBeenCalledOnce();
+    expect(taskEnrolment.begin).not.toHaveBeenCalled();
+    expect(taskEnrolment.complete).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(taskControl.kill).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('launches a still-current caller after the install-boundary wait', async () => {
+    let installReady = false;
+    const release = vi.fn();
+    const beforeSpawn = vi.fn(async () => installReady);
+    spawnMock.mockImplementation(() => fakeChild());
+    const result = await spawnHeadless({
+      envelope,
+      beforeSpawn,
+      installBoundary: async () => {
+        installReady = true;
+        return { outcome: 'acquired', waitedMs: 1, release };
+      },
+      bootProbes: { windowMs: 0 },
+      ...noSystemdRun,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(beforeSpawn).toHaveBeenCalledOnce();
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(taskEnrolment.complete).toHaveBeenCalledOnce();
+    // The real lease is idempotent: boot completion and finally both release it.
+    expect(release).toHaveBeenCalled();
+  });
+
   it('establishes kickoff proof on the private runtime mount when scratch is unusable', async () => {
     const root = mkdtempSync(join(tmpdir(), 'kickoff-runtime-'));
     const runtime = join(root, 'runtime');

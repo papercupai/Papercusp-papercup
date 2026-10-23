@@ -8,10 +8,14 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -26,11 +30,14 @@ import {
   runGreenCheckpoint,
   type CheckpointDeps,
   type CheckpointOpts,
+  type PrewarmedCheckpointDependencyGeneration,
 } from "./green-checkpoint";
 import { releaseConfig } from "./release-config";
 import { advanceReady } from "./git-ops";
-import type { FrozenRepairPendingCarry } from "@papercusp/operator-core/lib/release/frozen-repair-carry";
+import type { FrozenRepairCarryRecord, FrozenRepairPendingCarry } from "@papercusp/operator-core/lib/release/frozen-repair-carry";
 import type { FrozenCandidateRepairQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import type { CheckpointCandidateSource } from "@papercusp/operator-core/lib/release/checkpoint-candidate-source";
+import type { FreezeCutRecord } from "@papercusp/operator-core/lib/release/known-good-freeze";
 
 type SelectionInput = NonNullable<
   Parameters<typeof beginCheckpointPreflight>[3]
@@ -174,10 +181,10 @@ async function lineage() {
       return knownGood;
     },
   };
-  const prepare = async (opts: CheckpointOpts = {}, execute = exec) => {
+  const prepare = async (opts: CheckpointOpts = {}, execute = exec, selectionDeps = deps) => {
     const input: SelectionInput = {
       target: null,
-      checkpointSelection: { deps, opts },
+      checkpointSelection: { deps: selectionDeps, opts },
     };
     const result = await beginCheckpointPreflight(cfg, tip, execute, input);
     if (result.kind !== "ready")
@@ -220,6 +227,63 @@ async function lineage() {
 }
 
 type Lineage = Awaited<ReturnType<typeof lineage>>;
+
+// D-010's public record shape, available before the source implementation exists.
+type FixturePreparedSelection = {
+  schemaVersion: 1;
+  attemptId: string;
+  integrationRoot: string;
+  checkpointRoot: string;
+  candidate: string;
+  tip: string;
+  base: string | null;
+  candidateSource: CheckpointCandidateSource;
+  quietCutApplied: boolean;
+  freezeCut: FreezeCutRecord | null;
+  generation: PrewarmedCheckpointDependencyGeneration & { root: string };
+  carry: FrozenRepairCarryRecord | null;
+};
+type FixtureSelectionAuthority = {
+  pending: FrozenRepairPendingCarry | null;
+  committed: FrozenRepairCarryRecord | null;
+  selection: FixturePreparedSelection | null;
+  consumed: number;
+};
+
+function durablePreparedSelectionHooks(f: Lineage, authority: string, afterCommit?: () => void) {
+  const read = (): FixtureSelectionAuthority => JSON.parse(readFileSync(authority, "utf8"));
+  return {
+    readPreparedCheckpointSelection: async (requested: {
+      attemptId: string; integrationRoot: string; checkpointRoot: string;
+    }) => {
+      const record = read().selection;
+      if (record && (record.schemaVersion !== 1 || record.attemptId !== requested.attemptId ||
+          record.integrationRoot !== requested.integrationRoot || record.checkpointRoot !== requested.checkpointRoot))
+        throw new Error("malformed or mismatched committed authority");
+      return record;
+    },
+    commitPreparedCheckpointSelection: async (record: FixturePreparedSelection, expected: {
+      queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null;
+    }) => {
+      expect(existsSync(f.lockDir)).toBe(true);
+      const state = read();
+      if (expected.queue !== null || JSON.stringify(state.pending) !== JSON.stringify(expected.pendingCarry)) return false;
+      if (state.selection) throw new Error("rejoin must not commit or consume twice");
+      const next: FixtureSelectionAuthority = {
+        pending: null, committed: record.carry, selection: record,
+        consumed: state.consumed + (state.pending ? 1 : 0),
+      };
+      const temporary = `${authority}.${process.pid}`;
+      const fd = openSync(temporary, "w");
+      try { writeFileSync(fd, JSON.stringify(next)); fsyncSync(fd); } finally { closeSync(fd); }
+      renameSync(temporary, authority);
+      const directory = openSync(f.root, "r");
+      try { fsyncSync(directory); } finally { closeSync(directory); }
+      afterCommit?.();
+      return true;
+    },
+  };
+}
 
 // The child program lives in the frozen test itself: its checksum covers every recovery effect.
 const RESTART_WORKER_SOURCE = `/** Test-only process adapter for the public D-010 checkpoint dependency seam. */
@@ -850,19 +914,18 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
   it("rejoins after a crash immediately after carry consumption without losing or consuming the carry twice", async () => {
     const f = await lineage();
     const durable = join(f.root, "carry-authority.json");
-    writeFileSync(durable, JSON.stringify({ pending: f.carry(), committed: null }));
+    writeFileSync(durable, JSON.stringify({ pending: f.carry(), committed: null, selection: null, consumed: 0 }));
     f.deps.runId = "independent-crash-rejoin";
     f.deps.qualificationAttemptId = "independent-crash-rejoin";
     f.deps.readFrozenRepairPendingCarry = async () => JSON.parse(readFileSync(durable, "utf8")).pending;
     let consumed = 0;
-    f.deps.consumeFrozenRepairCarry = async (expected, record) => {
-      expect(existsSync(f.lockDir)).toBe(true);
-      const state = JSON.parse(readFileSync(durable, "utf8"));
-      if (JSON.stringify(state.pending) !== JSON.stringify(expected)) return false;
-      writeFileSync(durable, JSON.stringify({ pending: null, committed: record }));
+    f.deps.consumeFrozenRepairCarry = async () => {
+      throw new Error("durable selection and carry must commit atomically");
+    };
+    Object.assign(f.deps, durablePreparedSelectionHooks(f, durable, () => {
       consumed += 1;
       throw new Error("injected crash after durable carry consumption");
-    };
+    }));
     const first = await f.prepare({ noPush: true }).then(result => {
       if (result.lock.acquired) result.lock.release();
       return "ready";
@@ -870,14 +933,17 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     expect(consumed).toBe(1);
     expect(first).toBe("crashed");
     expect(existsSync(f.lockDir)).toBe(false);
-    const rejoined = await f.prepare({ noPush: true });
+    const restartedDeps = { ...f.deps, ...durablePreparedSelectionHooks(f, durable) };
+    const rejoined = await f.prepare({ noPush: true }, f.exec, restartedDeps);
     expect(rejoined.lock.acquired).toBe(true);
     expect(rejoined.candidate).toBe(f.tip);
     expect(rejoined.prewarmedDependencyGeneration.inputFingerprint).toBe(f.tipGeneration.inputFingerprint);
     expect(consumed).toBe(1);
     const state = JSON.parse(readFileSync(durable, "utf8"));
     expect(state.pending).toBeNull();
+    expect(state.consumed).toBe(1);
     expect(state.committed.judgedCandidate).toBe(rejoined.candidate);
+    expect(state.selection.candidate).toBe(rejoined.candidate);
   }, 180_000);
 
   it("a joined qualification retains its selected candidate and attempt identity", async () => {
@@ -943,14 +1009,18 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
 
   it("a crash after selection publication rejoins the committed proposal before any suite effect", async () => {
     const f = await lineage();
-    let pending: FrozenRepairPendingCarry | null = f.carry();
+    const durable = join(f.root, "publication-authority.json");
+    writeFileSync(durable, JSON.stringify({ pending: f.carry(), committed: null, selection: null, consumed: 0 }));
     let consumed = 0;
     let suites = 0;
     let published: string | null = null;
     f.deps.runId = "independent-publication-rejoin";
     f.deps.qualificationAttemptId = "independent-publication-rejoin";
-    f.deps.readFrozenRepairPendingCarry = async () => pending;
-    f.deps.consumeFrozenRepairCarry = async () => { pending = null; consumed += 1; return true; };
+    f.deps.readFrozenRepairPendingCarry = async () => JSON.parse(readFileSync(durable, "utf8")).pending;
+    f.deps.consumeFrozenRepairCarry = async () => {
+      throw new Error("durable selection and carry must commit atomically");
+    };
+    Object.assign(f.deps, durablePreparedSelectionHooks(f, durable, () => { consumed += 1; }));
     const prepared = await f.prepare({ noPush: true });
     expect(consumed).toBe(1);
     const real = realCheckpointDeps(f.cfg, f.exec, f.deps.runId, undefined, undefined, undefined,
@@ -971,9 +1041,14 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     expect(suites).toBe(0);
     expect(published).toBe(f.tip);
     expect(existsSync(f.lockDir)).toBe(false);
-    const rejoined = await f.prepare({ noPush: true });
+    const restartedDeps = { ...f.deps, ...durablePreparedSelectionHooks(f, durable) };
+    const rejoined = await f.prepare({ noPush: true }, f.exec, restartedDeps);
     expect(rejoined.candidate).toBe(published);
     expect(rejoined.prewarmedDependencyGeneration.inputFingerprint).toBe(f.tipGeneration.inputFingerprint);
     expect(consumed).toBe(1);
+    const state: FixtureSelectionAuthority = JSON.parse(readFileSync(durable, "utf8"));
+    expect(state.pending).toBeNull();
+    expect(state.consumed).toBe(1);
+    expect(state.selection?.candidate).toBe(published);
   }, 180_000);
 });

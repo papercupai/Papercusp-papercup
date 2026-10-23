@@ -1,4 +1,4 @@
-/** Private hosted serving acceptance. No model calls, provider provisioning or shared policy writes. */
+/** Private hosted serving acceptance; real provider execution requires the separate explicit pool opt-in. */
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -50,6 +50,9 @@ async function acceptance() {
   delete process.env.HOSTED_SERVING_TEST_CONFIGURATION;
   const artifact = resolve(process.env.HOSTED_SERVING_TEST_ARTIFACT!);
   const evidenceDir = process.env.HOSTED_SERVING_TEST_EVIDENCE_DIR!;
+  const poolConfiguration = process.env.HOSTED_SERVING_TEST_POOL_CONFIGURATION
+    ? JSON.parse(process.env.HOSTED_SERVING_TEST_POOL_CONFIGURATION) as
+      import('./hosted-pool-qualification').HostedPoolQualificationConfiguration : undefined;
   const bundleSha256 = sha(readFileSync(artifact));
   const publicOrigin = 'https://p537-serving.example.test';
   const origin = `http://127.0.0.1:${process.env.PAPERCUSP_HONO_PORT}`;
@@ -148,6 +151,9 @@ async function acceptance() {
     const forbidden = await request('/api/agent-mcp/tools');
     assert.equal(forbidden.status, 404, 'local operator routes must not enter the hosted allowlist');
     console.log('HOSTED_SERVING_PHASE genuine-test-admission');
+    // The private identity producer and request artifact must resolve the same trial
+    // authority. An auth-only fixture never needed pool quotas during user creation.
+    if (poolConfiguration) process.env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT = policy;
     kit = await loadIsolatedHostedTestUserKit({ portalRoot: process.env.HOSTED_SERVING_TEST_PORTAL_ROOT!, timeoutMs: 120_000 });
     user = await kit.create({ email: `p537-${randomUUID()}@example.test`, attemptId: randomUUID(),
       firstName: 'Private', lastName: 'Acceptance', displayName: 'Private serving acceptance' });
@@ -161,15 +167,30 @@ async function acceptance() {
     assert.equal(body.session.sessionId, user.sessionId);
     receipt.authenticatedSession = true;
     receipt.organizationMatches = true;
-    const closed = await request('/api/hosted/browser/onboarding/first-workspace', { method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({
-        attemptKey: 'p537-private-serving-0123456789', displayName: 'Private acceptance', label: 'Private acceptance',
-        hosting: 'papercusp', organizationId: randomUUID(), quotas: { 'pool.hosts': 999999 } }) });
-    receipt.closedAdmissionStatus = closed.status;
-    const closedBody = await closed.json();
-    receipt.closedAdmissionError = closedBody.error;
-    assert.equal(closed.status, 403);
-    assert.equal(closedBody.error, 'first_workspace_not_enabled');
+    if (poolConfiguration) {
+      const { admissionIdentity } = await import('../lib/auth/hosted/workspace-admission');
+      const { workspaceHostCanaryIdentityLabels } = await import('@papercusp/deployment-driver');
+      const { qualifyHostedPool } = await import('./hosted-pool-qualification');
+      const canary = { ...poolConfiguration.canary, workspaceId: process.env.PAPERCUSP_WORKSPACE! };
+      const identity = admissionIdentity(user.organizationId, canary.runId);
+      const desired = { ...poolConfiguration.desired, hostId: identity.hostId,
+        labels: { ...poolConfiguration.desired.labels, ...workspaceHostCanaryIdentityLabels(canary) } };
+      Object.assign(process.env, { PAPERCUSP_DBOS_ENABLE: '1', PAPERCUSP_BACKGROUND_WORKERS: '1',
+        DBOS__APPVERSION: `p544-${canary.runId}` });
+      receipt.pool = await qualifyHostedPool({ configuration: { ...poolConfiguration, canary, desired },
+        artifact, evidenceDir, organizationId: user.organizationId, sessionId: user.sessionId, sql });
+      receipt.scope = 'Private authenticated artifact and real pooled admission/DBOS provision/destroy; guest UX, costs and shipment remain open';
+    } else {
+      const closed = await request('/api/hosted/browser/onboarding/first-workspace', { method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({
+          attemptKey: 'p537-private-serving-0123456789', displayName: 'Private acceptance', label: 'Private acceptance',
+          hosting: 'papercusp', organizationId: randomUUID(), quotas: { 'pool.hosts': 999999 } }) });
+      receipt.closedAdmissionStatus = closed.status;
+      const closedBody = await closed.json();
+      receipt.closedAdmissionError = closedBody.error;
+      assert.equal(closed.status, 403);
+      assert.equal(closedBody.error, 'first_workspace_not_enabled');
+    }
     await user.cleanup('P537 private serving acceptance complete');
     user = undefined;
     receipt.testUserCleaned = true;
@@ -177,7 +198,8 @@ async function acceptance() {
     assert.equal(revoked.status, 401);
     receipt.revokedSessionStatus = revoked.status;
     receipt.provisionOperationsCreated = await operationCount() - operationsBefore;
-    assert.equal(receipt.provisionOperationsCreated, 0);
+    if (poolConfiguration) assert.ok(Number(receipt.provisionOperationsCreated) >= 2, 'real provision and destroy operations required');
+    else assert.equal(receipt.provisionOperationsCreated, 0);
     assert.equal(sha(readFileSync(artifact)), bundleSha256, 'artifact must remain unchanged through requests');
   } finally {
     const failures: unknown[] = [];

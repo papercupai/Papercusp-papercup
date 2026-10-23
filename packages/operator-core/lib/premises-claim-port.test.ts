@@ -71,6 +71,40 @@ describe('detectAbsencePremises', () => {
     expect(p.recheck).not.toMatch(/search|grep|whole repo/i);
   });
 
+  it('preserves explicit committed-file containment scope (EI-26715154436743115)', () => {
+    const [p] = derive(
+      'In staging build516579404d, file packages/operator-core/lib/agent-tools/capability/launch-agent.ts is selected and it lacks startupReservation.',
+    );
+    expect(p.recheck).toContain('git show 516579404d:packages/operator-core/lib/agent-tools/capability/launch-agent.ts');
+    expect(p.recheck).not.toMatch(/whole repo/i);
+  });
+
+  it('keeps a serving-runtime absence check on its loaded build', () => {
+    const [p] = derive('The served handler at build 516579404d is selected and it lacks startupReservation.');
+    expect(p.recheck).toContain('serving runtime/handler at 516579404d');
+    expect(p.recheck).toMatch(/loaded code identity/i);
+    expect(p.recheck).not.toMatch(/whole repo/i);
+  });
+
+  it('retains a repository-wide search when a universal claim cites an example file', () => {
+    const [p] = derive('Across the whole repo there is no startupReservation helper, including in packages/operator-core/lib/agent-tools/capability/launch-agent.ts.');
+    expect(p.recheck).toMatch(/whole repo/i);
+    expect(p.recheck).not.toContain('git show');
+  });
+
+  it('does not interpret an unqualified missing handler as a live-runtime census', () => {
+    const [p] = derive('There is no startupReservation handler.');
+    expect(p.recheck).toMatch(/whole repo/i);
+  });
+
+  it('uses scope beyond the displayed claim length', () => {
+    const [p] = derive('The serving handler is selected and it lacks startupReservation, '
+      + 'and this is a containment comparison against the explicitly selected version rather than a claim about other implementations or about the repository as a whole, '
+      + 'in build 516579404d file packages/operator-core/lib/agent-tools/capability/launch-agent.ts.');
+    expect(p.claim.length).toBeLessThanOrEqual(220);
+    expect(p.recheck).toContain('git show 516579404d:packages/operator-core/lib/agent-tools/capability/launch-agent.ts');
+  });
+
   it('does not synthesize a grep target from transient VCS prose (EI-22412433263118345)', () => {
     const [p] = derive(
       'The pending edit is comment-only, tests-green and tsc-clean, so there is no broken intermediate to bank.',

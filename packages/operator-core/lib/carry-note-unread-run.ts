@@ -177,7 +177,22 @@ function isNegatedRunStatus(text: string, index: number): boolean {
   // running"). The old check only handled a negator immediately before the
   // matched phrase, so it treated that completed-status sentence as unread.
   const noRunSubject = /\b(?:no|zero)\s+(?:run|runs|test|tests|suite|suites|job|jobs|command|commands|process|processes|build|builds|check|checks|lint|typecheck|typechecks)(?:\s+\w+){0,2}\s+(?:(?:is|are|was|were|has|have|had)\s+)?["'`“‘]?\s*$/i;
-  return directNegation.test(before) || noRunSubject.test(before);
+  // EI-26699409305176974: inventory notes often negate coordinated subjects,
+  // e.g. "No product code or runtime launched". Keep the conjunction and its
+  // subjects explicit so a later affirmative clause is never swallowed.
+  const noCoordinatedSubject = /\bno\s+(?:product\s+)?(?:code|runtime|run|test|job|process|build)(?:\s+(?:or|and)\s+(?:code|runtime|run|test|job|process|build)){1,2}\s+(?:(?:is|are|was|were|has|have|had|been)\s+){0,2}$/i;
+  return directNegation.test(before) || noRunSubject.test(before) || noCoordinatedSubject.test(before);
+}
+
+/** A proposed scenario or conditional is not a statement that a run exists.
+ * This is clause-local, rather than excluding an entire Next section: a
+ * successor still needs a warning for "Next: read the suite still running". */
+function isHypotheticalRunStatus(text: string, index: number): boolean {
+  const boundary = Math.max(...['\n', '.', ';', '!', '?'].map((char) => text.lastIndexOf(char, index - 1)));
+  const before = text.slice(Math.max(boundary + 1, index - 160), index);
+  if (/\b(?:but|however|now|currently|actually)\b/i.test(before)) return false;
+  return /\b(?:proposed|hypothetical|future|planned)\s+scenario\b/i.test(before)
+    || /\b(?:if|unless)\b[^.!?;\n]{0,120}$/i.test(before);
 }
 
 /**
@@ -203,7 +218,7 @@ export function describeUnreadRun(
 
   const inFlightText = withoutHistoricalQuotations(text);
   const inFlight = collect(inFlightText, IN_FLIGHT_RE, true, (match) => {
-    if (isNegatedRunStatus(inFlightText, match.index)) return false;
+    if (isNegatedRunStatus(inFlightText, match.index) || isHypotheticalRunStatus(inFlightText, match.index)) return false;
     if (!/^in[-\s]flight$/i.test(match[0])) return true;
     return isRunScopedInFlight(inFlightText, match.index, match[0].length);
   });

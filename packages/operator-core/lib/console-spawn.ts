@@ -1390,6 +1390,8 @@ export type SpawnConsoleResult =
       status: 'error';
       error: string;
       code: number;
+      /** The caller withdrew this launch before any process or task was created. */
+      cancelled?: true;
       /** Durable log for a headless spawn that created its log before failing. */
       logPath?: string;
       /** Retired enrolled task and authoritative refusal, retained for recovery. */
@@ -2382,6 +2384,10 @@ export interface SpawnHeadlessOpts {
    * acquireInstallBoundaryLease against the checkout psu boots from.
    */
   installBoundary?: (root: string | null) => Promise<InstallBoundaryLease>;
+  /** Revalidate the caller's request after async preparation and immediately
+   * before task enrolment/process creation. False cancels without starting a child.
+   * Omit for launches whose purpose cannot expire during preparation. */
+  beforeSpawn?: () => boolean | Promise<boolean>;
   /**
    * Opt into a parent-visible proof that the detached launch kickoff reached
    * the backend's native transcript. The receipt env is carried through the
@@ -2755,6 +2761,24 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     installLease = await (opts.installBoundary ?? ((root) => acquireInstallBoundaryLease(root)))(
       installBoundaryRoot({ ...agentInheritedOperatorEnv(process.env), ...launchEnv }),
     );
+    // A consult can close while MCP preparation or an install lease is awaited.
+    // Check at the last async boundary, before enrolling or creating a process.
+    // Once a child exists it can itself answer/close during kickoff proof, so
+    // this predicate must never be used as a post-spawn cleanup decision.
+    if (opts.beforeSpawn && !(await opts.beforeSpawn())) {
+      cleanupKickoffProofRequest(kickoffProofRequest);
+      if (logFd != null) {
+        closeSync(logFd);
+        logFd = null;
+      }
+      return {
+        status: 'error',
+        code: 409,
+        error: 'headless launch cancelled before process creation',
+        cancelled: true,
+        logPath,
+      };
+    }
     const memoryMaxBytes = agentSpawnScopeMemoryMaxG() * 1024 ** 3;
     const enrolment = beginSyncEnrolment({ class: 'agent-session', memoryMaxBytes });
     const taskScope = enrolment.confined

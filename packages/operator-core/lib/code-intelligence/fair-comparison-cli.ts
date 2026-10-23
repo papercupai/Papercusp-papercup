@@ -43,6 +43,7 @@ import type { ArmAnswer, FairCase } from './fair-comparison';
 import { readProcessIdentity } from '../process-identity';
 import { absCgroupDir, readProcessCgroupPath, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { taskIdFromScopeUnit } from '../task-manager/types';
+import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 export interface FrozenFairInputs {
   readonly preregistration: Preregistration;
@@ -161,6 +162,26 @@ export function frozenGraphRequest(kase: FairCase, inputs: FrozenFairInputs) {
     file_path: kase.anchorFile, paths: [kase.anchorFile], limit: 100 };
 }
 
+/** Use the registered tool and the same dispatcher entrypoint as its transports.
+ * This is an in-process witness; it does not certify an HTTP/CLI deployment. */
+export async function dispatchFrozenGraphRequest(request: Record<string, unknown>, ctx: UnifiedToolContext) {
+  await import('../agent-tools/gitnexus/query');
+  const { dispatchProjectedTool, lookupByMcpName, unwrapToolResult } = await import('@papercusp/tooldef');
+  const tool = lookupByMcpName('graph:query');
+  if (!tool) throw new Error('native graph tool is not registered');
+  let callId: string | undefined;
+  const dispatched = await dispatchProjectedTool(tool, 'graph:query', request, ctx, {
+    onDispatchStart: event => { callId = event.callId; },
+  });
+  if (!dispatched.ok || !dispatched.result || dispatched.result.isError)
+    throw new Error(`native graph dispatch refused: ${dispatched.error?.code ?? 'tool-error'}: ${dispatched.error?.message ?? JSON.stringify(unwrapToolResult(dispatched.result))}`);
+  const response = unwrapToolResult(dispatched.result) as import('./contracts').CodeIntelAnswer;
+  if (!response || !Array.isArray(response.sites) || !response.freshness || !callId)
+    throw new Error('native graph dispatch did not return a complete answer and call identity');
+  return { response, dispatchWitness: { entrypoint: 'dispatchProjectedTool' as const,
+    transport: ctx.transport ?? 'in_process', toolName: 'graph:query' as const, callId } };
+}
+
 async function replayFrozenGraphTask(tree: string, kase: FairCase, inputs: FrozenFairInputs) {
   const request = frozenGraphRequest(kase, inputs);
   // Repository tasks retain the complete pinned donor; authored controls reuse
@@ -171,17 +192,18 @@ async function replayFrozenGraphTask(tree: string, kase: FairCase, inputs: Froze
     .update(await readFile(join(tree, kase.anchorFile!))).digest('hex');
   if (kase.source === 'repository-task' && sourceHash !== kase.sourceFingerprint)
     throw new Error('native graph repository source differs from frozen case');
-  const graph = (await import('../agent-tools/gitnexus/query')).default;
-  const parsed = graph.args.parse(request);
   const started = performance.now();
-  const response = (await graph.handler(parsed, { projectDir: tree } as never) as {
-    data: import('./contracts').CodeIntelAnswer;
-  }).data;
-  return { tool: 'graph:query' as const, question: kase, request: parsed, response,
+  const { response, dispatchWitness } = await dispatchFrozenGraphRequest(request, {
+    projectDir: tree, role: 'operator', transport: 'in_process', codeMode: true,
+    contextTier: 'full', transportCapExempt: true,
+    log: message => process.stderr.write(`FAIR_NATIVE_GRAPH=${message}\n`),
+    signal: new AbortController().signal, progress: () => {}, emit: () => {},
+  });
+  return { tool: 'graph:query' as const, question: kase, request, response, dispatchWitness,
     wallMs: performance.now() - started, control,
     sourceWitness: { path: kase.anchorFile!, contentHash: sourceHash,
       sourceCommit: inputs.preregistration.protocol!.sourceCommit },
-    tokenWitness: await measureFairToolPayload(parsed, response) };
+    tokenWitness: await measureFairToolPayload(request, response) };
 }
 
 /** Restore before each question; mutations cannot leak into a later control. */

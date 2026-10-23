@@ -11,6 +11,7 @@ export interface HostedPoolQualificationPreflight {
   systemDatabaseUrl: string;
   artifact: string;
   expectedBundleSha256: string;
+  sourceRevision: { expected: string; actual: string };
   desired: WorkspaceHostDesiredSpec;
   connection: WorkspaceHostProviderConnection;
   canary: WorkspaceHostCanaryAdmission;
@@ -49,6 +50,8 @@ export function assertHostedPoolQualificationPreflight(input: HostedPoolQualific
   }).__papercuspWorkspaceHostProvisioningHooks__;
   assert.equal(hooks?.executor, undefined, 'a substituted provisioning executor cannot qualify');
   assert.match(input.expectedBundleSha256, /^[a-f0-9]{64}$/, 'exact artifact hash is required');
+  assert.match(input.sourceRevision.expected, /^[a-f0-9]{40}$/, 'exact controller source revision is required');
+  assert.equal(input.sourceRevision.actual, input.sourceRevision.expected, 'controller source differs from the candidate');
   const bundleSha256 = createHash('sha256').update(readFileSync(input.artifact)).digest('hex');
   assert.equal(bundleSha256, input.expectedBundleSha256, 'artifact differs from the admitted bundle');
   assert.equal(input.canary.workspaceId, workspaceId, 'canary must belong to the private workspace');
@@ -61,6 +64,11 @@ export function assertHostedPoolQualificationPreflight(input: HostedPoolQualific
   assert.ok(Number.isFinite(workloadDeadline) && workloadDeadline > Date.now(), 'workload deadline has expired');
   assert.ok(Number.isFinite(teardownDeadline) && workloadDeadline + input.teardownBudgetMs <= teardownDeadline,
     'the fixed provider deadline must reserve the complete teardown budget');
+  // The serving fixture also needs time to revoke its TEST user and stop private PG.
+  // This is the absolute millisecond deadline written by the managed task launcher.
+  const taskDeadline = Number(env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS);
+  assert.ok(Number.isSafeInteger(taskDeadline) && taskDeadline >= teardownDeadline + 180_000,
+    'the enclosing task must outlive cloud teardown and private runtime cleanup');
   validateWorkspaceHostCanaryAdmission({ workspaceId, desired: input.desired,
     connection: input.connection, canary: input.canary });
   return { workspaceId, bundleSha256, appVersion: env.DBOS__APPVERSION!, workloadDeadline, teardownDeadline };

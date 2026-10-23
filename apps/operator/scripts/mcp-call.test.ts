@@ -234,11 +234,18 @@ describe('mcp-call argument parsing', () => {
   });
 
   // WI-10006600: an isolated verify-tauri-headless sidecar mints its own bearer
-  // under PAPERCUSP_HOME; reading ~/.papercusp instead presented the REAL user's
-  // token and every call was refused superuser_invalid_bearer.
-  it('reads the superuser token from PAPERCUSP_HOME before the home fallback, like the operator', () => {
+  // under PAPERCUSP_HOME; workspace-scoped su sessions instead use the shared
+  // operator bearer, while PAPERCUSP_OPERATOR_HOME selects an isolated operator.
+  it('uses shared credentials for workspace-scoped homes and isolated credentials for operator homes', () => {
     expect(superuserTokenPath({ PAPERCUSP_HOME: '/tmp/iso/papercusp-home' }, '/home/u'))
       .toBe('/tmp/iso/papercusp-home/superuser-token');
+    expect(superuserTokenPath({
+      PAPERCUSP_HOME: '/home/u/.papercusp-workspaces/demo/.papercusp',
+    }, '/home/u')).toBe('/home/u/.papercusp/superuser-token');
+    expect(superuserTokenPath({
+      PAPERCUSP_HOME: '/home/u/.papercusp-workspaces/demo/.papercusp',
+      PAPERCUSP_OPERATOR_HOME: '/operator/home',
+    }, '/home/u')).toBe('/operator/home/.papercusp/superuser-token');
     expect(superuserTokenPath({}, '/home/u')).toBe('/home/u/.papercusp/superuser-token');
     expect(superuserTokenPath({ PAPERCUSP_HOME: '' }, '/home/u')).toBe('/home/u/.papercusp/superuser-token');
   });
@@ -251,6 +258,12 @@ describe('mcp-call argument parsing', () => {
     expect(superuserTokenPaths({ PAPERCUSP_HOME: ' /tmp/isolated ' }, '/home/u')).toEqual([
       '/tmp/isolated/superuser-token',
       '/home/u/.papercusp/superuser-token',
+    ]);
+    expect(superuserTokenPaths({
+      PAPERCUSP_HOME: '/home/u/.papercusp-workspaces/demo/.papercusp',
+    }, '/home/u')).toEqual([
+      '/home/u/.papercusp/superuser-token',
+      '/home/u/.papercusp-workspaces/demo/.papercusp/superuser-token',
     ]);
     expect(superuserTokenPaths({ PAPERCUSP_HOME: '/home/u/.papercusp' }, '/home/u')).toEqual([
       '/home/u/.papercusp/superuser-token',

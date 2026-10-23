@@ -208,6 +208,22 @@ describe('exact independently verified item-close contribution relations', () =>
     expect(production.rubric).toHaveBeenCalledWith('protocol-rollout-acceptance', 2);
   });
 
+  it.each(['hash', 'plane', 'behavior'] as const)(
+    'refuses historical BAR %s drift even when the current BAR remains valid', async (fault) => {
+      const w = productionWorld();
+      w.projection.sourceBar!.rubricRevision = 2;
+      const historical = { ...structuredClone(w.rubric), revision: 2 };
+      production.rubric.mockImplementation(async (_slug: string, revision?: number) =>
+        revision === 2 ? historical : w.rubric);
+      expect(await w.runProduction()).toHaveLength(1);
+
+      if (fault === 'hash') historical.criteria[0]!.barHash = 'different-historical-hash';
+      if (fault === 'plane') historical.criteria[0]!.evidencePlane = 'tree';
+      if (fault === 'behavior') historical.criteria[0]!.model = 'Different historical behavior.';
+      expect(await w.runProduction()).toEqual([]);
+    },
+  );
+
   it.each(['removed-map', 'unresolvable-history', 'changed-bar', 'wrong-set-pin', 'missing-required-layer', 'changed-projection', 'wrong-plane',
     'unreadable-implementers', 'related-reviewer', 'drift-alarm', 'unknown-identity'] as const)(
     'cannot defer with production %s', async (fault) => {

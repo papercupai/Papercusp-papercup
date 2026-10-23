@@ -100,6 +100,20 @@ describe('TestProgressHeartbeatReporter — a per-test progress signal the watch
     const broken = new TestProgressHeartbeatReporter({ trace: true, write: () => { throw new Error('sink gone'); } });
     expect(() => broken.onTestCaseReady({ fullName: 'safe' })).not.toThrow();
   });
+
+  it('preserves failed-case errors when tracing is disabled or its budget is exhausted', () => {
+    for (const trace of [false, true]) {
+      const lines: string[] = [];
+      const reporter = new TestProgressHeartbeatReporter({ trace, write: (line: string) => lines.push(line) });
+      for (let i = 0; i < 40; i++) reporter.onTestCaseReady({ fullName: 'earlier' });
+      reporter.onTestCaseResult({ fullName: 'fixture readiness', module: { moduleId: '/repo/lifetime.test.ts' },
+        result: () => ({ state: 'failed', errors: [{ message: `phase=entry ${'x'.repeat(5000)}`, stack: 'fixture.ts:12' }] }) });
+      const failure = lines.find(line => line.includes('"state":"failed"'))!;
+      expect(failure).toContain('phase=entry');
+      expect(failure).toContain('fixture.ts:12');
+      expect(failure.length).toBeLessThan(2600);
+    }
+  });
 });
 
 describe('withInjectedJsonReport — retains the heartbeat reporter for router runs', () => {

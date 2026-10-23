@@ -20,6 +20,12 @@ import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, EARLY_EXIT_PROBE_MS, HEADLESS_BOOT_RE
 import { INTERNAL_EXPECTED_SUCCESSOR_BINDING } from '../../agent-launch-core';
 
 const assembleRolePromptMock = vi.hoisted(() => vi.fn());
+const resolveNamedIdentityCompositionSelectionMock = vi.hoisted(() => vi.fn());
+vi.mock('../../agent-identities/source', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  resolveNamedIdentityCompositionSelection: (...args: unknown[]) =>
+    resolveNamedIdentityCompositionSelectionMock(...args),
+}));
 vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
@@ -367,6 +373,10 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
 beforeEach(() => {
   originalRoutingGuardMock.mockReset();
   vi.clearAllMocks();
+  resolveNamedIdentityCompositionSelectionMock.mockReset().mockImplementation(async (id: string) => ({
+    id, stack: ['domain:review-domain', 'practice:careful-review'],
+    sourcePath: '/repo/blueprint.yaml', sourceRevision: 'pinned-composition-revision', layers: [],
+  }));
   inspectBlindReviewResumeTargetMock.mockReset().mockResolvedValue({ binding: null, recruiterLaunch: false });
   verifyBlindReviewSessionBindingMock.mockReset().mockResolvedValue({ ok: true });
   goalLaunchResolveMock.mockReset();
@@ -1380,6 +1390,59 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
       type: 'text',
       text: expect.stringContaining('expected "<slot>:<id>"'),
     });
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('validates named compositions for flat and member selections without expanding their root marker', async () => {
+    const result = await launchAgent.handler({
+      brief: 'use the selected compositions', cwd: '/repo-compositions', count: 2,
+      stack: ['composition:named-base'], members: [{ stack: ['composition:named-review'] }],
+    }, ctx);
+
+    expect(isError(result)).toBe(false);
+    expect(resolveNamedIdentityCompositionSelectionMock.mock.calls).toEqual([
+      ['named-review', '/repo-compositions'], ['named-base', '/repo-compositions'],
+    ]);
+    const commands = spawnConsoleMock.mock.calls.map(
+      ([opts]) => (opts as { envelope: { greetingCmd: string } }).envelope.greetingCmd,
+    );
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toContain('--stack=composition:named-review');
+    expect(commands[1]).toContain('--stack=composition:named-base');
+    expect(commands.join('\n')).not.toContain('--stack=domain:review-domain');
+  });
+
+  it.each([
+    { stack: ['composition:missing'] },
+    { members: [{ stack: ['composition:missing'] }] },
+  ])('refuses unavailable named compositions before admission: %j', async (selection) => {
+    resolveNamedIdentityCompositionSelectionMock.mockRejectedValueOnce(new Error('named identity missing is unavailable'));
+    const result = await launchAgent.handler({ brief: 'do not launch', ...selection }, ctx);
+
+    expect(textOf(result)).toContain('named identity missing is unavailable');
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a named composition whose shared resolver rejects its closure', async () => {
+    resolveNamedIdentityCompositionSelectionMock.mockRejectedValueOnce(new Error('named identity broken has an unselected component'));
+    const result = await launchAgent.handler({ brief: 'do not launch', stack: ['composition:broken'] }, ctx);
+
+    expect(textOf(result)).toContain('has an unselected component');
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['composition:'],
+    ['composition:named-review', 'practice:careful-review'],
+    ['composition:named-review', 'composition:named-base'],
+  ])('refuses empty or mixed composition selectors before resolving: %j', async (...stack) => {
+    const result = await launchAgent.handler({ brief: 'do not launch', stack }, ctx);
+
+    expect(isError(result)).toBe(true);
+    expect(resolveNamedIdentityCompositionSelectionMock).not.toHaveBeenCalled();
     expect(claimAgentLaunchMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });

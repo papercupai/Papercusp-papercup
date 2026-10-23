@@ -11,6 +11,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHook } from 'node:async_hooks';
+import { zstdCompressSync, zstdDecompress } from 'node:zlib';
 import { appendFile, lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,6 +22,7 @@ import {
   archiveSession,
   collectSessionFiles,
   deleteArchivedSessionFiles,
+  decompressArchiveBlobBounded,
   isSessionKeyedRelpath,
   listClaudeSessionIds,
   listCodexRolloutSessionIds,
@@ -37,6 +40,47 @@ vi.mock('node:fs/promises', async (original) => {
 
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
 const OTHER = 'bbbbbbbb-5555-6666-7777-888888888888';
+
+describe('bounded archive decompression scheduling', () => {
+  // Each native output callback must get back onto the main event loop before
+  // zlib submits the next worker job. Count those handoffs rather than asserting
+  // wall time, which depends on unrelated requests on a shared machine.
+  async function countCallbacks(work: () => Promise<Buffer>) {
+    const resources = new Set<number>();
+    let callbacks = 0;
+    const hook = createHook({
+      init(id, type) { if (type === 'ZLIB') resources.add(id); },
+      before(id) { if (resources.has(id)) callbacks++; },
+      destroy(id) { resources.delete(id); },
+    });
+    hook.enable();
+    try { return { bytes: await work(), callbacks }; }
+    finally { hook.disable(); }
+  }
+
+  it('avoids hundreds of main-loop handoffs for one admitted 10 MiB transcript', async () => {
+    const raw = Buffer.alloc(10 * 1024 * 1024 + 13, 'transcript\n');
+    const blob = zstdCompressSync(raw);
+    const cap = 64 * 1024 * 1024;
+    const control = await countCallbacks(() => new Promise<Buffer>((resolve, reject) => {
+      zstdDecompress(blob, { maxOutputLength: cap }, (error, bytes) => error ? reject(error) : resolve(bytes));
+    }));
+    expect(control.bytes.equals(raw)).toBe(true);
+    expect(control.callbacks).toBeGreaterThan(600);
+    const bounded = await countCallbacks(() => decompressArchiveBlobBounded({ codec: 'zstd', blob, bytes_raw: raw.length }, cap));
+    expect(bounded.bytes.equals(raw)).toBe(true);
+    expect(bounded.callbacks).toBeGreaterThan(0);
+    expect(bounded.callbacks).toBeLessThanOrEqual(32);
+  });
+
+  it('retains the expansion cap and exact manifest-length checks', async () => {
+    const raw = Buffer.alloc(2 * 1024 * 1024, 'transcript\n');
+    const blob = zstdCompressSync(raw);
+    await expect(decompressArchiveBlobBounded({ codec: 'zstd', blob, bytes_raw: 1024 }, 1024)).rejects.toThrow();
+    await expect(decompressArchiveBlobBounded({ codec: 'zstd', blob, bytes_raw: raw.length - 1 }, raw.length)).rejects.toThrow(/length mismatch/);
+    await expect(decompressArchiveBlobBounded({ codec: 'zstd', blob, bytes_raw: raw.length }, raw.length - 1)).rejects.toThrow(/byte cap/);
+  });
+});
 
 class MemStore implements SessionArchiveStore {
   files = new Map<string, ArchiveFileRow>();

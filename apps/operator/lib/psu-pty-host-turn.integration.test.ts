@@ -1661,11 +1661,13 @@ it('waits for a headless Codex model-menu repaint before confirming the existing
   }
 }, 10_000);
 
-it('leaves a later Codex model menu to the agent after a turn was submitted', async () => {
+it.each([0, 3150])('leaves a later Codex model menu to the agent after a turn was submitted (consumer delay %sms)', async (submitDelayMs) => {
   const root = mkdtempSync(join(tmpdir(), 'codex-later-model-choice-'));
+  const releaseFile = join(root, 'release-child');
   const ownerId = uniqueOwner('LATER-MODEL-CHOICE');
   const { captured, io } = fakeIo();
   const childCode = [
+    "const fs=require('node:fs');",
     "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
     "process.stdout.write('100% context left\\n› Ask Codex to do anything\\n');",
     "let input='';let submitted=false;let answered=false;",
@@ -1674,13 +1676,16 @@ it('leaves a later Codex model menu to the agent after a turn was submitted', as
     "setTimeout(()=>{process.stdout.write('Meet GPT-6 Sol\\n› 1. Try new model\\n2. Use existing model\\n');",
     "setTimeout(()=>process.stdout.write(answered?'LATER_MENU_AUTO_ANSWERED\\n':'LATER_MENU_UNANSWERED\\n'),400);},100);}",
     "else if(submitted&&input.includes('\\u001b[B\\r'))answered=true;});",
-    'setTimeout(()=>process.exit(0),3500);',
+    // Keep the fixture alive until the assertion has observed the later menu.
+    // A startup-relative exit can win while the host is still submitting.
+    "setInterval(()=>{if(fs.existsSync(process.env.TEST_RELEASE_FILE))process.exit(0);},20);",
   ].join('');
   const done = hostThroughPty({
     command: execPath,
     args: ['-e', childCode],
     cwd: root,
     env: hermeticEnv({ PAPERCUSP_AGENT: 'codex', PAPERCUSP_PSU_HEADLESS: '1', CODEX_HOME: root,
+      TEST_RELEASE_FILE: releaseFile,
       PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20', PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1' }),
     ownerId,
     io,
@@ -1689,6 +1694,9 @@ it('leaves a later Codex model menu to the agent after a turn was submitted', as
   });
   try {
     expect(await waitForOutput(captured, '100% context left')).toBe(true);
+    // A delayed observer must not spend the child's lifetime before the menu
+    // assertion starts. The later status is emitted 500ms after submission.
+    await sleep(submitDelayMs);
     await injectIntoHost(socketPathFor(ownerId), { mode: 'turn', data: 'first turn', ownerId });
     expect(await waitForOutput(captured, 'LATER_MENU_UNANSWERED', 2500), captured()).toBe(true);
     const eventPath = eventLogPathForOwner(ownerId);
@@ -1707,6 +1715,7 @@ it('leaves a later Codex model menu to the agent after a turn was submitted', as
     }
     expect(delivered).toMatchObject({ kind: 'turn-delivered', resubmits: 0, attempts: 1 });
   } finally {
+    writeFileSync(releaseFile, 'release\n');
     await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
     await done;
     rmSync(root, { recursive: true, force: true });

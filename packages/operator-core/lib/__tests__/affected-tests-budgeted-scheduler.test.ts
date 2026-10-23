@@ -369,6 +369,145 @@ describe('native affected-task parent receipt transport', () => {
       expect(unclosed.observation.processTrace.events.length).toBeGreaterThan(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  function evaluatorObservation(out: string, code = 'export const observed = 1;') {
+    const bytes = Buffer.from(code), sha256 = createHash('sha256').update(bytes).digest('hex');
+    mkdirSync(`${out}.modules`, { recursive: true });
+    const codeRef = join(`${out}.modules`, `${sha256}.js`);
+    writeFileSync(codeRef, bytes);
+    const pin = { id: 'observed.ts', sha256, byteLength: bytes.length, codeRef };
+    return { bytes, pin, observation: { schemaVersion: 'vitest-evaluator-inputs-v1',
+      scope: 'vitest-inlined-evaluator-inputs', basis: 'before-evaluator-call',
+      entries: [pin], vmInputs: [{ ...pin, inputIndex: 0, api: 'runInThisContext', filename: 'observed.ts' }],
+      reasons: ['external-loader-bytes-unobserved'] } };
+  }
+  it.each(['passed', 'failed'] as const)('archives evaluator reference occurrences and bytes without qualifying %s reporter output', reason => {
+    const root = mkdtempSync(join(tmpdir(), 'native-evaluator-retained-'));
+    try {
+      const { out, input } = nativeReporterObservation(root, reason);
+      const { bytes, observation } = evaluatorObservation(out);
+      const payload = JSON.parse(readFileSync(out, 'utf8'));
+      payload.rows = [{ moduleEvaluations: observation }];
+      payload.diagnostics = [{ moduleEvaluations: observation }];
+      payload.nativeRun.files = [{ proof: { inputs: { moduleEvaluations: observation } } }];
+      writeFileSync(out, JSON.stringify(payload));
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input);
+      const reporter = result.observation.processTrace.reporter;
+      expect(reporter.status).toBe('bound');
+      expect(reporter.evaluatorArtifacts).toMatchObject({ scope: 'referenced-evaluator-code',
+        status: 'retained', referencesVisited: 6, bytesRetained: bytes.length, gaps: [] });
+      expect(reporter.evaluatorArtifacts!.entries.map(row => row.location)).toEqual([
+        '/rows/0/moduleEvaluations/entries/0', '/rows/0/moduleEvaluations/vmInputs/0',
+        '/diagnostics/0/moduleEvaluations/entries/0', '/diagnostics/0/moduleEvaluations/vmInputs/0',
+        '/nativeRun/files/0/proof/inputs/moduleEvaluations/entries/0',
+        '/nativeRun/files/0/proof/inputs/moduleEvaluations/vmInputs/0']);
+      expect(reporter.gaps).not.toContain('reporter-evaluator-sidecars-not-retained');
+      expect(writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input).receipt).toEqual(result.receipt);
+      rmSync(`${out}.modules`, { recursive: true });
+      for (const row of reporter.evaluatorArtifacts!.entries)
+        expect(readFileSync(join(result.root, row.artifact.ref))).toEqual(bytes);
+      expect(JSON.parse(readFileSync(join(result.root, reporter.artifact!.ref), 'utf8'))).toEqual(payload);
+      expect(result.observation.execution.exitCode).toBe(reason === 'failed' ? 3 : 0);
+      expect(result.observation).toMatchObject({ steps: [], orderedChainQualified: false,
+        runtimeClosure: 'unmeasured', operationalAcceptance: false });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each(['missing', 'tampered', 'symlink', 'directory', 'escape', 'length', 'digest', 'oversized',
+    'missing-reference', 'protocol', 'population', 'redirected-root'] as const)(
+    'keeps bound reporter evidence and good evaluator references when a sidecar is %s', fault => {
+      const root = mkdtempSync(join(tmpdir(), 'native-evaluator-partial-'));
+      try {
+        const { out, input } = nativeReporterObservation(root);
+        const good = evaluatorObservation(out), bad = evaluatorObservation(out, 'export const other = 2;');
+        const pin = { ...bad.pin }, observation = { ...bad.observation, entries: [pin], vmInputs: [] };
+        if (fault === 'missing') rmSync(pin.codeRef);
+        if (fault === 'tampered') writeFileSync(pin.codeRef, 'x'.repeat(pin.byteLength));
+        if (fault === 'symlink' || fault === 'directory') {
+          rmSync(pin.codeRef);
+          if (fault === 'symlink') symlinkSync(good.pin.codeRef, pin.codeRef);
+          else mkdirSync(pin.codeRef);
+        }
+        if (fault === 'escape') pin.codeRef = good.pin.codeRef;
+        if (fault === 'length') pin.byteLength++;
+        if (fault === 'digest') pin.sha256 = '0'.repeat(64);
+        if (fault === 'oversized') pin.byteLength = 16 * 1024 * 1024 + 1;
+        if (fault === 'missing-reference') delete (pin as Partial<typeof pin>).codeRef;
+        if (fault === 'protocol') observation.schemaVersion = 'unknown-protocol';
+        if (fault === 'population') (observation as unknown as { entries: unknown }).entries = {};
+        if (fault === 'redirected-root') {
+          const target = join(root, 'other-modules');
+          cpSync(`${out}.modules`, target, { recursive: true });
+          rmSync(`${out}.modules`, { recursive: true }); symlinkSync(target, `${out}.modules`);
+        }
+        const payload = JSON.parse(readFileSync(out, 'utf8'));
+        payload.rows = [{ moduleEvaluations: good.observation }, { moduleEvaluations: observation }];
+        writeFileSync(out, JSON.stringify(payload));
+        const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input);
+        const reporter = result.observation.processTrace.reporter;
+        expect(reporter.status).toBe('bound');
+        expect(reporter.artifact).not.toBeNull();
+        expect(reporter.evaluatorArtifacts!.status).toBe('partial');
+        expect(reporter.evaluatorArtifacts!.gaps.length).toBeGreaterThan(0);
+        expect(reporter.evaluatorArtifacts!.entries).toHaveLength(fault === 'redirected-root' ? 0 : 2);
+        expect(reporter.gaps).toContain('reporter-evaluator-sidecars-partial');
+        expect(result.observation.processTrace.events.length).toBeGreaterThan(0);
+        expect(result.observation.orderedChainQualified).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  it('bounds evaluator reference occurrences without dropping the authenticated prefix', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-evaluator-limit-'));
+    try {
+      const { out, input } = nativeReporterObservation(root);
+      const { pin, observation } = evaluatorObservation(out);
+      observation.entries = Array.from({ length: 4097 }, () => pin);
+      observation.vmInputs = [];
+      const payload = JSON.parse(readFileSync(out, 'utf8'));
+      payload.rows = [{ moduleEvaluations: observation }];
+      writeFileSync(out, JSON.stringify(payload));
+      const archive = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input)
+        .observation.processTrace.reporter.evaluatorArtifacts!;
+      expect(archive).toMatchObject({ status: 'partial', referencesVisited: 4096,
+        bytesRetained: pin.byteLength, gaps: ['evaluator-reference-limit'] });
+      expect(archive.entries).toHaveLength(4096);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('bounds unique evaluator artifact bytes independently of reference count', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-evaluator-byte-limit-'));
+    try {
+      const { out, input } = nativeReporterObservation(root);
+      const pins = Array.from({ length: 5 }, (_, i) => evaluatorObservation(out,
+        i === 4 ? 'x' : String(i).repeat(16 * 1024 * 1024)).pin);
+      const { observation } = evaluatorObservation(out);
+      observation.entries = pins; observation.vmInputs = [];
+      const payload = JSON.parse(readFileSync(out, 'utf8'));
+      payload.rows = [{ moduleEvaluations: observation }];
+      writeFileSync(out, JSON.stringify(payload));
+      const archive = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input)
+        .observation.processTrace.reporter.evaluatorArtifacts!;
+      expect(archive).toMatchObject({ status: 'partial', referencesVisited: 5,
+        bytesRetained: 64 * 1024 * 1024, gaps: ['evaluator-sidecar-rejected:total-byte-limit'] });
+      expect(archive.entries).toHaveLength(4);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('charges rejected evaluator bytes to the total read budget', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-evaluator-rejected-limit-'));
+    try {
+      const { out, input } = nativeReporterObservation(root);
+      const bad = evaluatorObservation(out, '1'.repeat(16 * 1024 * 1024));
+      writeFileSync(bad.pin.codeRef, '2'.repeat(bad.pin.byteLength));
+      const good = evaluatorObservation(out);
+      const payload = JSON.parse(readFileSync(out, 'utf8'));
+      payload.rows = [{ moduleEvaluations: { ...bad.observation,
+        entries: [...Array.from({ length: 4 }, () => bad.pin), good.pin], vmInputs: [] } }];
+      writeFileSync(out, JSON.stringify(payload));
+      const archive = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input)
+        .observation.processTrace.reporter.evaluatorArtifacts!;
+      expect(archive.entries).toHaveLength(0);
+      expect(archive).toMatchObject({ status: 'partial', referencesVisited: 5,
+        bytesRead: 64 * 1024 * 1024, bytesRetained: 0 });
+      expect(archive.gaps).toEqual(['evaluator-sidecar-rejected:digest-mismatch',
+        'evaluator-sidecar-rejected:total-byte-limit']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it.each(['missing', 'malformed', 'redirected', 'oversized', 'unrelated-pid', 'wrong-parent',
     'stale', 'future', 'ambiguous', 'after-process-exit', 'wrong-schema'] as const)('leaves native reporter %s unbound without losing good process evidence', fault => {
     const root = mkdtempSync(join(tmpdir(), 'native-reporter-unbound-'));
@@ -988,7 +1127,7 @@ describe('R12 original native voice transcript receipt', () => {
 
 describe('R12 original fixture lifecycle receipt', () => {
   it.each(['valid', 'valid-ordered-lifecycle', 'missing-lifecycle', 'wrong-script', 'wrong-discovery', 'after-before-exit',
-    'discovery-failure', 'missing-build-result'])('qualifies lifecycle only with %s evidence', async defect => {
+    'discovery-failure', 'missing-build-result'])('validates command-preparation lifecycle evidence: %s', async defect => {
     const root = mkdtempSync(join(tmpdir(), 'r12-fixture-lifecycle-'));
     const pin = (ref: string, value: unknown, raw = false) => {
       const bytes = raw ? String(value) : JSON.stringify(value);
@@ -1056,9 +1195,8 @@ describe('R12 original fixture lifecycle receipt', () => {
           steps: chainSteps.map(({ phase, step, receipt }) => ({ phase, step, receipt })) };
         Object.assign(pins, { chains: [{ task: 'fixture :: test', receipt: pin('parent.json', parent), steps: chainSteps,
           logs: { stdout: pin('parent.out', '', true), stderr: pin('parent.err', '', true) } }] });
-        const result = await readBudgetedTaskComparisonArtifacts(root, pins);
-        expect(result.orderedChainQualified).toBe(true);
-        expect(result.chains[0]!.steps).toMatchObject([{ phase: 'pre', kind: 'npm-lifecycle' }, { phase: 'test', testsPassed: 1 }]);
+        await expect(readBudgetedTaskComparisonArtifacts(root, pins))
+          .rejects.toThrow('complete native npm parent and process trace required for ordered evidence');
         return;
       }
       if (defect === 'valid') {
@@ -1072,6 +1210,148 @@ describe('R12 original fixture lifecycle receipt', () => {
 });
 
 describe('R12 original ordered native occurrence qualification', () => {
+  function nativeVitestFixture(fault: 'none' | 'skip' = 'none') {
+    const root = mkdtempSync(join(tmpdir(), 'r12-native-vitest-chain-'));
+    const repositoryRoot = join(root, 'repo');
+    const evidenceRoot = join(root, 'evidence');
+    const appRoot = join(repositoryRoot, 'app');
+    const testFile = 'app/repeated.test.mjs';
+    const testBody = 'export {}; // original source census fixture\n';
+    const sourcePath = join(repositoryRoot, testFile);
+    const task = 'app :: test';
+    const command = 'node node_modules/vitest/vitest.mjs run';
+    const packageBody = JSON.stringify({ scripts: { test: command } });
+    const runnerPath = join(appRoot, 'node_modules/vitest/vitest.mjs');
+    mkdirSync(dirname(runnerPath), { recursive: true });
+    writeFileSync(sourcePath, testBody);
+    writeFileSync(join(appRoot, 'package.json'), packageBody);
+    const runnerBody = `
+      import { createHash } from 'node:crypto';
+      import { readFileSync, writeFileSync } from 'node:fs';
+      import { resolve } from 'node:path';
+      const testFile = 'app/repeated.test.mjs';
+      const sourceBytes = readFileSync(resolve(process.cwd(), 'repeated.test.mjs'));
+      const sourceSha = createHash('sha256').update(sourceBytes).digest('hex');
+      const specifications = [{ testFile, projectName: 'operator', pool: 'forks',
+        testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }];
+      const now = Date.now();
+      const skipped = ${JSON.stringify(fault === 'skip')};
+      const nativeRun = {
+        schemaVersion: 'native-vitest-run-v1', scope: 'vitest-reporter-callbacks',
+        pid: process.pid, ppid: process.ppid, startedAtMs: now - 1, finishedAtMs: now,
+        terminalHook: 'onTestRunEnd', reason: 'passed', unhandledErrorCount: 0,
+        reportedModulePaths: [testFile], modulePopulationMatched: true,
+        selectedManifest: { sha256: createHash('sha256').update(JSON.stringify(specifications)).digest('hex'), specifications },
+        files: [{ testFile, state: 'passed', observedAtMs: now, completionId: 'native-test-case-1',
+          projectName: 'operator', firstAttemptVerdict: 'pass',
+          proof: { inputs: null, sourceEvidence: { schemaVersion: 'vite-collected-source-evidence-v1',
+            scope: 'repository-worker-vite-original-sources', status: 'stable',
+            sources: [{ path: testFile, sha256: sourceSha, basis: 'vite-pre-transform', currentSha256: sourceSha }],
+            reasons: [] } },
+          execution: { passed: skipped ? 0 : 1, failed: 0, skipped: skipped ? 1 : 0, collectionFailed: false },
+          cases: [{ caseIndex: 0, caseKey: 'native assertion', occurrence: 1,
+            status: skipped ? 'skip' : 'pass', durationMs: 0, errorTail: null }] }],
+        gaps: [],
+      };
+      writeFileSync(process.env.PC_EXECUTED_SOURCE_MAP_OUT, JSON.stringify({ nativeRun }));
+      process.stdout.write('native Vitest stdout\\n');
+      process.stderr.write('native Vitest stderr\\n');
+    `;
+    writeFileSync(runnerPath, runnerBody);
+    const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    const inputs = [
+      { path: 'app/package.json', sha256: digest(packageBody) },
+      { path: testFile, sha256: digest(testBody) },
+      { path: 'app/node_modules/vitest/vitest.mjs', sha256: digest(runnerBody) },
+    ];
+    const out = join(root, 'native-run.json');
+    const startedAtMs = Date.now();
+    const child = spawnSync('npm', ['run', 'test'], { cwd: appRoot, timeout: 20_000,
+      env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+        npm_config_script_shell: '/bin/sh', PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
+    if (child.error) throw child.error;
+    if (child.status !== 0) throw new Error(`native Vitest fixture exited ${child.status}: ${String(child.stderr)}`);
+    const retained = writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, {
+      task, attempt: 'initial', cwd: appRoot, command: ['npm', 'run', 'test'], originalCommand: command,
+      startedAtMs, finishedAtMs: Date.now(), exitCode: child.status, signal: child.signal,
+      error: null, captureComplete: true, stdout: child.stdout as Buffer, stderr: child.stderr as Buffer,
+      before: inputs, after: inputs, processTrace: { out, rootPid: child.pid },
+    });
+    const pin = (ref: string, bytes: string | Buffer) => {
+      const content = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+      writeFileSync(join(evidenceRoot, ref), content);
+      return { ref, sha256: digest(content) };
+    };
+    const pinRef = (artifact: { ref: string; sha256: string }) => ({ ref: artifact.ref, sha256: artifact.sha256 });
+    const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'complete', unenumerated: [],
+      fileOccurrences: [{ task, step: 0, command, file: testFile, kind: 'test-file' }],
+      tasks: [{ id: task, dir: 'app', script: 'test', command, lifecycleCommands: [],
+        steps: [{ command, script: 'test', files: [testFile] }] }],
+      commandObligations: [] };
+    const selectionPin = pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`);
+    const trace = retained.observation.processTrace;
+    const reporter = trace.reporter!;
+    const reporterProcess = reporter.process!;
+    const reporterArtifact = reporter.artifact!;
+    const streams = trace.streams.filter((row: any) => row.processIdentity === reporterProcess.processIdentity &&
+      row.pid === reporterProcess.pid);
+    const streamPin = (role: 'stdout' | 'stderr') => {
+      const rows = streams.filter((row: any) => row.role === role);
+      if (rows.length !== 1) throw new Error(`native stream fixture expected one ${role} artifact`);
+      return pinRef(rows[0].artifact);
+    };
+    const parentLogs = retained.logs;
+    const pins = { mode: 'command-preparation' as const, repositoryRoot, selection: selectionPin, commands: [],
+      chains: [{ task, receipt: pinRef(retained.receipt),
+        logs: { stdout: pinRef(parentLogs.stdout), stderr: pinRef(parentLogs.stderr) },
+        steps: [{ phase: 'test' as const, step: 0, format: 'vitest-native-run' as const,
+          receipt: pinRef(reporterArtifact), logs: { stdout: streamPin('stdout'), stderr: streamPin('stderr'),
+            report: pinRef(reporterArtifact) } }] }] };
+    return { root, repositoryRoot, evidenceRoot, testFile, command, pins, pin };
+  }
+
+  it('qualifies a real npm sh lifecycle from the native reporter and process streams', async () => {
+    const f = nativeVitestFixture();
+    try {
+      const result = await readBudgetedTaskComparisonArtifacts(f.evidenceRoot, f.pins);
+      expect(result).toMatchObject({ orderedChainQualified: true, operationalAcceptance: false,
+        runtimeClosure: 'unmeasured', orderedChainCoverage: { population: ['app :: test'],
+          qualified: ['app :: test'], missing: [] } });
+      expect(result.chains[0]!.steps).toMatchObject([{ phase: 'test', step: 0,
+        command: f.command, testsPassed: 1, format: 'vitest-native-run',
+        fileOccurrences: [{ file: f.testFile }] }]);
+      const parent = JSON.parse(readFileSync(join(f.evidenceRoot, f.pins.chains[0]!.receipt.ref), 'utf8'));
+      const span = parent.processTrace.npmLifecycle.spans[0];
+      expect(span.command.split('/').at(-1)).toBe('sh');
+      expect(span.argv).toEqual(['-c', f.command]);
+      expect(span.stdioAccessible).toEqual({ stdout: false, stderr: false });
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+
+  it('rejects a fabricated bash -lc receipt when the observed npm step is sh -c', async () => {
+    const f = nativeVitestFixture();
+    try {
+      const fabricated = { kind: 'original-native-command-execution', cwd: 'app', originalCommand: f.command,
+        execution: { command: ['bash', '-lc', f.command], exitCode: 0, signal: null, error: null } };
+      f.pins.chains[0]!.steps[0]!.receipt = f.pin('fabricated-bash-step.json', JSON.stringify(fabricated));
+      await expect(readBudgetedTaskComparisonArtifacts(f.evidenceRoot, f.pins)).rejects.toThrow();
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+
+  it('rejects a native report whose source no longer matches current files', async () => {
+    const f = nativeVitestFixture();
+    try {
+      writeFileSync(join(f.repositoryRoot, f.testFile), 'changed after native reporter execution\n');
+      await expect(readBudgetedTaskComparisonArtifacts(f.evidenceRoot, f.pins)).rejects.toThrow();
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+
+  it('rejects a reporter report that records a skipped case', async () => {
+    const f = nativeVitestFixture('skip');
+    try { await expect(readBudgetedTaskComparisonArtifacts(f.evidenceRoot, f.pins)).rejects.toThrow(); }
+    finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+
   function fixture(format: 'node-test' | 'vitest-json' = 'node-test') {
     const root = mkdtempSync(join(tmpdir(), 'r12-ordered-native-'));
     const repositoryRoot = join(root, 'repo');
@@ -1140,27 +1420,18 @@ describe('R12 original ordered native occurrence qualification', () => {
       saveSelection, saveParent, saveSteps, saveReport };
   }
   it.each(['node-test', 'vitest-json'] as const)
-  ('retains repeated file occurrences in their original %s steps', async format => {
+  ('rejects legacy %s chain receipts without native process binding', async format => {
     const f = fixture(format);
     try {
-      const result = await readBudgetedTaskComparisonArtifacts(f.root, f.pins);
-      expect(result).toMatchObject({ orderedChainQualified: true, operationalAcceptance: false,
-        runtimeClosure: 'unmeasured', orderedChainCoverage: { population: [f.task.id], qualified: [f.task.id], missing: [] } });
-      expect(result.chains[0]!.steps).toHaveLength(2);
-      expect(result.chains[0]!.steps).toMatchObject([
-        { step: 0, fileOccurrences: [{ file: f.file }], testsPassed: 1 },
-        { step: 1, fileOccurrences: [{ file: f.file }], testsPassed: 1 },
-      ]);
-      expect(Object.isFrozen(result.chains[0]!.steps)).toBe(true);
+      await expect(readBudgetedTaskComparisonArtifacts(f.root, f.pins)).rejects.toThrow();
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   });
-  it('leaves unsupplied original chains explicitly missing', async () => {
+  it('refuses an empty original evidence set before computing missing-chain coverage', async () => {
     const f = fixture();
     try {
-      f.selection.tasks.push({ ...f.task, id: 'another :: test' }); f.saveSelection();
-      const result = await readBudgetedTaskComparisonArtifacts(f.root, f.pins);
-      expect(result.orderedChainQualified).toBe(false);
-      expect(result.orderedChainCoverage.missing).toEqual(['another :: test']);
+      f.pins.chains = [];
+      await expect(readBudgetedTaskComparisonArtifacts(f.root, f.pins))
+        .rejects.toThrow('bounded original command pins required');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   });
   it.each(['missing-step', 'reversed-step', 'duplicate-chain', 'parent-binding', 'parent-exit', 'parent-command',

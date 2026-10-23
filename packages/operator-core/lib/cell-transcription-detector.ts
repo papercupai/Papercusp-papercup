@@ -326,11 +326,18 @@ function isUnlinkedHistoricalCommitCitation(haystack: string, valueStart: number
 
 function isStagingOnlyCommitCitation(haystack: string, valueStart: number, valueLength: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
-  if (!STAGING_ONLY_COMMIT_PREFIX.test(before)) return false;
+  const labelledCommit = STAGING_ONLY_COMMIT_PREFIX.test(before);
+  // A clean local staging checkout describes its source HEAD, not what is serving.
+  // Keep this exception anchored to the SHA so unrelated staging prose still counts.
+  const cleanCurrentStagingCheckout =
+    /\b(?:current|local)\s+staging\s+is\s+(?:clean|up[- ]to[- ]date)\s+at\s*$/i.test(before);
+  if (!labelledCommit && !cleanCurrentStagingCheckout) return false;
 
   const afterStart = valueStart + valueLength;
   const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
-  return EXPLICIT_STAGING_ONLY_COMMIT_AFTER.test(after);
+  return cleanCurrentStagingCheckout
+    ? !EXPLICIT_PIPELINE_STATE_AFTER_VALUE.test(after)
+    : EXPLICIT_STAGING_ONLY_COMMIT_AFTER.test(after);
 }
 
 /**

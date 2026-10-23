@@ -9,8 +9,10 @@ import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
  *
  * It talks to the operator over the SAME superuser surface the engineer
  * shells use — the MCP transport at `/api/mcp?superuser=1` (loopback +
- * the `PAPERCUSP_HOME/superuser-token` (or `~/.papercusp/superuser-token`)
- * bearer). That transport already
+ * the operator's superuser bearer). A su session's `PAPERCUSP_HOME` can be
+ * workspace-scoped; use `PAPERCUSP_OPERATOR_HOME` for the actual operator
+ * home, or the shared host token when PAPERCUSP_HOME names a workspace.
+ * That transport already
  * exposes every projected `defineTool` with its `inputSchema` and runs at
  * operator tier (role/capability/quota gates bypassed), so ptool needs no
  * server-side support: discovery (`tools/list`) and invocation
@@ -24,8 +26,10 @@ import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
  * exit-0/near-zero-output no-op (EI-21267836337650976 /
  * EI-21250765620092599); `PAPERCUSP_OPERATOR_URL`
  * overrides the host; the token is read from `--token-file`, then
- * `PAPERCUSP_MCP_TOKEN_FILE`, then `PAPERCUSP_HOME/superuser-token`, then
- * `~/.papercusp/superuser-token`.
+ * `PAPERCUSP_MCP_TOKEN_FILE`, then the `PAPERCUSP_OPERATOR_HOME` token,
+ * then an isolated `PAPERCUSP_HOME` token, then the shared
+ * `~/.papercusp/superuser-token`. Workspace-scoped PAPERCUSP_HOME uses the
+ * shared token first.
  *
  * Interactive:  ptool
  *               ptool <group:verb>                 # skip the pickers, prompt args
@@ -1554,14 +1558,20 @@ export function resolveTokenPaths({ tokenFile = null, env = process.env, home = 
     : '';
   if (fromEnv) return [fromEnv];
 
-  // Packaged and isolated operators set PAPERCUSP_HOME to the directory that
-  // owns operator.json, embedded-pg.json, and superuser-token. Falling back to
-  // homedir() here sends the host user's token to an isolated endpoint, which
-  // is rejected as superuser_invalid_bearer even though the endpoint is live.
+  // Packaged/isolated operators use PAPERCUSP_HOME for their own operator
+  // state. A su session may set it to a workspace directory instead; in that
+  // case prefer the shared host bearer unless PAPERCUSP_OPERATOR_HOME names
+  // the actual operator home.
+  const operatorHome = typeof env?.PAPERCUSP_OPERATOR_HOME === 'string'
+    ? env.PAPERCUSP_OPERATOR_HOME.trim()
+    : '';
+  const operator = operatorHome ? join(operatorHome, '.papercusp', 'superuser-token') : null;
   const isolatedHome = typeof env?.PAPERCUSP_HOME === 'string' ? env.PAPERCUSP_HOME.trim() : '';
   const isolated = isolatedHome ? join(isolatedHome, 'superuser-token') : null;
   const shared = join(home, '.papercusp', 'superuser-token');
-  return isolated && isolated !== shared ? [isolated, shared] : [shared];
+  const workspaceScoped = /(?:^|[\\/])\.papercusp-workspaces[\\/][^\\/]+(?:[\\/]|$)/.test(isolatedHome);
+  const preferred = operator || (workspaceScoped ? shared : isolated) || shared;
+  return [...new Set([preferred, shared, isolated].filter(Boolean))];
 }
 
 /** Resolve the first bearer-token candidate for callers that need one path.
@@ -4377,7 +4387,7 @@ Flags:
   --all-workspaces                use an unscoped superuser session (workspace=*)
   --harness <slug>                scope the session to a harness
   --idempotency-key <key>         reuse one logical tools/call receipt after reconciling an unknown outcome
-  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)
+  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, PAPERCUSP_OPERATOR_HOME/.papercusp/superuser-token, an isolated PAPERCUSP_HOME token, or ~/.papercusp/superuser-token; workspace-scoped PAPERCUSP_HOME prefers the shared token)
   PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)
   --raw                           print the raw result text (no JSON pretty-print)
   --url=<http://host:port>        operator URL (default current PAPERCUSP_HONO_PORT host, then $PAPERCUSP_OPERATOR_URL or :3070)

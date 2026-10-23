@@ -10,6 +10,11 @@ const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
 const delegateKill = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/control', () => ({ killTask: delegateKill }));
+const managedTask = (
+  child: ChildProcess,
+  taskId: string,
+  waitForCompletion: () => Promise<{ status: 'recorded' }> = async () => ({ status: 'recorded' }),
+) => ({ child, taskId, waitForCompletion });
 
 const HOUR = 3_600_000;
 const now = 1000 * HOUR;
@@ -379,21 +384,25 @@ describe('per-pass kernel holder transport', () => {
   const evidence = (path: string, pids: string[] = [], patch = {}) => ({ complete: true,
     byPath: pids.length ? [[path, pids]] : [], diagnostics: { fdEnd: 1, cwdEnd: 1, readFailures: 0,
       identityStable: true, callerSeen: 1, descriptorsScanned: 50, processesScanned: 10, elapsedMs: 2, ...patch } });
-  const fixture = (respond: (request: { path: string; caller: number; control: string; operation?: string; [key: string]: unknown }, child: ChildProcess) => void) => {
+  const fixture = (
+    respond: (request: { path: string; caller: number; control: string; operation?: string; [key: string]: unknown }, child: ChildProcess) => void,
+    fixtureOptions: { closeOnEof?: boolean; onStarted?: () => void; waitForCompletion?: () => Promise<{ status: 'recorded' }> } = {},
+  ) => {
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-      exitCode: null as number | null, signalCode: null, kill: vi.fn() });
+      exitCode: null as number | null, signalCode: null as NodeJS.Signals | null, kill: vi.fn() });
     child.kill.mockImplementation(() => { child.exitCode = 1; child.emit('close', 1, 'SIGKILL'); return true; });
     child.stdin.on('data', (data: Buffer) => respond(JSON.parse(data.toString()), child as unknown as ChildProcess));
-    child.stdin.once('finish', () => { child.exitCode = 0; child.emit('close', 0, null); });
+    if (fixtureOptions.closeOnEof !== false) child.stdin.once('finish', () => { child.exitCode = 0; child.emit('close', 0, null); });
     delegateSpawn.mockImplementationOnce(async (_command, _args, spec, options) => {
       expect(spec.detail.operation).toBe('retention-holder-scan');
       expect(options.requireRegistration).toBe(true);
       options.onSpawn(child as unknown as ChildProcess, 'persistent-holder-task');
-      return { child, taskId: 'persistent-holder-task' };
+      fixtureOptions.onStarted?.();
+      return managedTask(child as unknown as ChildProcess, 'persistent-holder-task', fixtureOptions.waitForCompletion);
     });
     return child;
   };
-  afterEach(() => { vi.useRealTimers(); delegateSpawn.mockReset(); });
+  afterEach(() => { vi.useRealTimers(); delegateSpawn.mockReset(); delegateKill.mockReset(); });
 
   it('serializes requests through one child and never reuses absence across open/close changes', async () => {
     const requests: unknown[] = [];
@@ -466,14 +475,102 @@ describe('per-pass kernel holder transport', () => {
     let wrote!: () => void; const written = new Promise<void>((resolve) => { wrote = resolve; });
     const child = fixture(() => wrote());
     const fallback = vi.fn(async () => ({ complete: false, byPath: new Map<string, string[]>() }));
+    delegateKill.mockImplementationOnce(async (id) => {
+      child.signalCode = 'SIGKILL';
+      child.emit('close', null, 'SIGKILL');
+      return { ok: true, taskId: id, action: 'kill' };
+    });
     vi.useFakeTimers();
     const scanner = createRetentionHolderScanner({ fallback });
     try {
       const response = scanner.scan([target]); await written;
       await vi.advanceTimersByTimeAsync(30_001);
-      expect((await response).complete).toBe(false); expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      expect((await response).complete).toBe(false);
+      expect(delegateKill).toHaveBeenCalledExactlyOnceWith('persistent-holder-task', {
+        signal: 'SIGKILL', reapTerminalResidue: true,
+      });
+      expect(child.kill).not.toHaveBeenCalled();
       expect(fallback).toHaveBeenCalledTimes(1);
     } finally { await scanner.close(); }
+  });
+
+  it('closes the worker on EOF and waits for its terminal ledger completion', async () => {
+    let markCompletionEntered!: () => void, release!: () => void;
+    const completionEntered = new Promise<void>((resolve) => { markCompletionEntered = resolve; });
+    const persistence = new Promise<void>((resolve) => { release = resolve; });
+    const waitForCompletion = vi.fn(async () => {
+      markCompletionEntered();
+      await persistence;
+      return { status: 'recorded' as const };
+    });
+    const child = fixture((request, spawned) => {
+      spawned.stdout!.emit('data', JSON.stringify(evidence(request.path)) + '\n');
+    }, { waitForCompletion });
+    const scanner = createRetentionHolderScanner();
+    try {
+      expect((await scanner.scan([target])).complete).toBe(true);
+      let finished = false;
+      const closing = scanner.close().then(() => { finished = true; });
+      await completionEntered;
+      expect(finished).toBe(false);
+      expect(child.stdin.writableEnded).toBe(true);
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(delegateKill).not.toHaveBeenCalled();
+      release();
+      await closing;
+      expect(waitForCompletion).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await scanner.close().catch(() => {});
+    }
+  });
+
+  it('uses task-level cleanup for an unresponsive worker and bounds ledger completion', async () => {
+    vi.useFakeTimers();
+    let markStarted!: () => void, markCompletionEntered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const completionEntered = new Promise<void>((resolve) => { markCompletionEntered = resolve; });
+    const completion = new Promise<void>((resolve) => { release = resolve; });
+    const waitForCompletion = vi.fn(async () => {
+      markCompletionEntered();
+      await completion;
+      return { status: 'recorded' as const };
+    });
+    const child = fixture(() => {}, { closeOnEof: false, onStarted: markStarted, waitForCompletion });
+    delegateKill.mockImplementationOnce(async (id) => {
+      child.signalCode = 'SIGKILL';
+      child.emit('close', null, 'SIGKILL');
+      return { ok: true, taskId: id, action: 'kill' };
+    });
+    const fallback = vi.fn(async () => ({
+      complete: false, byPath: new Map<string, string[]>(), diagnostics: { reason: 'scanner closed' },
+    }));
+    const scanner = createRetentionHolderScanner({ fallback });
+    const scan = scanner.scan([target]);
+    try {
+      await started;
+      const closing = scanner.close();
+      const closeOutcome = closing.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      await completionEntered;
+      expect(delegateKill).toHaveBeenCalledExactlyOnceWith('persistent-holder-task', {
+        signal: 'SIGKILL', reapTerminalResidue: true,
+      });
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30_000);
+      const outcome = await closeOutcome;
+      expect(outcome.ok).toBe(false);
+      expect(outcome.ok ? '' : outcome.error instanceof Error ? outcome.error.message : String(outcome.error))
+        .toBe('retention holder ledger completion deadline');
+      await expect(scan).resolves.toMatchObject({ complete: false });
+      expect(waitForCompletion).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await scanner.close().catch(() => {});
+    }
   });
 });
 

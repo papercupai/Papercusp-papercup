@@ -665,7 +665,7 @@ export default defineTool({
         .array(z.string().min(1))
         .max(40)
         .optional()
-        .describe('Repeatable psu --stack `<slot>:<id>` bindings (e.g. `domain:papercusp-engineer`) for every fresh launch; bare ids are invalid. members[i].stack overrides this list.'),
+        .describe('Repeatable psu --stack `<slot>:<id>` bindings or one `composition:<id>` named composition for every fresh launch; bare ids are invalid. members[i].stack overrides this list.'),
       fleet: z
         .string()
         .max(120)
@@ -2215,7 +2215,22 @@ export default defineTool({
     // every effective member (including overrides) before claiming the launch.
     if (!sourceAction || isSuccessor) {
       for (const [i, config] of foldedConfigs.entries()) {
-        for (const ref of config.stack ?? []) {
+        const refs = config.stack ?? [];
+        if (refs.some((ref) => ref.startsWith('composition:'))) {
+          if (refs.length !== 1 || !refs[0]?.slice('composition:'.length).trim()) {
+            return err(`Invalid named composition for member ${i + 1}: expected one non-empty composition selector without other stack bindings.`);
+          }
+          try {
+            const { resolveNamedIdentityCompositionSelection } = await import('../../agent-identities/source');
+            await resolveNamedIdentityCompositionSelection(refs[0].slice('composition:'.length), cwd);
+          } catch (error) {
+            return err(`Invalid named composition for member ${i + 1}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          // Keep the root marker: bootstrap resolves and pins the composition
+          // and its component closure through the same shared resolver.
+          continue;
+        }
+        for (const ref of refs) {
           if (!parseBindingRef(ref)) {
             return err(
               `Invalid stack binding for member ${i + 1}: ${JSON.stringify(ref)} ` +

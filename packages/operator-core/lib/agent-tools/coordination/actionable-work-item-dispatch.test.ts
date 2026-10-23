@@ -833,7 +833,7 @@ describe('resolveStableAgentTarget', () => {
           wakeable: 1,
           onDesktop: 0,
           viewerAttached: 0,
-          byState: { live: 1, parked: 0, ended: 0, recorded: 0 },
+          byState: { live: 1, parked: 0, ended: 0, recorded: 0, unknown: 0 },
           byContextPressure: { high: 0, critical: 0 },
         },
         active: rows,

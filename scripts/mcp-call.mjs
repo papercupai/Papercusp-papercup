@@ -480,8 +480,9 @@ export function parseSse(raw, requestId = 1) {
 
 /**
  * Resolve implicit bearer files in the same order as ptool. An explicit
- * PAPERCUSP_MCP_TOKEN_FILE is authoritative; otherwise an isolated
- * PAPERCUSP_HOME token precedes the shared per-home token.
+ * PAPERCUSP_MCP_TOKEN_FILE is authoritative; PAPERCUSP_OPERATOR_HOME names
+ * the real operator home, while a workspace-scoped PAPERCUSP_HOME uses the
+ * shared per-home token first.
  */
 export function superuserTokenPaths(env = process.env, home = homedir()) {
   const explicit = typeof env?.PAPERCUSP_MCP_TOKEN_FILE === 'string'
@@ -489,10 +490,16 @@ export function superuserTokenPaths(env = process.env, home = homedir()) {
     : '';
   if (explicit) return [explicit];
 
+  const operatorHome = typeof env?.PAPERCUSP_OPERATOR_HOME === 'string'
+    ? env.PAPERCUSP_OPERATOR_HOME.trim()
+    : '';
+  const operator = operatorHome ? join(operatorHome, '.papercusp', 'superuser-token') : null;
   const isolatedHome = typeof env?.PAPERCUSP_HOME === 'string' ? env.PAPERCUSP_HOME.trim() : '';
   const isolated = isolatedHome ? join(isolatedHome, 'superuser-token') : null;
   const shared = join(home, '.papercusp', 'superuser-token');
-  return isolated && isolated !== shared ? [isolated, shared] : [shared];
+  const workspaceScoped = /(?:^|[\\/])\.papercusp-workspaces[\\/][^\\/]+(?:[\\/]|$)/.test(isolatedHome);
+  const preferred = operator || (workspaceScoped ? shared : isolated) || shared;
+  return [...new Set([preferred, shared, isolated].filter(Boolean))];
 }
 
 /** The first candidate is used in diagnostics and for legacy callers. */

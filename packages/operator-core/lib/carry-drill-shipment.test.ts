@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CARRY_SHIPMENT_PLAN, measureCarryDrillShipment, type CarryShipmentReceipts } from './carry-drill-shipment';
-import type { ColdBootDrillHostEvent } from './cold-boot-drill-live';
+import type { ColdBootDrillHostEvent, measureCarryDrillLifecycle } from './cold-boot-drill-live';
+import { mockResolvedTyped } from './testing/typed-mock';
 
 const sha = 'a'.repeat(40), at = (second: number) => `2026-10-22T00:00:${String(second).padStart(2,'0')}.000Z`;
 const input = { workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: CARRY_SHIPMENT_PLAN,
@@ -20,7 +21,7 @@ function nativeEvidence() {
   };
   const host: ColdBootDrillHostEvent[] = [{ kind: 'shutdown-accepted', ts: at(11) }, { kind: 'host-teardown', ts: at(12) }];
   const deps = {
-    lifecycle: vi.fn(async () => ({ verdict: 'pass' as const, reason: 'native', scope: 'selected-codex-interactive-drill' as const,
+    lifecycle: vi.fn<typeof measureCarryDrillLifecycle>(async () => ({ verdict: 'pass', reason: 'native', scope: 'selected-codex-interactive-drill',
       ownerId: input.ownerId, drillId: input.drillId, requestedAt: at(3) })),
     receipts: vi.fn(async () => receipts), containsSource: vi.fn(async (): Promise<boolean | null> => true),
     hostEvents: vi.fn(async () => host), hostGone: vi.fn(async () => true),
@@ -70,8 +71,8 @@ describe('objective carry shipment joins native existing receipts', () => {
     });
   it('never reads shipment state when the lifecycle cannot pass', async () => {
     const h = nativeEvidence();
-    h.deps.lifecycle.mockResolvedValue({ verdict: 'fail', reason: 'drop', scope: 'selected-codex-interactive-drill',
-      ownerId: input.ownerId, drillId: input.drillId, requestedAt: at(3) } as never);
+    mockResolvedTyped(h.deps.lifecycle, { verdict: 'fail', reason: 'drop', scope: 'selected-codex-interactive-drill',
+      ownerId: input.ownerId, drillId: input.drillId, requestedAt: at(3) });
     expect((await measureCarryDrillShipment(input,h.deps)).verdict).toBe('fail');
     expect(h.deps.receipts).not.toHaveBeenCalled();
   });

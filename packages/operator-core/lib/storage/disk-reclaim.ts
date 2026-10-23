@@ -12,6 +12,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
+import type { ManagedSpawnResult } from '../task-manager/managed-spawn';
 import type { ReclaimPhaseTiming } from '../release-cut-reclaim';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledger';
@@ -379,7 +380,10 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
 export function createRetentionHolderScanner(deps: {
   fallback?: typeof scanRetentionHolders;
 } = {}) {
-  let child: ChildProcess | undefined, starting: Promise<ChildProcess> | undefined;
+  let child: ChildProcess | undefined, managedTask: ManagedSpawnResult | undefined;
+  let taskId: string | undefined, starting: Promise<ChildProcess> | undefined;
+  let taskPromise: Promise<ManagedSpawnResult> | undefined, closePromise: Promise<void> | undefined;
+  let cleanupPromise: Promise<void> | undefined;
   let ended = false, closed = false, buffer = '', stderr = '';
   let pending: { resolve: (line: string) => void; reject: (error: Error) => void } | undefined;
   let activeLeaseToken: string | undefined;
@@ -390,11 +394,45 @@ export function createRetentionHolderScanner(deps: {
     request?.reject(new Error(reason));
     child?.stdin?.end();
   };
+  const cleanupTask = (id: string): Promise<void> => cleanupPromise ??= import('../task-manager/control')
+    .then(({ killTask }) => killTask(id, { signal: 'SIGKILL', reapTerminalResidue: true }))
+    .then((cleanup) => {
+      if (!cleanup.ok && cleanup.error !== 'already_gone') {
+        throw new Error('retention holder task cleanup incomplete: ' + (cleanup.error ?? 'unknown error'));
+      }
+    });
+  const waitBounded = <T>(promise: Promise<T>, label: string): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(label)), RETENTION_HOLDER_SCAN_MS);
+    });
+    return Promise.race([promise, deadline]).finally(() => { if (timer) clearTimeout(timer); });
+  };
+  const waitForChildClose = (spawned: ChildProcess, timeoutMs: number): Promise<boolean> => {
+    if (spawned.exitCode !== null || spawned.signalCode !== null) return Promise.resolve(true);
+    return new Promise<boolean>((resolveClosed) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const onClose = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolveClosed(true);
+      };
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        spawned.removeListener('close', onClose);
+        resolveClosed(false);
+      }, timeoutMs);
+      spawned.once('close', onClose);
+    });
+  };
   const start = () => starting ??= new Promise<ChildProcess>((resolveChild, rejectChild) => {
     const timer = setTimeout(() => { fail('holder worker startup deadline'); rejectChild(new Error('holder worker startup deadline')); }, RETENTION_HOLDER_SCAN_MS);
     const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
     const worker = join(repoRoot, 'packages/operator-core/lib/storage/disk-reclaim-holder-worker.py');
-    void import('../task-manager/managed-spawn').then(({ managedSpawn }) => managedSpawn('/usr/bin/sudo', ['-n', '/usr/bin/python3', worker], {
+    taskPromise = import('../task-manager/managed-spawn').then(({ managedSpawn }) => managedSpawn('/usr/bin/sudo', ['-n', '/usr/bin/python3', worker], {
       class: 'other', title: 'scheduled disk retention holder scanner',
       argv: ['/usr/bin/sudo', '-n', '/usr/bin/python3', worker], launchedBy: 'system:disk-retention',
       planSlug: 'disk-headroom-standing-reclaim-2026-10-12', runtimeMaxSec: 1800,
@@ -402,8 +440,8 @@ export function createRetentionHolderScanner(deps: {
     }, {
       requireRegistration: true,
       spawnOptions: { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] },
-      onSpawn: (spawned) => {
-        clearTimeout(timer);
+      onSpawn: (spawned, id) => {
+        taskId = id;
         child = spawned;
         spawned.once('error', (error) => fail(message(error)));
         spawned.once('close', () => fail('holder worker closed'));
@@ -413,7 +451,11 @@ export function createRetentionHolderScanner(deps: {
         spawned.stdout?.setEncoding('utf8');
         spawned.stdout?.on('data', (chunk: string) => {
           buffer += chunk;
-          if (buffer.length > 1024 * 1024) { fail('holder response overflow'); spawned.kill('SIGKILL'); return; }
+          if (buffer.length > 1024 * 1024) {
+            fail('holder response overflow');
+            void cleanupTask(id).catch(() => {});
+            return;
+          }
           const newline = buffer.indexOf('\n');
           if (newline < 0) return;
           const request = pending; pending = undefined;
@@ -422,11 +464,24 @@ export function createRetentionHolderScanner(deps: {
           request.resolve(line);
         });
         if (!spawned.stdin || !spawned.stdout || !spawned.stderr || closed || ended) {
-          fail('holder worker pipes unavailable'); spawned.kill('SIGKILL'); rejectChild(new Error('holder worker unavailable')); return;
+          fail('holder worker pipes unavailable');
+          void cleanupTask(id).catch(() => {});
+          rejectChild(new Error('holder worker unavailable')); return;
         }
         resolveChild(spawned);
       },
-    })).catch((error) => { clearTimeout(timer); fail(message(error)); rejectChild(error); });
+    })).then((managed) => {
+      clearTimeout(timer);
+      managedTask = managed;
+      taskId = managed.taskId;
+      return managed;
+    }, (error) => {
+      clearTimeout(timer);
+      fail(message(error));
+      rejectChild(error);
+      throw error;
+    });
+    void taskPromise.catch(() => {});
   });
   const kernel = async (paths: readonly string[], control: string): Promise<OpenWriterScan> => {
     if (ended || closed || paths.length === 0 || paths.length > 16) return incompleteHolders('kernel holder route unavailable');
@@ -465,9 +520,15 @@ export function createRetentionHolderScanner(deps: {
         const error = new Error('holder worker request deadline');
         const current = pending;
         pending = undefined;
-        current?.reject(error);
-        fail(error.message);
-        spawned.kill('SIGKILL');
+        ended = true;
+        child?.stdin?.end();
+        const id = managedTask?.taskId ?? taskId;
+        if (!current) return;
+        if (!id) { current.reject(new Error(error.message + ': managed task id unavailable')); return; }
+        void cleanupTask(id).then(
+          () => current.reject(error),
+          (cleanupError: unknown) => current.reject(new Error(error.message + ': ' + message(cleanupError))),
+        );
       }, timeout);
       pending = {
         resolve: (value) => { clearTimeout(timer); resolveLine(value); },
@@ -538,14 +599,60 @@ export function createRetentionHolderScanner(deps: {
     serial = run.then(() => {}, () => {});
     return run;
   };
-  const close = async () => {
-    closed = true; fail('retention holder scanner closed');
-    const spawned = child;
-    if (!spawned || spawned.exitCode !== null || spawned.signalCode !== null) return;
-    await new Promise<void>((resolveClosed) => {
-      const timer = setTimeout(() => { spawned.kill('SIGKILL'); resolveClosed(); }, 1000);
-      spawned.once('close', () => { clearTimeout(timer); resolveClosed(); });
-    });
+  const close = () => {
+    if (closePromise) return closePromise;
+    closed = true;
+    fail('retention holder scanner closed');
+    closePromise = (async () => {
+      let spawned = child;
+      let id = managedTask?.taskId ?? taskId;
+      if (spawned && spawned.exitCode === null && spawned.signalCode === null) {
+        const closedOnEof = await waitForChildClose(spawned, 1_000);
+        if (!closedOnEof) {
+          if (!id && taskPromise) {
+            managedTask = await waitBounded(taskPromise, 'retention holder task registration deadline');
+            id = managedTask.taskId;
+            spawned = managedTask.child;
+          }
+          if (!id) throw new Error('retention holder managed task id unavailable for cleanup');
+          await cleanupTask(id);
+          if (!await waitForChildClose(spawned, RETENTION_HOLDER_SCAN_MS)) {
+            throw new Error('retention holder worker did not close after scoped cleanup');
+          }
+        }
+      }
+      let handle = managedTask;
+      if (!handle && taskPromise) {
+        try {
+          handle = await waitBounded(taskPromise, 'retention holder task registration deadline');
+        } catch (error) {
+          if (id) await cleanupTask(id);
+          throw error;
+        }
+      }
+      if (handle && handle.child !== spawned) {
+        spawned = handle.child;
+        id = handle.taskId;
+        if (spawned.exitCode === null && spawned.signalCode === null &&
+            !await waitForChildClose(spawned, 1_000)) {
+          await cleanupTask(id);
+          if (!await waitForChildClose(spawned, RETENTION_HOLDER_SCAN_MS)) {
+            throw new Error('retention holder worker did not close after scoped cleanup');
+          }
+        }
+      }
+      if (cleanupPromise) await cleanupPromise;
+      if (handle) {
+        const completion = await waitBounded(handle.waitForCompletion(), 'retention holder ledger completion deadline');
+        if (completion.status !== 'recorded') {
+          const reason = 'reason' in completion ? ': ' + completion.reason : '';
+          throw new Error('retention holder ledger completion was ' + completion.status + reason);
+        }
+      } else if (id) {
+        throw new Error('retention holder task handle unavailable for ledger completion');
+      }
+    })();
+    return closePromise;
   };
   return { scan, acquireRegularFileLease, close };
 }
