@@ -2834,7 +2834,20 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // EI-21903376339103215: snapshot BEFORE spawning so the close handler below can diff against
     // it and attribute only THIS run's own freeze time, not freeze time from an earlier group
     // sharing the same pc-heavy admission.
-    const freezeMsAtStart = readPcHeavyFrozenTotalMs();
+    const freezeMsAtStart = readPcHeavyFrozenTotalMs(childEnv);
+    let excludedFreezeMs = 0;
+    const readRunFreezeMs = () => {
+      // A vanished/reset admission record must not charge already observed
+      // suspension back to this child. Other groups' freezes stay excluded.
+      excludedFreezeMs = Math.max(excludedFreezeMs,
+        pcHeavyFreezeMsBetween(freezeMsAtStart, readPcHeavyFrozenTotalMs(childEnv)));
+      return excludedFreezeMs;
+    };
+    let watchdogNow = startedAt;
+    const activeNow = () => {
+      watchdogNow = Math.max(watchdogNow, Date.now() - readRunFreezeMs());
+      return watchdogNow;
+    };
     const sampler = createGovernedProcessDemandSampler(plannedDemand);
     const { launcher, ownsProcessGroup, spawnCommand, spawnArgs, scopeUnit } = resolveTestChildLauncher({
       command,
@@ -3032,6 +3045,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     progressWatchdog = createProgressAwareWatchdog({
       timeoutMs,
       maxMs: watchdogMaxMs,
+      now: activeNow,
       stallWindowMs: watchdogStallWindowMs,
       extensionMs: watchdogExtensionMs,
       onExtend: () => emitProgress('watchdog-extended'),
@@ -3119,7 +3133,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
         // wall-clock window (0 when pc-heavy is not in play or no freeze occurred). Callers use
         // this to qualify a timeout-shaped failure/timedOut verdict as possibly-freeze-induced
         // instead of reporting it as an unqualified clean red.
-        freezeMs: pcHeavyFreezeMsBetween(freezeMsAtStart, readPcHeavyFrozenTotalMs()),
+        freezeMs: readRunFreezeMs(),
       });
     });
   });

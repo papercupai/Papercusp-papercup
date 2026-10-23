@@ -46,6 +46,8 @@ export interface BoundedTimeoutOptions<T> {
   fallback: T;
   timeoutMs: number;
   label?: string;
+  /** Exact join key for the fallback observation and the operation's own trace. */
+  correlationId?: string;
   /** Emit a console warning when the operation degrades to the fallback. */
   warn?: boolean;
   /** Abort the bounded operation when the caller's operation is cancelled. */
@@ -97,6 +99,7 @@ export async function withBoundedTimeout<T>(
     if (result === TIMEOUT_SENTINEL) {
       observeFallback('bounded-operation', { eligible: 1, applied: 0, reason: 'timeout', scope: opts.label ?? 'unlabeled' }, {
         workspaceId: activeWorkspaceId(),
+        ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
       });
       if (opts.warn !== false) console.warn(
         `[bounded-timeout]${opts.label ? ` ${opts.label}` : ''} exceeded ${opts.timeoutMs}ms — degrading to fallback`,
@@ -108,11 +111,13 @@ export async function withBoundedTimeout<T>(
     }
     observeFallback('bounded-operation', { eligible: 1, applied: 1, reason: 'applied', scope: opts.label ?? 'unlabeled' }, {
       workspaceId: activeWorkspaceId(),
+      ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
     });
     return { value: result as T, degraded: false, elapsedMs: Date.now() - startedAt };
   } catch (err) {
     observeFallback('bounded-operation', { eligible: 1, applied: 0, reason: 'error', scope: opts.label ?? 'unlabeled' }, {
       workspaceId: activeWorkspaceId(),
+      ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
     });
     const errorMessage = err instanceof Error ? err.message : String(err);
     if (opts.warn !== false) console.warn(

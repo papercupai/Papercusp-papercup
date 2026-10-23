@@ -14115,6 +14115,24 @@ const ARGV_PROBE_BACKENDS = Object.freeze({
 });
 
 /** Normalize a wire value to one canonical local-liveness witness. */
+export const GOVERNED_RESUME_RESERVATION_ENV = "PAPERCUSP_GOVERNED_RESUME_RESERVATION";
+
+/** Consume only an exact, bounded pre-admission reservation; never mint liveness. */
+export function consumeGovernedResumeReservation(env, session, nowMs = Date.now()) {
+  const raw = env[GOVERNED_RESUME_RESERVATION_ENV];
+  delete env[GOVERNED_RESUME_RESERVATION_ENV];
+  if (raw == null) return null;
+  let value;
+  try { value = JSON.parse(raw); } catch { throw new Error("Invalid governed resume reservation"); }
+  if (!value || value.advSessionId !== session.id || value.ownerId !== session.coordOwnerId ||
+      typeof value.claimKey !== "string" || !value.claimKey.trim() ||
+      !Number.isFinite(value.expiresAtMs) || value.expiresAtMs <= nowMs ||
+      value.expiresAtMs > nowMs + 300_000) {
+    throw new Error("Governed resume reservation does not match this session or has expired");
+  }
+  return value;
+}
+
 export function normalizeResumeLocalLivenessEvidence(value) {
   if (value == null || typeof value !== "object" || Array.isArray(value))
     return null;
@@ -14596,7 +14614,9 @@ async function launchResume(
         process.exit(2);
       }
     }
+    const governedReservation = consumeGovernedResumeReservation(process.env, session);
     const claim = await acquireSessionResumeWithRecovery(session.id, {
+      ...(governedReservation ? { resumeClaimKey: governedReservation.claimKey } : {}),
       ...(localLivenessEvidence ? { localLivenessEvidence } : {}),
       ...(allowRetiredResume ? { allowRetired: true } : {}),
     });
@@ -14986,6 +15006,9 @@ export function forkBootstrapBody(
     // must name its responder BEFORE the answering session boots, so it pins the
     // id here and bootstrap-su adopts it exactly as on a fresh --owner-id launch.
     ...(ownerId ? { owner_id: ownerId } : {}),
+    ...(launchArgs?.bootstrapIdempotencyKey
+      ? { bootstrap_idempotency_key: launchArgs.bootstrapIdempotencyKey }
+      : {}),
     ...(launchArgv ? { launch_argv: launchArgv } : {}),
     ...(launchArgs?.launchedBy ? { launched_by: launchArgs.launchedBy } : {}),
     ...(launchArgs?.headless ? { headless: true } : {}),
@@ -15502,6 +15525,9 @@ export async function launchTrackedFork(
     return;
   }
   let res;
+  // A tracked fork creates a session too. Replay its existing launch-ledger
+  // receipt when the server commits before a timeout or upstream reset.
+  const bootstrapIdempotencyKey = args.bootstrapIdempotencyKey || randomUUID();
   try {
     res = await postBootstrap("/api/agent-mcp/console/bootstrap-su", {
       method: "POST",
@@ -15511,9 +15537,10 @@ export async function launchTrackedFork(
           acct?.forward ?? acct?.id ?? null,
           launchModeFromArgs(args),
           args.ownerId || null,
-          { ...args, model: model || args.model || null },
+          { ...args, model: model || args.model || null, bootstrapIdempotencyKey },
         ),
       ),
+      retryBootstrapFailures: true,
     });
   } catch (e) {
     await fallbackToUntrackedFork(`fork bootstrap failed (${e?.message ?? e})`);

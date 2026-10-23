@@ -193,6 +193,12 @@ export function createProgressAwareWatchdog({
   function expire() {
     if (stopped) return;
     const elapsedMs = now() - startedAt;
+    // A suspended caller can resume with an overdue wall-clock timer while
+    // its injected active clock is still before the original deadline.
+    if (elapsedMs < deadlineMs) {
+      arm(deadlineMs - elapsedMs);
+      return;
+    }
     const decision = decideWatchdogExpiry({
       elapsedMs,
       lastProgressAgeMs: now() - lastProgressAt,

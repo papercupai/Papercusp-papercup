@@ -3,10 +3,10 @@
   "kind": "native-acceptance-detector-trace",
   "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
   "workItem": "WI-10007889",
-  "recordedAt": "2026-10-22T18:21:15.495468+00:00",
-  "rubricRevision": 18,
-  "rubricCriteriaHash": "dd6c481c436280156d144a52694fbdb910f8ab86d95ea63c560d8da71e830bae",
-  "barSetHash": "829084b4d50ec5748397e455dcc1875d78d32f426dc69a706d25133b9a6b9ef2",
+  "recordedAt": "2026-10-22T21:13:49.958182+00:00",
+  "rubricRevision": 20,
+  "rubricCriteriaHash": "9d7e3f1cd9eadc13b40ec5880032158eeab7095d4e08c74fcf2a859b585bae45",
+  "barSetHash": "de94b6ecbcdde756798a69bb6423d636ae15704718ccbb44656261d786877bfa",
   "status": "INCOMPLETE; not an acceptance grade",
   "priorTrace": "docs/evidence/native-rubric16-detector-trace-2026-10-22.json",
   "sourceCustody": "evidence/native-d016-applied-r18-2026-10-22.json",
@@ -81,7 +81,8 @@
       "D-030",
       "D-031",
       "D-032",
-      "D-033"
+      "D-033",
+      "D-034"
     ]
   },
   "criteria": [
@@ -114,8 +115,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
           "testTitle": "keeps each leg and each measured denominator separate",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 127,
           "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
           "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
@@ -134,13 +135,21 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+            "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
           "testTitle": "counts only exact workspace/[start,end) pushes and correlated completed native turns",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 191,
           "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
           "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
@@ -162,7 +171,15 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
+            "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -200,8 +217,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
           "testTitle": "scores a suggested-test push as not acted on only when the window rules the test out",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 99,
           "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
           "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
@@ -223,13 +240,21 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+            "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
           "testTitle": "scores a suggested-test push not acted on only when the window shows no test request and no shell",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 260,
           "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
           "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
@@ -250,7 +275,15 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
+            "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -288,8 +321,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
           "testTitle": "keeps each leg and each measured denominator separate",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 127,
           "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
           "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
@@ -308,13 +341,21 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+            "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
           "testTitle": "keeps open windows, absent evidence and read errors unknown through the resolver seam",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 239,
           "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
           "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
@@ -331,7 +372,15 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
+            "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -372,8 +421,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
           "testTitle": "retains the recorded incumbent comparison while refusing its distribution",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 508,
           "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
           "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
@@ -393,16 +442,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+            "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "preserves the separate internal-comparison and distribution decisions",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 591,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 672,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(admitArm('gitnexus@1.6.9').admission.distribution?.decision).toBe('excluded');",
@@ -420,7 +477,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [
@@ -462,8 +527,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-language-acceptance.integration.test.ts",
           "testTitle": "refuses a removed project config after a keyed answer, then recovers on the original bytes",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 195,
           "fileSha256": "c3807a66a6ea231d4087465beda0f031a0cfc8ba83bffc1601060ff9b5cfe56d",
           "gitBlob": "7d8119407a409d9c7eaaca61cebc3c9c27520d9a",
@@ -487,7 +552,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-language-acceptance.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "7d8119407a409d9c7eaaca61cebc3c9c27520d9a",
+            "fileSha256": "c3807a66a6ea231d4087465beda0f031a0cfc8ba83bffc1601060ff9b5cfe56d",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [
@@ -528,8 +601,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
           "testTitle": "binds site identity to repository and captured bytes while leaving unmeasured graph versions explicit",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 358,
           "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
           "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
@@ -553,16 +626,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+            "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "versions both ends of a compiler edge and re-resolves the target after an unchanged caller sees a dependency edit",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 277,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 358,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(answer.error).toBeNull();",
@@ -583,7 +664,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -620,8 +709,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
           "testTitle": "invalidates source generations and removes deleted relationships at an unchanged cursor",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 455,
           "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
           "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
@@ -645,16 +734,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+            "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "reconciles missed dependency edits and deletes without changing the query cursor",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 437,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 518,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect((await query()).sites[0]?.line1).toBe(1);",
@@ -675,7 +772,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -717,11 +822,11 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "P007 exposed context returns the known outgoing call and measured compiler input versions",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 619,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 700,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(result.data.error).toBeNull();",
@@ -742,16 +847,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "matches the recorded route and an independently enumerated barrel consumer",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 560,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 641,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(answer.error).toBeNull();",
@@ -770,7 +883,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -810,8 +931,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts",
           "testTitle": "returns the forward reference path across an alias and re-export without mixing homonyms",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 61,
           "fileSha256": "6a232ba0f7140348150976fd160b89a43c3dec8518ce29fc0aa84a80a137ac1e",
           "gitBlob": "db2c20e61eb8a26bef0113c9f6498a7050dcedf0",
@@ -835,13 +956,21 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "db2c20e61eb8a26bef0113c9f6498a7050dcedf0",
+            "fileSha256": "6a232ba0f7140348150976fd160b89a43c3dec8518ce29fc0aa84a80a137ac1e",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts",
           "testTitle": "does not report the reverse path as a forward trace",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 71,
           "fileSha256": "6a232ba0f7140348150976fd160b89a43c3dec8518ce29fc0aa84a80a137ac1e",
           "gitBlob": "db2c20e61eb8a26bef0113c9f6498a7050dcedf0",
@@ -862,7 +991,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "db2c20e61eb8a26bef0113c9f6498a7050dcedf0",
+            "fileSha256": "6a232ba0f7140348150976fd160b89a43c3dec8518ce29fc0aa84a80a137ac1e",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -904,8 +1041,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts",
           "testTitle": "CALIBRATION: a candidate that clears every bar on one shared tree yields upgrade",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 52,
           "fileSha256": "fa7ffbea8a16c66a5cce4b454821ccc59417a1ae35d2a5268efd36f08e8cf610",
           "gitBlob": "d9df588ed7b54300ea0fdb2ffa0658549ecd5283",
@@ -925,20 +1062,28 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "d9df588ed7b54300ea0fdb2ffa0658549ecd5283",
+            "fileSha256": "fa7ffbea8a16c66a5cce4b454821ccc59417a1ae35d2a5268efd36f08e8cf610",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts",
           "testTitle": "an UNEXECUTED required arm is nonpassing residue and never lets a winner be declared",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 82,
           "fileSha256": "fa7ffbea8a16c66a5cce4b454821ccc59417a1ae35d2a5268efd36f08e8cf610",
           "gitBlob": "d9df588ed7b54300ea0fdb2ffa0658549ecd5283",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(v.decision).toBe('inconclusive');",
-            "expect(v.residue).toEqual(['gitnexus-candidate: unavailable or errored \u2014 nonpassing residue']);"
+            "expect(v.residue).toEqual(['gitnexus-candidate: unavailable or errored — nonpassing residue']);"
           ],
           "replay": {
             "tool": "testing:run",
@@ -951,7 +1096,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "d9df588ed7b54300ea0fdb2ffa0658549ecd5283",
+            "fileSha256": "fa7ffbea8a16c66a5cce4b454821ccc59417a1ae35d2a5268efd36f08e8cf610",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [
@@ -994,8 +1147,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
           "testTitle": "keeps the reference consumer and baseline, then rejects changed importer evidence",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 435,
           "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
           "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
@@ -1018,16 +1171,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+            "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "hands source-derived consumers to the selector and preserves baseline on source drift",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 403,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 484,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(deps?.backend).toBe('first-party-imports');",
@@ -1048,7 +1209,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1088,8 +1257,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
           "testTitle": "retains the reference consumer and discloses any omitted bounded consumers",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 412,
           "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
           "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
@@ -1111,16 +1280,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+            "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "cites the edited symbol reference consumer and rechecks it before review",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 360,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 441,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(result.status, result.stderr).toBe(0);",
@@ -1141,7 +1318,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1181,11 +1366,11 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "uses the real safe packer/compiler and replaces stale excerpts without widening task scope",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 174,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 255,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(before.taskBrief.status, JSON.stringify(before.taskBrief)).toBe('current');",
@@ -1206,13 +1391,21 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/task-brief.test.ts",
           "testTitle": "rejects traversal, whole-repository globs, hidden paths and escaping symlinks before packing",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 185,
           "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
           "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
@@ -1232,7 +1425,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
+            "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1270,8 +1471,8 @@
         {
           "path": "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts",
           "testTitle": "orders a producer before its consumer while preserving inputs and authoritative peer claims",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 23,
           "fileSha256": "093dacdbbdd6e45d68e428b3227ba6e85f539c1efaa2915bcea2ac4c863c8891",
           "gitBlob": "d7176c67e85e2ac17d9e251ebd79004ac65c85f0",
@@ -1296,13 +1497,21 @@
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
             "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "d7176c67e85e2ac17d9e251ebd79004ac65c85f0",
+            "fileSha256": "093dacdbbdd6e45d68e428b3227ba6e85f539c1efaa2915bcea2ac4c863c8891",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts",
           "testTitle": "reports a graph/dependency conflict without changing authoritative dependencies",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 42,
           "fileSha256": "093dacdbbdd6e45d68e428b3227ba6e85f539c1efaa2915bcea2ac4c863c8891",
           "gitBlob": "d7176c67e85e2ac17d9e251ebd79004ac65c85f0",
@@ -1323,7 +1532,15 @@
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
             "packages/operator-core/lib/agent-tools/plans/native-planning-advice.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "d7176c67e85e2ac17d9e251ebd79004ac65c85f0",
+            "fileSha256": "093dacdbbdd6e45d68e428b3227ba6e85f539c1efaa2915bcea2ac4c863c8891",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1366,11 +1583,11 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "joins the real compiler report to a registered result contract and exposes a removed field to its typed and runtime client",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 119,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 200,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(registered).toBeDefined();",
@@ -1391,7 +1608,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1428,8 +1653,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
           "testTitle": "invalidates proof after a dependent edit while preserving its requirement and test identity",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 318,
           "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
           "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
@@ -1451,16 +1676,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+            "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "requires re-verification after a compiler-resolved dependency changes or disappears",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 245,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 326,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(captured.measurement.sourcePaths).toEqual(['consumer.ts', 'dependency.ts']);",
@@ -1481,7 +1714,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1519,8 +1760,8 @@
         {
           "path": "packages/operator-core/lib/harness/docs/native-source-change.integration.test.ts",
           "testTitle": "flags a real committed documented rename and delivers its scoped pinned candidate through the existing review hook",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 63,
           "fileSha256": "f7aefcfe85f8c26dfc3c37e394ccb6abe124df62891f1d6bc581cf2dd600fd4d",
           "gitBlob": "8403b9be779f11e6bc1face36c5b57ea520541a7",
@@ -1542,7 +1783,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/harness/docs/native-source-change.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "8403b9be779f11e6bc1face36c5b57ea520541a7",
+            "fileSha256": "f7aefcfe85f8c26dfc3c37e394ccb6abe124df62891f1d6bc581cf2dd600fd4d",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1582,8 +1831,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
           "testTitle": "keeps a staging source version distinct from the selected release artifact",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 382,
           "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
           "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
@@ -1604,16 +1853,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+            "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "identifies the loaded artifact and refuses to substitute a later compiler source version",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 314,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 395,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(result.status, result.stderr).toBe(0);",
@@ -1634,7 +1891,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1674,8 +1939,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/task-brief.test.ts",
           "testTitle": "keeps observed failures and static candidates distinct from proven causation",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 96,
           "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
           "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
@@ -1696,13 +1961,21 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
+            "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/task-brief.test.ts",
           "testTitle": "does not turn a missing ledger read or an out-of-scope error into a cause",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 107,
           "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
           "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
@@ -1723,7 +1996,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/task-brief.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "b907ecd552ae8f0729e517ffab4b91855c3a07b6",
+            "fileSha256": "44e5fc579d49dde09db24a65cf3feab3f77588d0bdbc0082e91d42d5aca236d3",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1764,8 +2045,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts",
           "testTitle": "rejects an explicit foreign workspace before loading its registry",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 22,
           "fileSha256": "8a5020de39fe4522a51453d9c17e47fc6102745bc5f8263ac64e2fab40624e00",
           "gitBlob": "f3751e2e48df89ec7e8dfb40d1493d997a8c5117",
@@ -1784,13 +2065,21 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "f3751e2e48df89ec7e8dfb40d1493d997a8c5117",
+            "fileSha256": "8a5020de39fe4522a51453d9c17e47fc6102745bc5f8263ac64e2fab40624e00",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts",
           "testTitle": "does not launch source workers for an unregistered repository",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 48,
           "fileSha256": "8a5020de39fe4522a51453d9c17e47fc6102745bc5f8263ac64e2fab40624e00",
           "gitBlob": "f3751e2e48df89ec7e8dfb40d1493d997a8c5117",
@@ -1810,7 +2099,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/scoped-contracts.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "f3751e2e48df89ec7e8dfb40d1493d997a8c5117",
+            "fileSha256": "8a5020de39fe4522a51453d9c17e47fc6102745bc5f8263ac64e2fab40624e00",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1850,8 +2147,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts",
           "testTitle": "retrieves independently relevant source with RRF evidence, never relevance from a neighbouring component alone",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 44,
           "fileSha256": "ace40691dc741f914171bcc69cc0b39abd755f17a0a245a4ba9f41e520e0f386",
           "gitBlob": "bb81d82c0999a5d4fcab628d7238de743615d198",
@@ -1875,13 +2172,21 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bb81d82c0999a5d4fcab628d7238de743615d198",
+            "fileSha256": "ace40691dc741f914171bcc69cc0b39abd755f17a0a245a4ba9f41e520e0f386",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts",
           "testTitle": "rejects partial-term matches across disconnected source instead of combining unrelated capabilities",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 59,
           "fileSha256": "ace40691dc741f914171bcc69cc0b39abd755f17a0a245a4ba9f41e520e0f386",
           "gitBlob": "bb81d82c0999a5d4fcab628d7238de743615d198",
@@ -1903,7 +2208,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/first-party-discovery.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bb81d82c0999a5d4fcab628d7238de743615d198",
+            "fileSha256": "ace40691dc741f914171bcc69cc0b39abd755f17a0a245a4ba9f41e520e0f386",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -1941,8 +2254,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
           "testTitle": "keeps complete small evidence distinct from a truncated preview and binds expansion to the saved bytes",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 37,
           "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
           "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
@@ -1966,16 +2279,24 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "e55522b31556e5e82bdd9115fadd3c9172178df5",
+            "fileSha256": "5cec9fc8840afe6326659e40e51df9a95301c69be491e4e1e10c32e77bae3b1f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "retains a bounded actual source preview and recovers omitted evidence from its captured artifact after the source changes",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
-          "line": 86,
-          "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
-          "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "line": 167,
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
           "workingMatchesPinned": true,
           "assertionExcerpts": [
             "expect(response.data.answer.error, JSON.stringify(response.data.answer)).toBeNull();",
@@ -1996,7 +2317,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "bc8066d0b5c3248c1a8755b55fd993bb3713fc1b",
+            "fileSha256": "a9ad594f9f6b21507379de17ef16b82151e14a913bdc4f537d6c5e7c6d872d55",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -2033,8 +2362,8 @@
         {
           "path": "packages/operator-core/lib/dream/capability-packets.test.ts",
           "testTitle": "refuses a source that changes during packing before it can enter cache",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 394,
           "fileSha256": "8587e504e1f521a22996e3aa406bf64f10f546fcadeaf5040f2f02c6b97d0368",
           "gitBlob": "f8b0a5276278a7821715fb7e2008b9b36e731b28",
@@ -2055,13 +2384,21 @@
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
             "packages/operator-core/lib/dream/capability-packets.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "f8b0a5276278a7821715fb7e2008b9b36e731b28",
+            "fileSha256": "8587e504e1f521a22996e3aa406bf64f10f546fcadeaf5040f2f02c6b97d0368",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/dream/capability-packets.test.ts",
           "testTitle": "queries a declaration identifier and bounds caller/callee discovery after compiler resolution",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 273,
           "fileSha256": "8587e504e1f521a22996e3aa406bf64f10f546fcadeaf5040f2f02c6b97d0368",
           "gitBlob": "f8b0a5276278a7821715fb7e2008b9b36e731b28",
@@ -2086,7 +2423,15 @@
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
             "packages/operator-core/lib/dream/capability-packets.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "f8b0a5276278a7821715fb7e2008b9b36e731b28",
+            "fileSha256": "8587e504e1f521a22996e3aa406bf64f10f546fcadeaf5040f2f02c6b97d0368",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -2123,8 +2468,8 @@
         {
           "path": "packages/operator-core/lib/dream/capability-sampler.test.ts",
           "testTitle": "rejects stale graph identity, inferred contracts and overlapping capability aliases",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 193,
           "fileSha256": "27239600a4756ccc1623c0f3cc3454b46195393f7c0aa0cebeff650ab82dadea",
           "gitBlob": "91df0db5a043fce017d4e4cf7a5b8003d2859726",
@@ -2146,13 +2491,21 @@
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
             "packages/operator-core/lib/dream/capability-sampler.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "91df0db5a043fce017d4e4cf7a5b8003d2859726",
+            "fileSha256": "27239600a4756ccc1623c0f3cc3454b46195393f7c0aa0cebeff650ab82dadea",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/dream/capability-sampler.test.ts",
           "testTitle": "uses supported versioned relation features and refuses name-only/stale hints",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 410,
           "fileSha256": "27239600a4756ccc1623c0f3cc3454b46195393f7c0aa0cebeff650ab82dadea",
           "gitBlob": "91df0db5a043fce017d4e4cf7a5b8003d2859726",
@@ -2177,7 +2530,15 @@
           "boundImportChain": [
             "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
             "packages/operator-core/lib/dream/capability-sampler.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "91df0db5a043fce017d4e4cf7a5b8003d2859726",
+            "fileSha256": "27239600a4756ccc1623c0f3cc3454b46195393f7c0aa0cebeff650ab82dadea",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -2214,8 +2575,8 @@
         {
           "path": "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts",
           "testTitle": "supplies the existing integration and its renamed helper with exact source versions to independent review",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 48,
           "fileSha256": "d02d73f2ab1766afd9f2f10a56978e942cae01d7de9ddddd5880af33d40b074f",
           "gitBlob": "9103245ecb7c6171dca3654bd9497040706499ba",
@@ -2237,13 +2598,21 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "9103245ecb7c6171dca3654bd9497040706499ba",
+            "fileSha256": "d02d73f2ab1766afd9f2f10a56978e942cae01d7de9ddddd5880af33d40b074f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts",
           "testTitle": "detects changed integration source after retrieval and preserves an empty-search unknown rather than claiming novelty",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 60,
           "fileSha256": "d02d73f2ab1766afd9f2f10a56978e942cae01d7de9ddddd5880af33d40b074f",
           "gitBlob": "9103245ecb7c6171dca3654bd9497040706499ba",
@@ -2263,7 +2632,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "9103245ecb7c6171dca3654bd9497040706499ba",
+            "fileSha256": "d02d73f2ab1766afd9f2f10a56978e942cae01d7de9ddddd5880af33d40b074f",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -2300,8 +2677,8 @@
         {
           "path": "packages/operator-core/lib/dream/dream-evaluation.test.ts",
           "testTitle": "reconstructs the spent graph study without promoting unknown novelty or reopening downstream trials",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 68,
           "fileSha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
           "gitBlob": "1e2ef5ffd9bc7b57afe6d0ea4963df56800dd661",
@@ -2325,13 +2702,21 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/dream/dream-evaluation.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "1e2ef5ffd9bc7b57afe6d0ea4963df56800dd661",
+            "fileSha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/dream/dream-evaluation.test.ts",
           "testTitle": "keeps failed graph trials, missing judgments and unknown cost out of benefit claims",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 143,
           "fileSha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
           "gitBlob": "1e2ef5ffd9bc7b57afe6d0ea4963df56800dd661",
@@ -2355,7 +2740,15 @@
           },
           "boundImportChain": [
             "packages/operator-core/lib/dream/dream-evaluation.test.ts"
-          ]
+          ],
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "1e2ef5ffd9bc7b57afe6d0ea4963df56800dd661",
+            "fileSha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
@@ -2395,6 +2788,95 @@
       "detectors": [
         {
           "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "committedSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "workingMatchesHead": true,
+          "testTitle": "accounts for each recorded consumer and source family with an evidence-linked ruling",
+          "line": 101,
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "sourceExcerpt": "it('accounts for each recorded consumer and source family with an evidence-linked ruling', () => {\n    expect(verify(inventory, decision)).toEqual(decision.consumers.map(row => row.id).sort());\n    // The recorded decision explicitly separates routing from measured benefit.\n    // This record check cannot substitute for the final deployed backend witness.\n    expect(decision.outcomeDecisionBoundary.interpretation).toContain('Unknown outcomes are neither zero');\n  });\n\n  it.each(decision.consumers.map(row => row.id))('detects a removed disposition for %s', id => {\n    const missing = structuredClone(decision);\n    missing.consumers = missing.consumers.filter(row => row.id !== id);\n    expect(() => verify(inventory, missing)).toThrow(`Missing disposition for ${id}`);\n  });",
+          "priorSourcePin": {
+            "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+            "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
+            "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785"
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "committedSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "workingMatchesHead": true,
+          "testTitle": "detects a removed disposition for %s",
+          "line": 108,
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "sourceExcerpt": "it.each(decision.consumers.map(row => row.id))('detects a removed disposition for %s', id => {\n    const missing = structuredClone(decision);\n    missing.consumers = missing.consumers.filter(row => row.id !== id);\n    expect(() => verify(inventory, missing)).toThrow(`Missing disposition for ${id}`);\n  });",
+          "priorSourcePin": {
+            "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+            "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
+            "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785"
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "committedSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "workingMatchesHead": true,
+          "testTitle": "refuses an empty or newly unmapped census instead of passing vacuously",
+          "line": 114,
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "sourceExcerpt": "it('refuses an empty or newly unmapped census instead of passing vacuously', () => {\n    expect(() => verify({ ...inventory, consumers: [] }, decision)).toThrow('Empty consumer census');\n    expect(() => verify({ ...inventory, consumers: [...inventory.consumers, { id: 'new-retained-backend' }] }, decision))\n      .toThrow('Unmapped consumer new-retained-backend');\n  });",
+          "priorSourcePin": {
+            "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+            "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
+            "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785"
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
+          "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "committedSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785",
+          "workingMatchesHead": true,
+          "testTitle": "detects a blank ruling and a duplicated consumer while the complete positive control still works",
+          "line": 120,
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "sourceExcerpt": "it('detects a blank ruling and a duplicated consumer while the complete positive control still works', () => {\n    const blank = structuredClone(decision);\n    blank.consumers[0]!.ruling = '';\n    expect(() => verify(inventory, blank)).toThrow('Incomplete disposition');\n    expect(() => verify(inventory, { ...decision, consumers: [...decision.consumers, decision.consumers[0]!] }))\n      .toThrow('Duplicate consumer disposition');\n    expect(verify(inventory, decision).length).toBeGreaterThan(0);\n  });\n});\n\ndescribe('native P021 required BAR bounded source pack expansion', () => {",
+          "priorSourcePin": {
+            "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+            "gitBlob": "38a6be7879ea9b77a018127d6b22f01f16d2bdb5",
+            "fileSha256": "408c6d6f9b63116b9ff6974cbf143d1e41d574c462f6043785c1a65f8414a785"
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
+        }
+      ],
+      "gaps": [
+        "The source census correspondence, removed-disposition, empty/newly-unmapped, blank-ruling and duplicate-disposition guards exist and were inspected. These record-level guards do not detect a retained consumer losing its actual backend. Exact final deployed backend/consumer and distribution witnesses remain required; no outcome binding or grade is asserted."
+      ],
+      "gradingStatus": "not-rated",
+      "method": "P-027 verifies the final deployed GitNexus disposition against every consumer inventoried by P-001 and replacement proof produced by P-009/P-026. Baseline and replacement items supply prerequisite evidence; only the final handover can discharge this deployed integration/e2e outcome.\n\nCriterion-specific replication supplement (method clarification only). Run the existing bound suites through testing:run; require the named oracle below to execute without skip and satisfy its positive and distinguishing negative control. Retain the normal test-run ledger reference, exact full test name, original production/test/fixture SHA256 values and any child source substitutions. Tree evidence identifies tested source and fixture bytes; a tree test does not establish a serving runtime. Runtime-dependent evidence additionally records the selected currentBuildTestRoute, serving build SHA and containing loaded artifact hash; final-release claims identify the exact shipped artifact separately. Preserve each criterion's existing scope and evidence plane. Missing named cases, absent required applicable records, an incomplete population, unknown runtime identity, or unavailable distinguishing observations rate unknown; an observed counterexample rates fail. Detector tests alone cannot discharge a distribution, backend verdict, deployed handover or executed Dream-benefit outcome. Store the complete criterion-specific evidence with the applicable existing docs/evidence record and bind that record and normal ledger result at grading time.\n\nR-24: the named integration case verifies separation of comparison and distribution permissions only. For final P027 handover, retain P001/P042's nonempty complete consumer census and the recorded disposition/backend for every tool, routine and workflow entry, with P009/P026 replacement evidence where required. Record release-operator health/build SHA and each containing final deployed artifact identity. A retained consumer losing its backend without its approved disposition fails. Missing census entries, unmeasured consumers or absent final deployed witnesses is unknown; no tree fixture substitutes for final shipment.",
+      "evidenceRuntime": "release-operator",
+      "detectorCustody": "Historical rubric16 pins retained; this edition does not re-attest currentness.",
+      "historicalAdmissionDetectors": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
           "testTitle": "preserves the separate internal-comparison and distribution decisions",
           "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
           "status": "candidate-requires-assertion-review",
@@ -2420,14 +2902,7 @@
             "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
           ]
         }
-      ],
-      "gaps": [
-        "Bound admission separation case cannot detect a missing consumer disposition or a retained consumer losing its backend. Add census-complete positive and missing/backend-loss negative cases through bound integration/e2e checks; qualify final deployed witnesses."
-      ],
-      "gradingStatus": "not-rated",
-      "method": "P-027 verifies the final deployed GitNexus disposition against every consumer inventoried by P-001 and replacement proof produced by P-009/P-026. Baseline and replacement items supply prerequisite evidence; only the final handover can discharge this deployed integration/e2e outcome.\n\nCriterion-specific replication supplement (method clarification only). Run the existing bound suites through testing:run; require the named oracle below to execute without skip and satisfy its positive and distinguishing negative control. Retain the normal test-run ledger reference, exact full test name, original production/test/fixture SHA256 values and any child source substitutions. Tree evidence identifies tested source and fixture bytes; a tree test does not establish a serving runtime. Runtime-dependent evidence additionally records the selected currentBuildTestRoute, serving build SHA and containing loaded artifact hash; final-release claims identify the exact shipped artifact separately. Preserve each criterion's existing scope and evidence plane. Missing named cases, absent required applicable records, an incomplete population, unknown runtime identity, or unavailable distinguishing observations rate unknown; an observed counterexample rates fail. Detector tests alone cannot discharge a distribution, backend verdict, deployed handover or executed Dream-benefit outcome. Store the complete criterion-specific evidence with the applicable existing docs/evidence record and bind that record and normal ledger result at grading time.\n\nR-24: the named integration case verifies separation of comparison and distribution permissions only. For final P027 handover, retain P001/P042's nonempty complete consumer census and the recorded disposition/backend for every tool, routine and workflow entry, with P009/P026 replacement evidence where required. Record release-operator health/build SHA and each containing final deployed artifact identity. A retained consumer losing its backend without its approved disposition fails. Missing census entries, unmeasured consumers or absent final deployed witnesses is unknown; no tree fixture substitutes for final shipment.",
-      "evidenceRuntime": "release-operator",
-      "detectorCustody": "Historical rubric16 pins retained; this edition does not re-attest currentness."
+      ]
     },
     {
       "criterion": "R-30",
@@ -2458,8 +2933,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
           "testTitle": "measured passes on any observed lookups; an empty window is unknown, never pass",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 303,
           "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
           "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
@@ -2477,13 +2952,21 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+            "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
           "testTitle": "resolves platform-computed scorecard snapshots for both criteria through the real seam",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 445,
           "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
           "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
@@ -2504,12 +2987,20 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "186b68dec450eebe688c56a0adf17db9604a43d2",
+            "fileSha256": "c72922c0a0c197214d38863cae30b114986d86a3449881cde677bebac5747603",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [],
       "gradingStatus": "not-rated",
-      "method": "Run the code-intel:native-adoption-measured instrument (packages/operator-core/lib/code-intelligence/native-adoption.ts) via scorecards:emit fromLedger on the deployed operator and confirm the scheduled rubric-rescore produced it; native-adoption.test.ts and native-adoption.integration.test.ts cover per-operation volume, reach, failure classes, follow-through and substitutable raw-text lookups. The check binds the deployed instrument rather than the test files because the bar is a deployed-ledger outcome; native-adoption.test.ts and native-adoption.integration.test.ts remain its required unit/integration layers.\n\nDetector verification uses packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts assertions \"measureNativeAdoptionWindow \u2192 ratings (R-30 / R-31)\" and \"rates unknown (not pass) when the subject window is still open\", plus packages/operator-core/lib/check-results-ledger.integration.test.ts assertion \"scheduled adoption measures the real activity ledger, records regression, and grades from the stored result\". These integration layers verify the detector; outcome PASS requires code-intel:native-adoption-measured reading the deployed release-operator ledgers, with the serving /api/health SHA recorded. Tests alone do not establish this deployed outcome.\n\nThe instrument must report NATIVE_ADOPTION_CANNOT_OBSERVE on every measurement; native-adoption.integration.test.ts \"reports observability limits on every real-ledger measurement, including an empty window\" exercises both populated and empty ledgers. Its scope is the reported invocation and native-command ledgers, with the listed visibility limits.",
+      "method": "Run the code-intel:native-adoption-measured instrument (packages/operator-core/lib/code-intelligence/native-adoption.ts) via scorecards:emit fromLedger on the deployed operator and confirm the scheduled rubric-rescore produced it; native-adoption.test.ts and native-adoption.integration.test.ts cover per-operation volume, reach, failure classes, follow-through and substitutable raw-text lookups. The check binds the deployed instrument rather than the test files because the bar is a deployed-ledger outcome; native-adoption.test.ts and native-adoption.integration.test.ts remain its required unit/integration layers.\n\nDetector verification uses packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts assertions \"measureNativeAdoptionWindow → ratings (R-30 / R-31)\" and \"rates unknown (not pass) when the subject window is still open\", plus packages/operator-core/lib/check-results-ledger.integration.test.ts assertion \"scheduled adoption measures the real activity ledger, records regression, and grades from the stored result\". These integration layers verify the detector; outcome PASS requires code-intel:native-adoption-measured reading the deployed release-operator ledgers, with the serving /api/health SHA recorded. Tests alone do not establish this deployed outcome.\n\nThe instrument must report NATIVE_ADOPTION_CANNOT_OBSERVE on every measurement; native-adoption.integration.test.ts \"reports observability limits on every real-ledger measurement, including an empty window\" exercises both populated and empty ledgers. Its scope is the reported invocation and native-command ledgers, with the listed visibility limits.",
       "evidenceRuntime": "release-operator",
       "detectorCustody": "Historical rubric16 pins retained; this edition does not re-attest currentness."
     },
@@ -2542,8 +3033,8 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
           "testTitle": "good use passes only when every frozen bound holds",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 318,
           "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
           "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
@@ -2564,13 +3055,21 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+            "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
           "testTitle": "pins the baseline-derived bounds recorded in the decision",
-          "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
-          "status": "candidate-requires-assertion-review",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
           "line": 329,
           "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
           "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
@@ -2587,7 +3086,15 @@
               "harness": "papercusp"
             }
           },
-          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts"
+          "instrumentSource": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+          "priorSourcePin": {
+            "sourceCommit": "3f1e22ce78edd6a4683b8345a9bab344460a4e61",
+            "gitBlob": "46023bedbb3a041f66c02a5e215e318c0315f7e0",
+            "fileSha256": "2738bd73edf0dd513a99ef3edc8ba66f5dfbcb28e0c45cfe4a7ca21e9a533f63",
+            "workingMatchesPinned": true
+          },
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "inspectionOnly": true
         }
       ],
       "gaps": [
@@ -2626,9 +3133,17 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
           "testTitle": "keeps every registered leg ON by default",
-          "line": 218,
-          "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312",
-          "status": "named-case; assertion review and full source binding still required"
+          "line": 220,
+          "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312"
+          },
+          "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": null,
+          "workingMatchesPinned": false,
+          "inspectionOnly": true
         }
       ],
       "gaps": [
@@ -2638,7 +3153,7 @@
     {
       "criterion": "R-36",
       "title": "Push delivery uses the precomputed snapshot",
-      "barHash": "32a8f324b596d73635de3ab0c26f5e3c42ccbbb334203e25acdf7be3bc5898fd",
+      "barHash": "d36c4dea40d9c4e65e4c03857b82fb0ec7fee551ec0d837c76d7cf8c35ccee5a",
       "model": "The shared mid-turn code-intelligence injector serves eligible pushes from the precomputed first-party snapshot without starting or awaiting a cold language server.",
       "falsifier": "An eligible snapshot-backed push starts or waits for a compiler, a missing snapshot initiates a cold compiler, or the bounded delivery wall is exceeded without abandoning the pending delivery.",
       "method": "Trace codeIntelPushText from PostToolBatch into the snapshot loader and commit seam. Run the bound unit and real-database integration suites through testing:run. Require the available-snapshot positive, cold/missing-snapshot negative and slow-context/abandoned-commit cases to execute. Preserve snapshot source identity, rendered nonempty answer and ledger row in the positive; compiler-start or a late abandoned commit is fail. A missing snapshot must return without compilation. An unexecuted hot-path case is unknown, never pass.",
@@ -2655,7 +3170,9 @@
         "kind": "tests",
         "files": [
           "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
-          "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts"
+          "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+          "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-snapshot.test.ts"
         ]
       },
       "gradingStatus": "not-rated",
@@ -2664,23 +3181,104 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
           "testTitle": "delivers immediately from an available snapshot and gives memory its budget first",
-          "line": 332,
-          "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312",
-          "status": "named-case; assertion review and full source binding still required"
+          "line": 355,
+          "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312"
+          },
+          "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": null,
+          "workingMatchesPinned": false,
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
           "testTitle": "a cold/missing snapshot or an OFF leg never starts a compiler or writes telemetry",
-          "line": 342,
-          "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312",
-          "status": "named-case; assertion review and full source binding still required"
+          "line": 365,
+          "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312"
+          },
+          "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": null,
+          "workingMatchesPinned": false,
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
           "testTitle": "fails open for other context but never runs an abandoned commit after its wall",
-          "line": 607,
-          "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312",
-          "status": "named-case; assertion review and full source binding still required"
+          "line": 630,
+          "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312"
+          },
+          "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": null,
+          "workingMatchesPinned": false,
+          "inspectionOnly": true
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+          "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+          "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": null,
+          "workingMatchesPinned": false,
+          "inspectionOnly": true,
+          "testTitle": "uses the default nonblocking snapshot reader on the cold hook path",
+          "line": 225,
+          "sourceExcerpt": "it('uses the default nonblocking snapshot reader on the cold hook path', async () => {\n    const [registry, home, workspace, snapshots, research] = await Promise.all([\n      import('../harness-registry'), import('../harness/operator-home-harness'),\n      import('../workspace-registry'), import('./push-snapshot'), import('./research-trail'),\n    ]);\n    const peek = vi.spyOn(snapshots, 'peekPushSnapshot').mockReturnValue(null);\n    const spies = [peek,\n      vi.spyOn(registry, 'loadHarnessRegistry').mockResolvedValue({\n        projects: [{ slug: 'papercusp', path: '/repo' }],\n      } as Awaited<ReturnType<typeof registry.loadHarnessRegistry>>),\n      vi.spyOn(home, 'operatorHomeHarnessSlug').mockReturnValue('papercusp'),\n      vi.spyOn(workspace, 'activeWorkspaceId').mockReturnValue(input.workspace),\n      vi.spyOn(research, 'recordResearchBatch').mockResolvedValue(undefined),\n    ];\n    try {\n      // Exercise production defaults, rather than injecting PushChannelDeps.\n      expect(await codeIntelPushText(input)).toBe('');\n      expect(peek).toHaveBeenCalledExactlyOnceWith('papercusp');\n    } finally { for (const spy of spies) spy.mockRestore(); }\n  });",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "sourceCommit": null,
+            "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+            "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+            "workingMatchesPinned": false
+          }
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts",
+          "fileSha256": "51a397b88d310c76eccb85ed8c72b736be1e3d56116c206257480c0b81a705cc",
+          "gitBlob": "c68bb072bc65fe930f7df52791018edd847eba19",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true,
+          "testTitle": "delivers code intelligence even when the memory query has no signal",
+          "line": 149,
+          "sourceExcerpt": "it('delivers code intelligence even when the memory query has no signal', async () => {\n  codeIntelPushTextMock.mockResolvedValue('SNAPSHOT BRIEF');\n  const who = owner();\n  const calls = [{ tool: 'unknown-tool', toolInput: {} }];\n  expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', toolCalls: calls }))\n    .toEqual({ ok: true, text: 'SNAPSHOT BRIEF' });\n  expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();\n  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ owner: who, calls }), 0);\n});\n\nit('forwards bounded measured incident attribution without deriving it in the endpoint', async () => {\n  codeIntelPushTextMock.mockResolvedValue('INCIDENT BRIEF');\n  const who = owner();\n  const incidentAttribution = { status: 'measured', changedSymbols: ['target:target.ts:4'],\n    workItems: [{ id: 'WI-42', state: 'open', title: 'target repair', paths: ['target.ts'] }] };\n  expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', incidentAttribution,\n    tool: 'testing:run', toolInput: { files: ['target.test.ts'] }, })).toEqual({ ok: true, text: 'INCIDENT BRIEF' });\n  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ incidentAttribution }), 0);\n});\n\n// WI-6554700010018438: an operator/superuser-scope hook sends harness '' (no\n// PAPERCUSP_HARNESS_SLUG). The push must still get the harness the cwd names,\n// or its snapshot resolves to null and no code-intelligence answer is ever sent.\ndescribe('code-intel push harness resolution', () => {\n  const withMarkedCwd = async (slug: string, run: (cwd: string) => Promise<void>): Promise<void> => {\n    const dir = mkdtempSync(join(tmpdir(), 'mid-turn-harness-'));\n    mkdirSync(join(dir, '.papercusp'));\n    writeFileSync(join(dir, '.papercusp', 'slug'), `${slug}\\n`);\n    vi.stubEnv('PAPERCUSP_HARNESS_SLUG', '');\n    try {\n      await run(dir);\n    } finally {\n      vi.unstubAllEnvs();\n      rmSync(dir, { recursive: true, force: true });\n    }\n  };\n  const calls = [{ tool: 'unknown-tool', toolInput: {} }];",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "gitBlob": "c68bb072bc65fe930f7df52791018edd847eba19",
+            "fileSha256": "51a397b88d310c76eccb85ed8c72b736be1e3d56116c206257480c0b81a705cc",
+            "workingMatchesPinned": true
+          }
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/push-snapshot.test.ts",
+          "fileSha256": "c28b7795e83bd989d3a87479c0971d52f7b49107d477ab78c767d55bf6ad52a0",
+          "gitBlob": "2293964bae170aa696c1915c5a59ae8995b26227",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true,
+          "testTitle": "serves cold reads immediately and replaces warm cache only after a complete valid load",
+          "line": 95,
+          "sourceExcerpt": "it('serves cold reads immediately and replaces warm cache only after a complete valid load', async () => {\n    const dir = await mkdtemp(join(tmpdir(), 'push-snapshot-'));\n    fixturePath.current = join(dir, 'snapshot.json');\n    try {\n      await writeFile(fixturePath.current, JSON.stringify(raw()));\n      expect(peekPushSnapshot('fixture', now)).toBeNull();\n      await vi.waitFor(() => expect(peekPushSnapshot('fixture', now)?.commit).toBe('a'.repeat(40)));\n      const warm = peekPushSnapshot('fixture', now);\n      await writeFile(fixturePath.current, JSON.stringify(raw()).slice(0, -1));\n      expect(peekPushSnapshot('fixture', now + 60_000)).toBe(warm);\n      await vi.waitFor(() => expect(peekPushSnapshot('fixture', now + 60_000)).toBeNull());\n    } finally { await rm(dir, { recursive: true, force: true }); }\n  });\n\n  // WI-6554700010018175: the serving file is ~185 MB (measured 32.7 s wall / 36 s CPU per\n  // parse), so the refresh must not re-parse a file that has not changed.",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "gitBlob": "2293964bae170aa696c1915c5a59ae8995b26227",
+            "fileSha256": "c28b7795e83bd989d3a87479c0971d52f7b49107d477ab78c767d55bf6ad52a0",
+            "workingMatchesPinned": true
+          }
         }
       ],
       "gaps": [
@@ -2716,16 +3314,32 @@
         {
           "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
           "testTitle": "hands a fact that does not fit the memory-reduced share to the commit as a drop",
-          "line": 364,
-          "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312",
-          "status": "named-case; assertion review and full source binding still required"
+          "line": 387,
+          "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "cd9bde1e8e14b077cf12cb614638ce7df2cb8db80e9d7321385225d2d8895312"
+          },
+          "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": null,
+          "workingMatchesPinned": false,
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
           "testTitle": "concurrent workers cannot spend the per-turn budget more than once",
           "line": 126,
-          "fileSha256": "f93b6b97740262d22a3689f110bcf24303c498378e557a5b9dec2054eab83335",
-          "status": "named-case; assertion review and full source binding still required"
+          "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "f93b6b97740262d22a3689f110bcf24303c498378e557a5b9dec2054eab83335"
+          },
+          "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
         }
       ],
       "gaps": [
@@ -2762,15 +3376,50 @@
           "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
           "testTitle": "a new turn restores spend but only compaction makes the same fact eligible again",
           "line": 135,
-          "fileSha256": "f93b6b97740262d22a3689f110bcf24303c498378e557a5b9dec2054eab83335",
-          "status": "named-case; assertion review and full source binding still required"
+          "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "f93b6b97740262d22a3689f110bcf24303c498378e557a5b9dec2054eab83335"
+          },
+          "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
           "testTitle": "dedupes concurrent same-fact attempts and enforces RLS on the real app role",
+          "line": 165,
+          "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "f93b6b97740262d22a3689f110bcf24303c498378e557a5b9dec2054eab83335"
+          },
+          "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+          "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+          "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true,
+          "testTitle": "delivers the same fact independently to separate owners and dedupes only its own owner",
           "line": 146,
-          "fileSha256": "f93b6b97740262d22a3689f110bcf24303c498378e557a5b9dec2054eab83335",
-          "status": "named-case; assertion review and full source binding still required"
+          "sourceExcerpt": "it('delivers the same fact independently to separate owners and dedupes only its own owner', async () => {\n    const workspace = 'push-integration-separate-owners';\n    const shared = fact('same-eligible-fact');\n    const send = (owner: string) => commitPushFacts({ ...input, workspace, owner }, snapshot(),\n      [shared], CODE_INTEL_PUSH_TURN_CHARS, new AbortController().signal);\n\n    expect(await send('owner-A')).not.toBe('');\n    expect(await send('owner-B')).not.toBe('');\n    expect(await send('owner-A')).toBe('');\n    expect(await send('owner-B')).toBe('');\n    const rows = await db.adminSql<{ owner_id: string; epoch: number; leg: string; subject: string }[]>`\n      SELECT owner_id, epoch, leg, subject FROM harness_shared.code_intel_pushes\n      WHERE workspace_id = ${workspace} ORDER BY owner_id`;\n    expect(rows).toEqual([\n      { owner_id: 'owner-A', epoch: 0, leg: shared.leg, subject: shared.subject },\n      { owner_id: 'owner-B', epoch: 0, leg: shared.leg, subject: shared.subject },\n    ]);\n  });",
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+            "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+            "workingMatchesPinned": true
+          }
         }
       ],
       "gaps": [
@@ -2810,14 +3459,30 @@
           "testTitle": "rejects malformed, foreign, stale and future documents after complete validation",
           "line": 31,
           "fileSha256": "c28b7795e83bd989d3a87479c0971d52f7b49107d477ab78c767d55bf6ad52a0",
-          "status": "named-case; assertion review and full source binding still required"
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "c28b7795e83bd989d3a87479c0971d52f7b49107d477ab78c767d55bf6ad52a0"
+          },
+          "gitBlob": "2293964bae170aa696c1915c5a59ae8995b26227",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/push-snapshot-query.test.ts",
           "testTitle": "falls through when forwarding, declaration or caller bytes drift",
           "line": 133,
           "fileSha256": "002bbd193ec6afa6ae2a02edd7baf985550c1b6dc40c12ce6b56c0542977c063",
-          "status": "named-case; assertion review and full source binding still required"
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "002bbd193ec6afa6ae2a02edd7baf985550c1b6dc40c12ce6b56c0542977c063"
+          },
+          "gitBlob": "e86e0567580008e04be0e655bb1033dd698b3496",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
         }
       ],
       "gaps": [
@@ -2855,7 +3520,15 @@
           "testTitle": "judge can read rubric docs and use read-only SQL/LSP evidence fallbacks without write access",
           "line": 337,
           "fileSha256": "58bcb490acbc471cd6c6d16ffec73b3564a3ef75f0c4d886d5ef0f46d5e04a86",
-          "status": "named-case; assertion review and full source binding still required"
+          "status": "current working-source inspection; historical run receipts retain their original pins",
+          "priorSourcePin": {
+            "fileSha256": "58bcb490acbc471cd6c6d16ffec73b3564a3ef75f0c4d886d5ef0f46d5e04a86"
+          },
+          "gitBlob": "0982626e2022197f7554d28adf1b0ccbf9fe4569",
+          "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+          "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+          "workingMatchesPinned": true,
+          "inspectionOnly": true
         }
       ],
       "gaps": [
@@ -3375,7 +4048,8 @@
       "coveringCriteria": [
         "R-32",
         "R-33",
-        "R-34"
+        "R-34",
+        "R-35"
       ],
       "disposition": "product-or-acceptance-consequence",
       "rationale": "Keep legs on; small/unknown samples do not justify rollout tuning. Read D028 correction.",
@@ -3497,6 +4171,29 @@
       ],
       "disposition": "approval-bound-acceptance-amendment",
       "rationale": "Preview1196308 independently approved at1196445; rubric18/plan145."
+    },
+    {
+      "decision": "D-034",
+      "title": "Acceptance BAR amendment",
+      "coveringCriteria": [
+        "R-36"
+      ],
+      "disposition": "product-or-acceptance-consequence",
+      "rationale": "Independent critique1196879 identified delivery-seam and cold-reader detector gaps. Add existing mid-turn-context and push-snapshot test paths to R36 only. Additive preview required no approval; amendment preserves outcome fields/targets/planes while server advances storage/meaning identity20 and subjectplan147.",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+          "harness": "papercusp",
+          "decisionId": "D-034"
+        }
+      },
+      "sourceIdentity": {
+        "planRevision": 147,
+        "planContentHash": "6c9e5aade5e24fab85836e38b6e52ecb66cca0f3eefb7af403cad7008f028eae",
+        "amendmentId": "native-r36-seam-files-20261022-r19-p146-apply-v1",
+        "requestHash": "4bf54123817760c0f1e58a942a75e74486d7f74424b06a6519222e0f3015bff9"
+      }
     }
   ],
   "evidenceRefs": [
@@ -3508,5 +4205,402 @@
     "Historical29 detector assertions and source pins remain historical candidates, not silently current.",
     "New named cases and file fingerprints still require complete assertion/source/fixture review.",
     "Full outcome/deployed evidence, activation audit, vetting and independent grading remain mandatory."
-  ]
+  ],
+  "currentSourceInspection20261022": {
+    "recordedAt": "2026-10-22T21:13:49.958182+00:00",
+    "workItem": "WI-10007889",
+    "basis": "Read the named detector source blocks and production push transaction/channel. These pins are inspection custody, not an executed-source closure or proof binding. Earlier run receipts remain historical at their own source.",
+    "criteria": [
+      {
+        "criterion": "R-35",
+        "cases": [
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+            "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+            "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": null,
+            "workingMatchesPinned": false,
+            "inspectionOnly": true,
+            "testTitle": "keeps every registered leg ON by default",
+            "line": 220,
+            "sourceExcerpt": "it('keeps every registered leg ON by default', () => {\n    // 6 original legs + resume and notes (code-intel-epoch-carry-2026-10-20).\n    expect(Object.values(PUSH_LEG_FLAGS).map(flag => FLAG_DEFAULTS[flag])).toEqual(Array(8).fill(true));\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          }
+        ]
+      },
+      {
+        "criterion": "R-36",
+        "cases": [
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+            "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+            "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": null,
+            "workingMatchesPinned": false,
+            "inspectionOnly": true,
+            "testTitle": "delivers immediately from an available snapshot and gives memory its budget first",
+            "line": 355,
+            "sourceExcerpt": "it('delivers immediately from an available snapshot and gives memory its budget first', async () => {\n    const d = deps();\n    expect(await codeIntelPushText(input, 350, d)).toContain('Static consumer');\n    expect(d.commit).toHaveBeenCalledWith(input, expect.objectContaining({ commit: 'a'.repeat(40) }), [fact],\n      CODE_INTEL_PUSH_TURN_CHARS - 350, expect.any(AbortSignal), []);\n    vi.mocked(d.commit).mockClear();\n    expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS, d)).toBe('');\n    expect(d.commit).not.toHaveBeenCalled();\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+            "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+            "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": null,
+            "workingMatchesPinned": false,
+            "inspectionOnly": true,
+            "testTitle": "a cold/missing snapshot or an OFF leg never starts a compiler or writes telemetry",
+            "line": 365,
+            "sourceExcerpt": "it('a cold/missing snapshot or an OFF leg never starts a compiler or writes telemetry', async () => {\n    const d = deps();\n    vi.mocked(d.snapshot).mockResolvedValueOnce(null);\n    expect(await codeIntelPushText(input, 0, d)).toBe('');\n    vi.mocked(d.enabled).mockResolvedValue(false);\n    expect(await codeIntelPushText(input, 0, d)).toBe('');\n    expect(d.commit).not.toHaveBeenCalled();\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+            "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+            "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": null,
+            "workingMatchesPinned": false,
+            "inspectionOnly": true,
+            "testTitle": "fails open for other context but never runs an abandoned commit after its wall",
+            "line": 630,
+            "sourceExcerpt": "it('fails open for other context but never runs an abandoned commit after its wall', async () => {\n    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});\n    const d = deps();\n    vi.mocked(d.snapshot).mockImplementation(() => new Promise(() => {}));\n    expect(await codeIntelPushText(input, 0, d)).toBe('');\n    expect(d.commit).not.toHaveBeenCalled();\n    vi.mocked(d.snapshot).mockResolvedValue(snapshot());\n    vi.mocked(d.commit).mockRejectedValue(new Error('store unavailable'));\n    expect(await codeIntelPushText(input, 0, d)).toBe('');\n    expect(warn).toHaveBeenCalledWith(expect.stringContaining('code-intel-push exceeded'));\n    expect(warn).toHaveBeenCalledWith(expect.stringContaining('store unavailable'));\n    warn.mockRestore();\n  });\n});",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+            "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+            "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": null,
+            "workingMatchesPinned": false,
+            "inspectionOnly": true,
+            "testTitle": "uses the default nonblocking snapshot reader on the cold hook path",
+            "line": 225,
+            "sourceExcerpt": "it('uses the default nonblocking snapshot reader on the cold hook path', async () => {\n    const [registry, home, workspace, snapshots, research] = await Promise.all([\n      import('../harness-registry'), import('../harness/operator-home-harness'),\n      import('../workspace-registry'), import('./push-snapshot'), import('./research-trail'),\n    ]);\n    const peek = vi.spyOn(snapshots, 'peekPushSnapshot').mockReturnValue(null);\n    const spies = [peek,\n      vi.spyOn(registry, 'loadHarnessRegistry').mockResolvedValue({\n        projects: [{ slug: 'papercusp', path: '/repo' }],\n      } as Awaited<ReturnType<typeof registry.loadHarnessRegistry>>),\n      vi.spyOn(home, 'operatorHomeHarnessSlug').mockReturnValue('papercusp'),\n      vi.spyOn(workspace, 'activeWorkspaceId').mockReturnValue(input.workspace),\n      vi.spyOn(research, 'recordResearchBatch').mockResolvedValue(undefined),\n    ];\n    try {\n      // Exercise production defaults, rather than injecting PushChannelDeps.\n      expect(await codeIntelPushText(input)).toBe('');\n      expect(peek).toHaveBeenCalledExactlyOnceWith('papercusp');\n    } finally { for (const spy of spies) spy.mockRestore(); }\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts",
+            "fileSha256": "51a397b88d310c76eccb85ed8c72b736be1e3d56116c206257480c0b81a705cc",
+            "gitBlob": "c68bb072bc65fe930f7df52791018edd847eba19",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "delivers code intelligence even when the memory query has no signal",
+            "line": 149,
+            "sourceExcerpt": "it('delivers code intelligence even when the memory query has no signal', async () => {\n  codeIntelPushTextMock.mockResolvedValue('SNAPSHOT BRIEF');\n  const who = owner();\n  const calls = [{ tool: 'unknown-tool', toolInput: {} }];\n  expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', toolCalls: calls }))\n    .toEqual({ ok: true, text: 'SNAPSHOT BRIEF' });\n  expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();\n  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ owner: who, calls }), 0);\n});\n\nit('forwards bounded measured incident attribution without deriving it in the endpoint', async () => {\n  codeIntelPushTextMock.mockResolvedValue('INCIDENT BRIEF');\n  const who = owner();\n  const incidentAttribution = { status: 'measured', changedSymbols: ['target:target.ts:4'],\n    workItems: [{ id: 'WI-42', state: 'open', title: 'target repair', paths: ['target.ts'] }] };\n  expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', incidentAttribution,\n    tool: 'testing:run', toolInput: { files: ['target.test.ts'] }, })).toEqual({ ok: true, text: 'INCIDENT BRIEF' });\n  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ incidentAttribution }), 0);\n});\n\n// WI-6554700010018438: an operator/superuser-scope hook sends harness '' (no\n// PAPERCUSP_HARNESS_SLUG). The push must still get the harness the cwd names,\n// or its snapshot resolves to null and no code-intelligence answer is ever sent.\ndescribe('code-intel push harness resolution', () => {\n  const withMarkedCwd = async (slug: string, run: (cwd: string) => Promise<void>): Promise<void> => {\n    const dir = mkdtempSync(join(tmpdir(), 'mid-turn-harness-'));\n    mkdirSync(join(dir, '.papercusp'));\n    writeFileSync(join(dir, '.papercusp', 'slug'), `${slug}\\n`);\n    vi.stubEnv('PAPERCUSP_HARNESS_SLUG', '');\n    try {\n      await run(dir);\n    } finally {\n      vi.unstubAllEnvs();\n      rmSync(dir, { recursive: true, force: true });\n    }\n  };\n  const calls = [{ tool: 'unknown-tool', toolInput: {} }];",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-snapshot.test.ts",
+            "fileSha256": "c28b7795e83bd989d3a87479c0971d52f7b49107d477ab78c767d55bf6ad52a0",
+            "gitBlob": "2293964bae170aa696c1915c5a59ae8995b26227",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "serves cold reads immediately and replaces warm cache only after a complete valid load",
+            "line": 95,
+            "sourceExcerpt": "it('serves cold reads immediately and replaces warm cache only after a complete valid load', async () => {\n    const dir = await mkdtemp(join(tmpdir(), 'push-snapshot-'));\n    fixturePath.current = join(dir, 'snapshot.json');\n    try {\n      await writeFile(fixturePath.current, JSON.stringify(raw()));\n      expect(peekPushSnapshot('fixture', now)).toBeNull();\n      await vi.waitFor(() => expect(peekPushSnapshot('fixture', now)?.commit).toBe('a'.repeat(40)));\n      const warm = peekPushSnapshot('fixture', now);\n      await writeFile(fixturePath.current, JSON.stringify(raw()).slice(0, -1));\n      expect(peekPushSnapshot('fixture', now + 60_000)).toBe(warm);\n      await vi.waitFor(() => expect(peekPushSnapshot('fixture', now + 60_000)).toBeNull());\n    } finally { await rm(dir, { recursive: true, force: true }); }\n  });\n\n  // WI-6554700010018175: the serving file is ~185 MB (measured 32.7 s wall / 36 s CPU per\n  // parse), so the refresh must not re-parse a file that has not changed.",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          }
+        ]
+      },
+      {
+        "criterion": "R-37",
+        "cases": [
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+            "fileSha256": "bc0a9ff0c2dbedcdf5dbe9a20ae34f531f55cec56db62c75f5eee041348c9805",
+            "gitBlob": "224f5a14d9dd50041a2c30a16cfcdfe3a385dfb8",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": null,
+            "workingMatchesPinned": false,
+            "inspectionOnly": true,
+            "testTitle": "hands a fact that does not fit the memory-reduced share to the commit as a drop",
+            "line": 387,
+            "sourceExcerpt": "it('hands a fact that does not fit the memory-reduced share to the commit as a drop', async () => {\n    const d = deps();\n    expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS - 40, d)).toBe('');\n    const [, , delivered, budget, , dropped] = vi.mocked(d.commit).mock.calls[0];\n    expect(delivered).toEqual([]);\n    expect(budget).toBe(40);\n    expect(dropped).toEqual([fact]);\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+            "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+            "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "concurrent workers cannot spend the per-turn budget more than once",
+            "line": 126,
+            "sourceExcerpt": "it('concurrent workers cannot spend the per-turn budget more than once', async () => {\n    const texts = await Promise.all(Array.from({ length: 6 }, (_, i) => deliver([fact(`fact-${i}`)])));\n    const rows = await db.adminSql<{ chars: number }[]>`SELECT chars FROM harness_shared.code_intel_pushes WHERE workspace_id = ${input.workspace}`;\n    expect(rows.length).toBe(2);\n    expect(texts.filter(Boolean)).toHaveLength(2);\n    expect(rows.reduce((sum, row) => sum + row.chars, 0)).toBeLessThanOrEqual(CODE_INTEL_PUSH_TURN_CHARS);\n    expect(texts.filter(Boolean).every(text => text.includes('Snapshot aaaaaaaaaaaa'))).toBe(true);\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          }
+        ]
+      },
+      {
+        "criterion": "R-38",
+        "cases": [
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+            "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+            "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "a new turn restores spend but only compaction makes the same fact eligible again",
+            "line": 135,
+            "sourceExcerpt": "it('a new turn restores spend but only compaction makes the same fact eligible again', async () => {\n    const workspace = 'push-integration-B';\n    expect(await deliver([fact('one')], workspace)).not.toBe('');\n    expect(await deliver([fact('one')], workspace)).toBe('');\n    await db.adminSql`UPDATE harness_shared.identity_hook_turns SET turn_id = 'next-turn' WHERE workspace_id = ${workspace}`;\n    expect(await deliver([fact('one')], workspace)).toBe('');\n    await db.adminSql`INSERT INTO harness_shared.memory_session_epochs (session_id, epoch) VALUES (${input.owner}, 1)\n      ON CONFLICT (session_id) DO UPDATE SET epoch = 1`;\n    expect(await deliver([fact('one')], workspace)).not.toBe('');\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+            "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+            "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "dedupes concurrent same-fact attempts and enforces RLS on the real app role",
+            "line": 165,
+            "sourceExcerpt": "it('dedupes concurrent same-fact attempts and enforces RLS on the real app role', async () => {\n    const workspace = 'push-integration-C';\n    const texts = await Promise.all([deliver([fact('same')], workspace), deliver([fact('same')], workspace)]);\n    expect(texts.filter(Boolean)).toHaveLength(1);\n    const leaked = await db.appSql.begin(async tx => {\n      await tx`SELECT set_config('app.workspace_id', 'foreign-workspace', true)`;\n      return tx`SELECT id FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}`;\n    });\n    expect(leaked).toHaveLength(0);\n    expect(await deliver([fact('too-large')], workspace, 10)).toBe('');\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+            "fileSha256": "c7f9885317147997ad653f2e193d01f9044e46c3c12b73b26a4588442a740c16",
+            "gitBlob": "3b06dd6d1592a1a3a5dcee32434ef62ff0cee3a3",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "delivers the same fact independently to separate owners and dedupes only its own owner",
+            "line": 146,
+            "sourceExcerpt": "it('delivers the same fact independently to separate owners and dedupes only its own owner', async () => {\n    const workspace = 'push-integration-separate-owners';\n    const shared = fact('same-eligible-fact');\n    const send = (owner: string) => commitPushFacts({ ...input, workspace, owner }, snapshot(),\n      [shared], CODE_INTEL_PUSH_TURN_CHARS, new AbortController().signal);\n\n    expect(await send('owner-A')).not.toBe('');\n    expect(await send('owner-B')).not.toBe('');\n    expect(await send('owner-A')).toBe('');\n    expect(await send('owner-B')).toBe('');\n    const rows = await db.adminSql<{ owner_id: string; epoch: number; leg: string; subject: string }[]>`\n      SELECT owner_id, epoch, leg, subject FROM harness_shared.code_intel_pushes\n      WHERE workspace_id = ${workspace} ORDER BY owner_id`;\n    expect(rows).toEqual([\n      { owner_id: 'owner-A', epoch: 0, leg: shared.leg, subject: shared.subject },\n      { owner_id: 'owner-B', epoch: 0, leg: shared.leg, subject: shared.subject },\n    ]);\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          }
+        ]
+      },
+      {
+        "criterion": "R-39",
+        "cases": [
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-snapshot.test.ts",
+            "fileSha256": "c28b7795e83bd989d3a87479c0971d52f7b49107d477ab78c767d55bf6ad52a0",
+            "gitBlob": "2293964bae170aa696c1915c5a59ae8995b26227",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "rejects malformed, foreign, stale and future documents after complete validation",
+            "line": 31,
+            "sourceExcerpt": "it('rejects malformed, foreign, stale and future documents after complete validation', async () => {\n    const text = JSON.stringify(raw());\n    for (const value of [text.slice(0, -1), text + ' trailing', '[1,2]', ...[\n      { schema: 'foreign' }, { edges: {} }, { edges: [] },\n      { index: { backend: 'gitnexus', lastCommit: 'a'.repeat(40) } },\n      { generatedAt: new Date(now - PUSH_SNAPSHOT_MAX_AGE_MS - 1).toISOString() },\n      { generatedAt: new Date(now + 300_001).toISOString() },\n      { edges: [{ ...edge, importer: '../secret.ts' }] },\n    ].map(over => JSON.stringify({ ...raw(), ...over }))]) {\n      expect(await parsePushSnapshotStream(split(value), now)).toBeNull();\n    }\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/push-snapshot-query.test.ts",
+            "fileSha256": "002bbd193ec6afa6ae2a02edd7baf985550c1b6dc40c12ce6b56c0542977c063",
+            "gitBlob": "e86e0567580008e04be0e655bb1033dd698b3496",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "falls through when forwarding, declaration or caller bytes drift",
+            "line": 133,
+            "sourceExcerpt": "it('falls through when forwarding, declaration or caller bytes drift', async () => {\n    await load();\n    for (const path of ['lib/barrel.ts', 'lib/target.ts', 'app/use.ts'] as const) {\n      await writeFile(join(state.root, path), files[path] + '// changed\\n');\n      expect(await query()).toBeNull();\n      expect(await query({ op: 'definition', file: 'app/use.ts', line1: 2, character: 0 })).toBeNull();\n      await writeFile(join(state.root, path), files[path]);\n    }\n  });",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          }
+        ]
+      },
+      {
+        "criterion": "R-40",
+        "cases": [
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.test.ts",
+            "fileSha256": "58bcb490acbc471cd6c6d16ffec73b3564a3ef75f0c4d886d5ef0f46d5e04a86",
+            "gitBlob": "0982626e2022197f7554d28adf1b0ccbf9fe4569",
+            "inspectionHead": "9a010889985cf21599851cac18b9b979767621ff",
+            "sourceCommit": "9a010889985cf21599851cac18b9b979767621ff",
+            "workingMatchesPinned": true,
+            "inspectionOnly": true,
+            "testTitle": "judge can read rubric docs and use read-only SQL/LSP evidence fallbacks without write access",
+            "line": 337,
+            "sourceExcerpt": "'judge can read rubric docs and use read-only SQL/LSP evidence fallbacks without write access',\n    { timeout: 60_000 },\n    async () => {\n      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');\n      const [\n        { default: docsGet },\n        { default: getTemplateData },\n        { default: reportsGet },\n        { default: artifactsLoad },\n        { default: pgQuery },\n        { default: pgMutate },\n        { default: lspQuery },\n        { default: lspApply },\n        { default: graphQuery },\n        { default: codePack },\n        { default: codeStructural },\n      ] = await Promise.all([\n        import('../../../agent-tools/docs/get'),\n        import('../../../agent-tools/plans/get-template-data'),\n        import('../../../agent-tools/reports/get'),\n        import('../../../../../agent-mcp/src/tools/artifacts/load'),\n        import('../../../agent-tools/dev/pg_query'),\n        import('../../../agent-tools/dev/pg_mutate'),\n        import('../../../agent-tools/lsp/query'),\n        import('../../../agent-tools/lsp/apply'),\n        import('../../../agent-tools/gitnexus/query'),\n        import('../../../agent-tools/lsp/pack'),\n        import('../../../agent-tools/lsp/astgrep'),\n      ]);\n      // Gate 1: the tool's role allowlist. Gate 2: the principal capability it requires.\n      expect(docsGet.agentRoles).toContain('judge');\n      expect(docsGet.capability).toBe('docs:read');\n      expect(caps.has(docsGet.capability as string)).toBe(true);\n      expect(getTemplateData.agentRoles).toContain('judge');\n      expect(getTemplateData.capability).toBe('plans:read');\n      expect(caps.has(getTemplateData.capability as string)).toBe(true);\n      expect(reportsGet.agentRoles).toContain('judge');\n      expect(reportsGet.capability).toBe('reports:read');\n      expect(caps.has('reports:read')).toBe(true);\n      expect(caps.has('reports:write')).toBe(false);\n      expect(artifactsLoad.agentRoles).toContain('judge');\n      expect(artifactsLoad.capability).toBe('artifacts:read');\n      expect(caps.has(artifactsLoad.capability as string)).toBe(true);\n      // Public evidence reads can be independently reproduced through the\n      // read-only SQL/compiler surfaces when their projections omit fields.\n      expect(pgQuery.agentRoles).toContain('judge');\n      expect(pgQuery.capability).toBe('intel:read');\n      expect(lspQuery.agentRoles).toContain('judge');\n      expect(lspQuery.capability).toBe('intel:read');\n      expect(caps.has('intel:read')).toBe(true);\n      // native-code-intelligence-ecosystem-and-dream-2026-10-09 P-040: every\n      // baseline code-intelligence refusal was the judge role. Pin BOTH gates\n      // for each read-only native code-intelligence tool, not just lsp:query.\n      for (const tool of [graphQuery, codePack, codeStructural]) {\n        expect(tool.agentRoles, tool.name).toContain('judge');\n        expect(tool.capability, tool.name).toBe('intel:read');\n      }\n\n      // The evidence fallback remains read-only: the SQL and LSP writers need\n      // intel:write, which the judge principal does not receive.\n      expect(pgMutate.capability).toBe('intel:write');\n      expect(lspApply.capability).toBe('intel:write');\n      expect(caps.has('intel:write')).toBe(false);\n      expect(caps.has('docs:write')).toBe(false);\n    },\n  );",
+            "status": "current working-source inspection; execution closure/binding not attested"
+          }
+        ]
+      }
+    ],
+    "boundedRelevantSources": [
+      {
+        "path": "packages/operator-core/lib/code-intelligence/push-channel.ts",
+        "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "gitBlob": "cabdf824c5266627e5f6866ac3a25941ea836620",
+        "fileSha256": "398f10717160c665c8ed6ae712f1b3d7f6d529309e0ca167b705df83d2868dfe",
+        "committedSha256": "398f10717160c665c8ed6ae712f1b3d7f6d529309e0ca167b705df83d2868dfe",
+        "workingMatchesHead": true
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/push-snapshot.ts",
+        "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "gitBlob": "6d6f2b621264012c5599a09ea73b9cb4b7ecd774",
+        "fileSha256": "0c9042e298ff428044858103c1e14a2100ecd11dca6a636dc5d7647a70945d72",
+        "committedSha256": "0c9042e298ff428044858103c1e14a2100ecd11dca6a636dc5d7647a70945d72",
+        "workingMatchesHead": true
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/dependency-snapshot-path.ts",
+        "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "gitBlob": "2a4a50d33023238b07a0d19364de39b719d312ce",
+        "fileSha256": "0c2a2264d42613e3fc6a01f9df28f1f05ca5c748b6050dc2523356809c68eb56",
+        "committedSha256": "0c2a2264d42613e3fc6a01f9df28f1f05ca5c748b6050dc2523356809c68eb56",
+        "workingMatchesHead": true
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/native-adoption.ts",
+        "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "gitBlob": "27297ca38e949acbd426fd0168bc422e563b724e",
+        "fileSha256": "368011ee55d624d10160d9727289c84091e574d0bac3747106b95773adceac63",
+        "committedSha256": "368011ee55d624d10160d9727289c84091e574d0bac3747106b95773adceac63",
+        "workingMatchesHead": true
+      },
+      {
+        "path": "scripts/lib/code-intel-symbol-snapshot.mjs",
+        "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "gitBlob": "17896abc63e8ee2d0fe3e545ed267774dae59d4e",
+        "fileSha256": "9d0508d5b39b8af93cd7139b40216a457547209e8b227055b38eaa71a2adeede",
+        "committedSha256": "9d0508d5b39b8af93cd7139b40216a457547209e8b227055b38eaa71a2adeede",
+        "workingMatchesHead": true
+      },
+      {
+        "path": "libs/flags/src/types.ts",
+        "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "gitBlob": "cf678f8f2cb020f0051fd33a063eea2e05bddce7",
+        "fileSha256": "69469ebda39b18f5069dbd60f0f343dd9e00a9d16182c32dc8108134433b1975",
+        "committedSha256": "69469ebda39b18f5069dbd60f0f343dd9e00a9d16182c32dc8108134433b1975",
+        "workingMatchesHead": true
+      },
+      {
+        "path": "docs/evidence/native-p042-gitnexus-consumers-2026-10-15.json",
+        "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "gitBlob": "5b4349f2119f08ab8e496ab430b7fc4e8795c67d",
+        "fileSha256": "0d1efc141e471825b3432e029c1a0105c59e7447eca381515386d0e850c5cdd9",
+        "committedSha256": "0d1efc141e471825b3432e029c1a0105c59e7447eca381515386d0e850c5cdd9",
+        "workingMatchesHead": true
+      },
+      {
+        "path": "docs/evidence/native-p042-consumer-dispositions-2026-10-17.json",
+        "sourceCommit": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "gitBlob": "648889bee05c27c2b2a2e9631157360e37bf0a31",
+        "fileSha256": "2162aa8633334e9bc15835f153c8652873453daeaf2cc6b1bb371bbf40f68bd9",
+        "committedSha256": "2162aa8633334e9bc15835f153c8652873453daeaf2cc6b1bb371bbf40f68bd9",
+        "workingMatchesHead": true
+      }
+    ],
+    "currentDetectorRun": {
+      "runGroupId": "1b8feebe-92ee-4ba2-a8bf-da5dde0e1164",
+      "testRunIds": [
+        21783908,
+        21783909,
+        21783910,
+        21783911,
+        21783913
+      ],
+      "status": "five named file rows pass",
+      "commitSha": "8272c2f941948fc3b48b6c87c977ed3d26367d44",
+      "worktreeDirty": true,
+      "transportIdempotencyKey": "cb0d5766-a43d-417a-8b35-b4e6ccf09bb1",
+      "qualification": "CLI timed out; exact normal-ledger group confirms five completed passing rows. Source/test/fixture execution closure and skip/substitution records still need qualification. No retry or clean-source binding claimed."
+    },
+    "limits": [
+      "Full imported production/test/fixture dependency closure has not been remeasured by this inspection.",
+      "R36 cold-snapshot test directly checks no commit; compiler non-start additionally needs source-path reachability evidence.",
+      "R40 unit assertions do not establish a deployed signed-judge journey.",
+      "Independent vetting work WI-6554700010020974 is assigned to su-d8076be3-6814-45e0-b925-b2d9263ff12f; no critique or acceptance asserted."
+    ]
+  },
+  "reviewRepair20261022": {
+    "critiqueRef": "thread-post:1196879",
+    "reviewWorkItem": "WI-6554700010020974",
+    "reviewer": "su-d8076be3-6814-45e0-b925-b2d9263ff12f",
+    "rubricIdentity": {
+      "storageRevision": 20,
+      "meaningRevision": 20,
+      "subjectPlanRevision": 147,
+      "criteriaHash": "9d7e3f1cd9eadc13b40ec5880032158eeab7095d4e08c74fcf2a859b585bae45"
+    },
+    "amendment": {
+      "idempotencyKey": "native-r36-seam-files-20261022-r19-p146-apply-v1",
+      "previewReceipt": "preview-948f1e41-482a-4c53-ac28-771eaef8235e",
+      "state": "committed",
+      "change": "R36 check files adds actual mid-turn-context and push-snapshot suites; other34 criterion objects unchanged",
+      "approvalRequired": false
+    },
+    "sourceInspection": {
+      "missingTitlesOrStoredExcerpts": [],
+      "detectorCases": 72,
+      "basis": "Every named detector and stored assertion excerpt was found in current working source; priorSourcePin retains previous custody. Dirty paths carry sourceCommit:null and inspectionHead explicitly."
+    },
+    "focusedTests": {
+      "editedSuites": {
+        "files": [
+          "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts"
+        ],
+        "passed": 83,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "head": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "uncommittedPaths": 2
+      },
+      "addedR36BindingSuites": {
+        "files": [
+          "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts",
+          "packages/operator-core/lib/code-intelligence/push-snapshot.test.ts"
+        ],
+        "passed": 126,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "head": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+        "uncommittedPaths": 0
+      }
+    },
+    "r36ColdMutation": {
+      "probeInvocationId": "5a35cd11-ea97-4ee0-a5e7-e22d5f5fe26e",
+      "subject": "packages/operator-core/lib/code-intelligence/push-channel.ts",
+      "change": "Replace production peekPushSnapshot return with an unresolved promise.",
+      "baselineTestRunId": 21784901,
+      "copyBaselineTestRunId": 21784910,
+      "mutantTestRunId": 21784922,
+      "verdict": "caught",
+      "baselineExit": 0,
+      "guardExit": 1,
+      "mutantParse": "ok",
+      "assertionEvidence": "test-file-assertion-failure",
+      "relocation": "overlay",
+      "containment": "partial",
+      "qualification": "Local dirty detector; no clean full-import proof binding asserted."
+    },
+    "r38OwnerMutation": {
+      "probeInvocationId": "62caba4f-d8c1-4511-b39e-a3814cc87c1a",
+      "state": "failed baseline; not a caught mutant",
+      "baselineTestRunId": 21784915,
+      "baselineFailure": "concurrent workers cannot spend the per-turn budget more than once: canceling statement due to statement timeout",
+      "diagnostics": "~/.papercusp/scratch/papercusp-workspace/mutation-probe/evidence-WbDFHD",
+      "filedFollowUp": "EI-26715908431981941",
+      "followUpOwnership": "Unassigned; claim refused admission-pending. Await350332 is filtered to this item. P026 remains assigned to this session; no admission bypass or duplicate filing.",
+      "next": "Exact new separate-owner case selected for a fresh controlled probe; existing failed whole-file baseline remains historical evidence."
+    },
+    "limits": [
+      "Implementation outcomes, current-source clean execution closure, proof binding, meta attestation, independent grading and shipment remain incomplete.",
+      "New inspection pins describe current working bytes; historical test/mutation results cannot inherit them.",
+      "Decision trace now includes all34 plan147 decisions, with D034 mapped to R36; this is metadata coverage, not outcome acceptance."
+    ]
+  }
 }

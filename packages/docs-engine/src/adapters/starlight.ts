@@ -24,7 +24,7 @@ import * as path from 'node:path';
 import { humanize } from '../shared.js';
 import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
 import { parseOkfFrontmatter } from '../okf.js';
-import type { DocContentOptions, DocPage, DocSource, SectionMeta } from '../types.js';
+import type { DocContentOptions, DocListPagesOptions, DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface StarlightContentAdapterOptions {
   /** Stable identifier for cache namespacing + telemetry. */
@@ -238,18 +238,35 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
     cacheGeneration += 1;
   }
 
-  async function buildPages(): Promise<Map<string, StarlightPage>> {
+  async function buildPages(options?: DocListPagesOptions): Promise<Map<string, StarlightPage>> {
     // Sample before a cache hit too. A failed revision read must not serve an
     // answer whose freshness could not be established.
+    const revisionStartedAt = Date.now();
     const revision = await opts.getRevision?.();
+    const revisionMs = Math.max(0, Date.now() - revisionStartedAt);
+    options?.onTiming?.({ component: 'starlight', phase: 'revision', state: 'completed', elapsedMs: revisionMs });
     if (revision !== cachedRevision) {
       invalidate();
       cachedRevision = revision;
     }
-    if (pageCache) return pageCache;
-    if (pageBuild) return pageBuild;
+    if (pageCache) {
+      options?.onTiming?.({ component: 'starlight', phase: 'cache', state: 'cached', elapsedMs: revisionMs, count: pageCache.size });
+      return pageCache;
+    }
+    if (pageBuild) {
+      options?.onTiming?.({ component: 'starlight', phase: 'build', state: 'started' });
+      const waitStartedAt = Date.now();
+      try {
+        const cache = await pageBuild;
+        options?.onTiming?.({ component: 'starlight', phase: 'build', state: 'shared', elapsedMs: Math.max(0, Date.now() - waitStartedAt), count: cache.size });
+        return cache;
+      } catch (error) {
+        options?.onTiming?.({ component: 'starlight', phase: 'build', state: 'shared', elapsedMs: Math.max(0, Date.now() - waitStartedAt) });
+        throw error;
+      }
+    }
     const generation = cacheGeneration;
-    const building = loadPages(generation);
+    const building = loadPages(generation, options, revisionMs);
     pageBuild = building;
     try {
       return await building;
@@ -258,9 +275,19 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
     }
   }
 
-  async function loadPages(generation: number): Promise<Map<string, StarlightPage>> {
+  async function loadPages(
+    generation: number,
+    options?: DocListPagesOptions,
+    revisionMs = 0,
+  ): Promise<Map<string, StarlightPage>> {
     const cache = new Map<string, StarlightPage>();
+    const walkStartedAt = Date.now();
+    options?.onTiming?.({ component: 'starlight', phase: 'walk', state: 'started' });
     const files = await walkContent(contentRoot, maxDepth);
+    const walkMs = Math.max(0, Date.now() - walkStartedAt);
+    options?.onTiming?.({ component: 'starlight', phase: 'walk', state: 'completed', elapsedMs: walkMs, count: files.length });
+    const readParseStartedAt = Date.now();
+    options?.onTiming?.({ component: 'starlight', phase: 'read-parse', state: 'started', count: files.length });
     for (const abs of files) {
       const rel = path.relative(contentRoot, abs).replace(/\\/g, '/');
       const slug = slugFromRelPath(rel);
@@ -291,6 +318,15 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
       };
       cache.set(slug, page);
     }
+    const readParseMs = Math.max(0, Date.now() - readParseStartedAt);
+    options?.onTiming?.({ component: 'starlight', phase: 'read-parse', state: 'completed', elapsedMs: readParseMs, count: cache.size });
+    options?.onTiming?.({
+      component: 'starlight',
+      phase: 'build',
+      state: 'completed',
+      elapsedMs: revisionMs + walkMs + readParseMs,
+      count: cache.size,
+    });
     // An old in-flight scan cannot repopulate a newer revision's cache.
     if (generation === cacheGeneration) pageCache = cache;
     return cache;
@@ -299,8 +335,8 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
   return {
     name,
     invalidate,
-    async listPages(): Promise<DocPage[]> {
-      const cache = await buildPages();
+    async listPages(options?: DocListPagesOptions): Promise<DocPage[]> {
+      const cache = await buildPages(options);
       return [...cache.values()].map(({ absolutePath: _abs, ...page }) => page);
     },
     async getPage(slug: string): Promise<DocPage | null> {

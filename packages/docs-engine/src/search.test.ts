@@ -78,6 +78,27 @@ describe('tokenize', () => {
 });
 
 describe('searchDocs', () => {
+  it('forwards source listPages timing into query-free lexical metadata', async () => {
+    const base = makeSource([{ slug: 'guide', title: 'Guide', body: 'searchable' }]);
+    let observed = false;
+    const source: DocSource = {
+      ...base,
+      listPages: async (options) => {
+        options?.onTiming?.({ component: 'starlight', phase: 'walk', state: 'completed', elapsedMs: 12, count: 3 });
+        return base.listPages();
+      },
+    };
+
+    await searchDocs(source, { query: 'searchable' }, {
+      metadata: (data) => {
+        const timing = data.docsLexicalTiming as { listPagesPhases?: Array<{ component?: string; phase?: string }> } | undefined;
+        observed ||= Boolean(timing?.listPagesPhases?.some((phase) => phase.component === 'starlight' && phase.phase === 'walk'));
+      },
+    });
+
+    expect(observed).toBe(true);
+  });
+
   it('distinguishes page listing, content loading and ranking without retaining query text', async () => {
     vi.useFakeTimers();
     try {

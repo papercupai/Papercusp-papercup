@@ -58,11 +58,13 @@ it('attributes real PTY dialog submissions to machine control or human terminal 
   const selections = () => [...captured().matchAll(/DIALOG_SELECTION_(\{[^\r\n]*\})/g)]
     .map((match) => JSON.parse(match[1]) as { n: number; selection: string; inputHex: string });
   const childMenu = String.raw`
+    const { StringDecoder } = require('node:string_decoder');
+    const decoder = new StringDecoder('utf8');
     let n=0, input='';
     process.stdin.setRawMode(true);
     process.stdin.on('data', d => {
-      if(d.toString().includes('QUIT')) process.exit(0);
-      input += d.toString();
+      input += decoder.write(d);
+      if(input.includes('QUIT')) process.exit(0);
       let end;
       while((end=input.indexOf('\r')) >= 0) {
         const keys=input.slice(0,end+1); input=input.slice(end+1);

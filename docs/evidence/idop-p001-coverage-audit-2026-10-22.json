@@ -1,0 +1,259 @@
+{
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "ready": false,
+  "baseline": {
+    "path": "docs/evidence/idop-p001-baseline-2026-10-22.json",
+    "sha256": "28926b71afbeb048c02fd0e137fb72de33e5b30b82131fe0f3d74edd65403c18",
+    "commit": "4ad5a574aa64e2f1579334706509f7c31d803e85",
+    "preserved": true
+  },
+  "correction": "identity-definitions-own-policy-2026-10-17#D-025",
+  "currentLeaderToolReceipt": {
+    "path": "docs/evidence/idop-p001-leader-tool-receipt-2026-10-22.json",
+    "sha256": "e0e7bcb32555c2edd1c5bf4c283895c558f6bd1db0e822dbb1814e1fe962aef7",
+    "capturedAt": "2026-10-22T21:07:03.347Z",
+    "sourceKind": "real-session-authenticated-mcp-tools-list",
+    "count": 1020,
+    "appliedActivationEventId": 88311,
+    "nativeSessionId": "01a16547-09a0-7d80-a629-7e084c820db2",
+    "limitation": "Current catalog and applied auto/fleet-leader posture match the same native incarnation. This does not authenticate the older native incarnation or establish adapter enforcement."
+  },
+  "resolvedWornToolMappings": [
+    { "identity": "su.mode-auto", "activationEventId": 87801, "catalogSource": "modeAutoCatalogMapping" },
+    { "identity": "su.fleet-member", "activationEventId": 87974, "catalogSource": "launchToolCatalogs", "advSessionId": 49684 },
+    { "identity": "su.fleet-leader", "activationEventId": 88311, "catalogSource": "currentLeaderToolReceipt" }
+  ],
+  "appliedLayerReceiptSource": "harness_shared.session_identity_activation_events, exact IDs; later applied state is distinct from launch specification inputs",
+  "appliedLayerReceipts": [
+    {
+      "id": "87801",
+      "owner_id": "su-7a61b3ed-841b-4d7c-b177-f87c76073391",
+      "adv_session_id": "49526",
+      "native_session_id": "01a16441-1bb3-7882-8c8f-69bfe2cddb16",
+      "recorded_at": "2026-10-22 15:35:51.100747+00",
+      "phase": "applied",
+      "stack_refs": [
+        "autonomy:su.mode-auto"
+      ],
+      "specification_layer_refs": [
+        "collaboration-stance:su-collaborator",
+        "domain:papercusp-engineer"
+      ],
+      "specification_revision": "0dba77edec49140dd5ce8d0fe5de1ca424485c48f278eb3842269ee0749ac8d4",
+      "state_revision": "18cf633bd75920daa1cf3bc7"
+    },
+    {
+      "id": "87849",
+      "owner_id": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+      "adv_session_id": "42663",
+      "native_session_id": "01a1644f-c05b-7f01-85cf-4be4c76484b5",
+      "recorded_at": "2026-10-22 15:52:18.454422+00",
+      "phase": "applied",
+      "stack_refs": [
+        "autonomy:su.mode-auto",
+        "fleet-posture:su.fleet-leader"
+      ],
+      "specification_layer_refs": [
+        "domain:papercusp-engineer"
+      ],
+      "specification_revision": "6e1332c0eccb18e80031e4533b58612051f264ebf5417ab686df997960439233",
+      "state_revision": "559c9280d749bc2949bdaa99"
+    },
+    {
+      "id": "87921",
+      "owner_id": "su-97533b6c-b337-4f3f-a764-bb6879c9509c",
+      "adv_session_id": "49629",
+      "native_session_id": "01a16464-8cb4-72b2-8ea7-aeaf0656cee8",
+      "recorded_at": "2026-10-22 16:15:32.091148+00",
+      "phase": "applied",
+      "stack_refs": [
+        "objective:su.mode-drain"
+      ],
+      "specification_layer_refs": [
+        "collaboration-stance:su-collaborator",
+        "domain:papercusp-engineer"
+      ],
+      "specification_revision": "2f75b9d1732a8d67618869678afe60d5e71305af298f7bf9a6b5e51aec028f27",
+      "state_revision": "084e24de6f60385b7141e3a8"
+    },
+    {
+      "id": "87922",
+      "owner_id": "su-d1800dfa-4da2-45b3-86fd-09f1e3120db9",
+      "adv_session_id": "49632",
+      "native_session_id": "01a16464-8a9a-7ab2-89ac-89d9634e0705",
+      "recorded_at": "2026-10-22 16:15:32.097923+00",
+      "phase": "applied",
+      "stack_refs": [
+        "goal:su.mode-goal"
+      ],
+      "specification_layer_refs": [
+        "collaboration-stance:su-collaborator",
+        "domain:papercusp-engineer"
+      ],
+      "specification_revision": "2290fbd1e16a7a5bb8b31b929c60d587aaf845a522d408f8798763c1628b0618",
+      "state_revision": "084e24de6f60385b7141e3a8"
+    },
+    {
+      "id": "87924",
+      "owner_id": "su-9b64fd17-7089-4b81-9302-d3539c800255",
+      "adv_session_id": "49631",
+      "native_session_id": "01a16464-a13f-7b03-9004-e069c62172a5",
+      "recorded_at": "2026-10-22 16:15:33.45763+00",
+      "phase": "applied",
+      "stack_refs": [
+        "grade:su.mode-grade"
+      ],
+      "specification_layer_refs": [
+        "collaboration-stance:su-collaborator",
+        "domain:papercusp-engineer"
+      ],
+      "specification_revision": "4e1031fa2e4a9bc74d2688a19fa1f7977936d09b8d9156876de8c9387c7cd3e0",
+      "state_revision": "084e24de6f60385b7141e3a8"
+    },
+    {
+      "id": "87974",
+      "owner_id": "su-e4e3f3ec-081e-418a-8476-90c04028b92d",
+      "adv_session_id": "49684",
+      "native_session_id": "01a16482-4946-7192-ae5e-ddfd93bcd549",
+      "recorded_at": "2026-10-22 16:47:51.185397+00",
+      "phase": "applied",
+      "stack_refs": [
+        "autonomy:su.mode-auto",
+        "fleet-posture:su.fleet-member"
+      ],
+      "specification_layer_refs": [
+        "collaboration-stance:su-collaborator",
+        "domain:papercusp-engineer"
+      ],
+      "specification_revision": "e3724948ecd9c6509751fb29e384f24618f33ebdf85b6cc933214abf6813593a",
+      "state_revision": "c6892892e43d52266ed4ebd5"
+    }
+  ],
+  "modeAutoCatalogMapping": {
+    "activationEventId": 87801,
+    "advSessionId": 49526,
+    "sourceHome": "~/.papercusp/su-codex-homes/session-49526",
+    "ownerId": "su-7a61b3ed-841b-4d7c-b177-f87c76073391",
+    "nativeSessionId": "01a16441-1bb3-7882-8c8f-69bfe2cddb16",
+    "promptToolCount": 1020,
+    "nameSchemaHashPairsSha256": "f0960a238641af54c836f0a6e4bc6a1fd8b2743d86863419232c5d3bace13fe5",
+    "schemaSource": "The unchanged frozen baseline toolCatalog; every captured schema hash resolves there. Full population closure remains separate."
+  },
+  "launchToolCatalogs": {
+    "path": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json",
+    "sha256": "bdf71c9a0439768543d74e9fcb080c3ace3aa45531518d59f77bd33daa89579c",
+    "launchCount": 14,
+    "toolsPerLaunch": 1020,
+    "sourceKind": "real-launched-codex-managed-tool-prompts",
+    "limitation": "Exact schemas and immutable launch specification inputs are recorded. Selected modes and fleet posture absent from those inputs still require the later applied activation receipt; selecting a launch flag is not proof the layer was worn."
+  },
+  "roleLaunchCatalogs": {
+    "path": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json",
+    "sha256": "d9d4e10a29ef9e69bc704f33b47a241188b51ca14e34dcd0b2138b554cfb25f7",
+    "sourceKind": "real-launched-codex-role-managed-tool-prompts",
+    "roles": ["security-reviewer", "infra-reviewer"],
+    "toolsPerRole": 239,
+    "catalogSha256": "ecb3aade2e8672f496b0ca67f0a4f48c415dd55d053b7e00be756f7642384fa4",
+    "limitation": "Historical role-filtered launch catalogs with exact advertised argument schemas. Both native session IDs were checked against session_meta. Current signed MCP re-read refused after signing-key rotation; no current successful MCP catalog or complete dispatch authorization census is claimed."
+  },
+  "roleObservations": [
+    {
+      "identity": "infra-reviewer",
+      "ownerId": "su-e5f36f51-c7d4-419a-8b9b-357d9e02e1ce",
+      "nativeSessionId": "01a1651d-5d92-7050-b64b-1dd4e5d60119",
+      "observedAt": "2026-10-22T19:36:49.441Z",
+      "toolInvocationId": 43120935,
+      "attributedPrincipal": "system:infra-reviewer/su-e5f36f51-c7d4-419a-8b9b-357d9e02e1ce",
+      "principalKind": "harness",
+      "tool": "agent_tools:list",
+      "args": { "limit": 500, "filter": "^[a-f]", "onlyAllowed": false },
+      "status": "tool-refused",
+      "refusal": "role_not_allowed: infra-reviewer cannot call agent_tools:list"
+    },
+    {
+      "identity": "security-reviewer",
+      "ownerId": "su-aed3855d-6698-420c-8f67-98a46a62bfe2",
+      "nativeSessionId": "01a1651d-5ead-7112-80bc-ba24050302f2",
+      "observedAt": "2026-10-22T19:36:44.326Z",
+      "toolInvocationId": 43120898,
+      "attributedPrincipal": "system:security-reviewer/su-aed3855d-6698-420c-8f67-98a46a62bfe2",
+      "principalKind": "harness",
+      "tool": "agent_tools:list",
+      "args": { "limit": 500, "nameFilter": "^[q-z]", "onlyAllowed": false },
+      "status": "tool-refused",
+      "refusal": "role_not_allowed: security-reviewer cannot call agent_tools:list",
+      "limitation": "Role gate refused before argument validation. nameFilter is not a supported argument; this receipt proves the role refusal only."
+    }
+  ],
+  "wornLayerEvidence": [
+    {
+      "identities": ["papercusp-engineer", "su-collaborator"],
+      "advSessionId": 49611,
+      "ownerId": "su-afaffb1c-c265-4cb5-a71e-cbacf7b4ec85",
+      "nativeSessionId": "01a16461-be32-7870-ad38-42bd7cb2a49b",
+      "specificationRevision": "da4c514e0bf188592cfa4722d125b0e91d9792136ddd0548815c3671f2eb7019",
+      "source": "specificationArtifact.inputs[].ref",
+      "toolInvocationId": 43032599,
+      "limitation": "Reconcile full observed tool/argument scope to these immutable specification inputs before closure."
+    },
+    {
+      "identities": ["su.fleet-leader"],
+      "activationEventId": 87849,
+      "ownerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+      "nativeSessionId": "01a1644f-c05b-7f01-85cf-4be4c76484b5",
+      "observedAt": "2026-10-22T15:52:18.454422Z",
+      "phase": "applied",
+      "limitation": "Applied posture only; no effective tool-set receipt established by this audit."
+    },
+    {
+      "identities": ["su.fleet-member"],
+      "activationEventId": 87974,
+      "ownerId": "su-e4e3f3ec-081e-418a-8476-90c04028b92d",
+      "nativeSessionId": "01a16482-4946-7192-ae5e-ddfd93bcd549",
+      "observedAt": "2026-10-22T16:47:51.185397Z",
+      "phase": "applied",
+      "limitation": "Applied posture only; no effective tool-set receipt established by this audit."
+    }
+  ],
+  "launchEvidence": [
+    {
+      "toolInvocationId": 43053577,
+      "identities": ["scout.lens-analogical", "scout.lens-constraint-removal", "scout.lens-first-principles", "scout.lens-reframing", "su.specialist-planner"],
+      "observedAt": "2026-10-22T17:01:40.394Z",
+      "status": "refused",
+      "knownDefect": "EI-26700090355079325",
+      "limitation": "Stored error_message is truncated JSON; do not parse it as a complete result or claim the defect is owned."
+    },
+    {
+      "idempotencyKey": "idop-p001-real-baseline-gaps-20261022-v3",
+      "requestedStack": ["practice:su.practice", "autonomy:su.mode-auto", "audit:su.mode-audit", "ideation:su.mode-ideate"],
+      "ownerId": "su-818ac8d3-5d05-497b-b086-ca2597b887f9",
+      "status": "boot-refused",
+      "refusal": "bootstrap-su HTTP400: selected SU identity su.practice is missing practice document",
+      "limitation": "No observed effective tool set for this compound stack."
+    },
+    {
+      "idempotencyKey": "idop-p001-mode-baseline-20261022-v1",
+      "requestedStack": ["autonomy:su.mode-auto", "audit:su.mode-audit", "ideation:su.mode-ideate"],
+      "ownerId": "su-ddd6911b-7e6d-4b99-850a-dd0845f8bdd4",
+      "status": "boot-refused",
+      "refusal": "bootstrap-su HTTP400: su.md tiling is unsound; three observation-practice headings are not tile anchors",
+      "limitation": "Old serving runtime is not qualified current-build evidence. No successful mode measurement."
+    }
+  ],
+  "unresolved": [
+    { "identity": "su", "reason": "Named composition rejected by launch API preflight; EI-26709802590274641 is assigned to the driving owner." },
+    { "identity": "su.practice", "reason": "Boot refused; qualified current-build observation is still required." },
+    { "identity": "su.mode-audit", "reason": "New compound launch failed before effective tool observation." },
+    { "identity": "su.mode-ideate", "reason": "New compound launch failed before effective tool observation." }
+  ],
+  "cleanup": {
+    "measurementOnly": true,
+    "implementationWorkersLaunched": false,
+    "stoppedTasks": ["0mvjxyx95198nwcu1tt", "0mvjxyxdc1st6dzjimj"],
+    "verification": "processes:kill returned verified empty for both exact scopes"
+  }
+}

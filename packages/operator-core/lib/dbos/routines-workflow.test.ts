@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { LearningLoopHealthSweepReport } from '../harness/routines/learning-loop-health-sweep';
+import { ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS } from './routines-sweep-step-overrun';
 
 const state = vi.hoisted(() => ({
   stepOutputs: [] as Array<{ name: string; output: unknown }>,
@@ -28,6 +29,8 @@ const state = vi.hoisted(() => ({
   /** Every DBOS.runStep name invoked, including steps a fixture short-circuits. */
   stepNames: [] as string[],
   poolShedFixture: false,
+  executeLoopRebaseOperation: false,
+  slowLoopRebaseMs: 0,
   probe: { rawMs: 3000, admissionMs: 2500, discountMs: 500 },
   recordPoolShedEvent: vi.fn(),
 }));
@@ -51,7 +54,11 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
         if (state.poolShedFixture && config?.name === 'routine-dispatch-feedback-epoch') {
           return { queues: [] };
         }
-        if (state.poolShedFixture && config?.name === 'loop-rebase-sweep') return;
+        if (
+          state.poolShedFixture &&
+          config?.name === 'loop-rebase-sweep' &&
+          !state.executeLoopRebaseOperation
+        ) return;
         const output = await fn();
         state.stepOutputs.push({ name: config?.name ?? '', output });
         return output;
@@ -116,6 +123,15 @@ vi.mock('../harness/routines/loop-fire', () => ({
   fireLoopWake: vi.fn(async () => state.loopResult),
 }));
 
+vi.mock('../harness/routines/reconcile-loop-routines', () => ({
+  reconcileLoopRoutines: vi.fn(async () => {
+    if (state.slowLoopRebaseMs > 0) {
+      await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, state.slowLoopRebaseMs));
+    }
+    return { terminated: [] };
+  }),
+}));
+
 vi.mock('./dbos-executor-reaper', () => ({
   clearStaleReaperLastError: vi.fn(async () => {}),
 }));
@@ -173,12 +189,15 @@ beforeEach(() => {
   state.sqlCalls.length = 0;
   vi.clearAllMocks();
   state.poolShedFixture = false;
+  state.executeLoopRebaseOperation = false;
+  state.slowLoopRebaseMs = 0;
   state.dbosStarted = true;
   state.createDbosClient.mockResolvedValue({ enqueue: state.clientEnqueue });
   state.clientEnqueue.mockResolvedValue({ workflowID: 'routine:rt_home_git_sync' });
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
 });
 
@@ -713,6 +732,40 @@ describe('WI-10000846 — dispatch is decoupled from the periodic sweeps', () =>
       expect(state.stepNames).not.toContain('loop-rebase-sweep');
       state.stepNames.length = 0;
       await state.scheduledSweepTick!();
+      expect(state.stepNames).toEqual(['loop-rebase-sweep']);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('runs the registered loop-rebase step through overrun diagnostics in the isolated DBOS fixture', async () => {
+    state.poolShedFixture = true;
+    state.executeLoopRebaseOperation = true;
+    state.slowLoopRebaseMs = ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS + 1;
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const pending = state.scheduledSweepTick!();
+      await vi.advanceTimersByTimeAsync(ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS);
+      expect(warn).toHaveBeenCalledWith(
+        '[routines-sweep-step] exceeded diagnostic budget; step is still running',
+        expect.objectContaining({
+          stepName: 'loop-rebase-sweep',
+          workflowId: 'test-routine-fire',
+          phase: 'still-running',
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(warn).toHaveBeenLastCalledWith(
+        '[routines-sweep-step] step completed over diagnostic budget',
+        expect.objectContaining({
+          stepName: 'loop-rebase-sweep',
+          workflowId: 'test-routine-fire',
+          phase: 'completed',
+          outcome: 'succeeded',
+        }),
+      );
       expect(state.stepNames).toEqual(['loop-rebase-sweep']);
     } finally {
       warn.mockRestore();

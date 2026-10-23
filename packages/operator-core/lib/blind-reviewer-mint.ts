@@ -28,8 +28,17 @@ import {
 import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
 import { BLIND_REVIEW_TOOL, loadBlindReviewBrief } from './blind-review-gate';
 import type { BlindReviewBrief } from './blind-review-brief';
+import {
+  acquireBlindReviewSessionResume,
+  createBlindReviewSessionBinding,
+  releaseBlindReviewSessionResume,
+  BLIND_GAP_REVIEW_ACTOR,
+  INTERNAL_BLIND_REVIEW_RESUME,
+  type BlindReviewResumePermit,
+  type BlindReviewSessionBinding,
+} from './blind-review-session-bindings';
 
-export const BLIND_GAP_REVIEW_ACTOR = 'system:blind-gap-review';
+export { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
 
 /**
  * Account the reviewer launches on: the gateway pool, like the acceptance grader and the
@@ -126,7 +135,7 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
     brief.text,
     '',
     '## Report',
-    `Call ${BLIND_REVIEW_TOOL} { op: 'post', slug: '${brief.planSlug}', gaps: [...] }`,
+    `Call ${BLIND_REVIEW_TOOL} { op: 'post', slug: '${brief.planSlug}', activationAuditSeq: ${brief.activationAuditSeq}, gaps: [...] }`,
     '(gaps: [] when you found none), then end your session.',
   ].join('\n');
 }
@@ -137,11 +146,14 @@ export interface MintBlindGapReviewerDeps {
   loadBrief?: typeof loadBlindReviewBrief;
   /** The launch-agent handler plus its confinement symbol; injected in tests. */
   launcher?: () => Promise<{ handler: LaunchHandler; confinementKey: symbol }>;
+  createSessionBinding?: typeof createBlindReviewSessionBinding;
+  acquireSessionResume?: typeof acquireBlindReviewSessionResume;
+  releaseSessionResume?: typeof releaseBlindReviewSessionResume;
 }
 
 export type MintBlindGapReviewerResult =
-  | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number; scratchPrefix: string | null }
-  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_owner_turns' | 'invalid_product_reads'; message: string };
+  | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number; scratchPrefix: string | null; binding: BlindReviewSessionBinding | null }
+  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_owner_turns' | 'invalid_product_reads' | 'session_binding_failed'; message: string };
 
 async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementKey: symbol }> {
   const mod = await import('./agent-tools/capability/launch-agent');
@@ -215,6 +227,106 @@ export async function mintBlindGapReviewer(
     },
     systemCtx as never,
   );
+  if ((launch as { isError?: unknown } | null)?.isError === true) {
+    return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
+      scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: null };
+  }
+  const launchData = (launch as { data?: { launch?: Record<string, unknown> } } | null)?.data?.launch;
+  const ownerIds = Array.isArray(launchData?.ownerIds) ? launchData.ownerIds : [];
+  const sessions = (launchData?.freshVerdict as { sessions?: unknown } | undefined)?.sessions;
+  const reviewerOwnerId = typeof ownerIds[0] === 'string' ? ownerIds[0] : null;
+  const nativeSession = Array.isArray(sessions)
+    ? sessions.find((entry) => !!entry && typeof entry === 'object' &&
+      (entry as Record<string, unknown>).ownerId === reviewerOwnerId) as Record<string, unknown> | undefined
+    : undefined;
+  const advSessionId = Number(nativeSession?.advSessionId);
+  const nativeSessionId = typeof nativeSession?.sessionId === 'string' ? nativeSession.sessionId : null;
+  if (!reviewerOwnerId || !Number.isSafeInteger(advSessionId) || advSessionId <= 0 || !nativeSessionId) {
+    return { ok: false, code: 'session_binding_failed',
+      message: 'The launch returned no exact native session receipt, so it cannot be bound safely. Do not mint a second reviewer for this activation.' };
+  }
+  let bindingResult;
+  try {
+    bindingResult = await (deps.createSessionBinding ?? createBlindReviewSessionBinding)({
+      workspaceId, harnessSlug: input.harness, planSlug: input.slug,
+      activationAuditSeq: brief.activationAuditSeq, reviewerOwnerId, advSessionId, nativeSessionId,
+      launchParentOwner: BLIND_GAP_REVIEW_ACTOR,
+      confinement: blindReviewerConfinement(input.slug, productReads, scratchPlans),
+    });
+  } catch (error) {
+    return { ok: false, code: 'session_binding_failed',
+      message: 'The reviewer launched, but its exact session binding could not be persisted: ' +
+        (error instanceof Error ? error.message : String(error)) + '. Do not mint or repost again until the binding is reconciled.' };
+  }
+  if (!bindingResult.ok) {
+    return { ok: false, code: 'session_binding_failed',
+      message: 'The reviewer launched, but its exact session binding was refused (' + bindingResult.code +
+        '): ' + bindingResult.message + '. Do not mint or repost again until the binding is reconciled.' };
+  }
   return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
-    scratchPrefix: scratchPlans?.scratchPrefix ?? null };
+    scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: bindingResult.binding };
+}
+
+export type ResumeBlindGapReviewerResult =
+  | { ok: true; launch: unknown; activationAuditSeq: number; reviewerOwnerId: string; leaseReleased: boolean }
+  | { ok: false; code: string; message: string };
+
+export async function resumeBlindGapReviewer(
+  input: { slug: string; harness: string; recruiterOwnerId: string; ctx: Record<string, unknown> },
+  deps: MintBlindGapReviewerDeps = {},
+): Promise<ResumeBlindGapReviewerResult> {
+  const workspaceId = typeof input.ctx.workspaceId === 'string' ? input.ctx.workspaceId.trim() : '';
+  if (!workspaceId || workspaceId === '*') {
+    return { ok: false, code: 'workspace_required', message: 'A recruiter resume needs a concrete workspace.' };
+  }
+  const brief = await (deps.loadBrief ?? loadBlindReviewBrief)({
+    workspaceId, planSlug: input.slug, harnessSlug: input.harness,
+  });
+  if (!brief) return { ok: false, code: 'no_activation_audit', message: 'The plan has no current activation audit to resume.' };
+  if (brief.ownerTurns.length === 0) {
+    return { ok: false, code: 'no_owner_turns', message: 'The current activation audit has no authenticated owner turns.' };
+  }
+  const acquired = await (deps.acquireSessionResume ?? acquireBlindReviewSessionResume)({
+    workspaceId, planSlug: input.slug, activationAuditSeq: brief.activationAuditSeq,
+  });
+  if (!acquired.ok) return acquired;
+  if (!input.recruiterOwnerId || input.recruiterOwnerId === acquired.binding.reviewerOwnerId) {
+    await (deps.releaseSessionResume ?? releaseBlindReviewSessionResume)(acquired.binding.id, acquired.leaseId).catch(() => false);
+    return { ok: false, code: 'recruiter_only', message: 'The bound reviewer cannot recruit or resume itself.' };
+  }
+
+  let result: ResumeBlindGapReviewerResult;
+  try {
+    const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
+    const permit: BlindReviewResumePermit = {
+      bindingId: acquired.binding.id, leaseId: acquired.leaseId, workspaceId, planSlug: input.slug,
+      activationAuditSeq: brief.activationAuditSeq, reviewerOwnerId: acquired.binding.reviewerOwnerId,
+      advSessionId: acquired.binding.advSessionId, nativeSessionId: acquired.binding.nativeSessionId,
+    };
+    const systemCtx = {
+      ...input.ctx, harnessSlug: input.harness, uiClientId: null, isSuperuser: false, isPowerUser: false,
+      principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId },
+      ownerId: BLIND_GAP_REVIEW_ACTOR, ownerLabel: 'blind gap review', userId: null,
+      [confinementKey]: acquired.binding.confinementSnapshot,
+      [INTERNAL_BLIND_REVIEW_RESUME]: permit,
+    };
+    const launch = await handler({
+      resume: { sessionId: acquired.binding.nativeSessionId },
+      fork: false, headless: true, harness: input.harness,
+      brief: buildBlindReviewerKickoff(brief),
+    }, systemCtx as never);
+    result = (launch as { isError?: unknown } | null)?.isError === true
+      ? { ok: false, code: 'resume_failed', message: 'The exact in-place recruiter resume was refused by capability:launch-agent.' }
+      : { ok: true, launch, activationAuditSeq: brief.activationAuditSeq,
+          reviewerOwnerId: acquired.binding.reviewerOwnerId, leaseReleased: false };
+  } catch (error) {
+    result = { ok: false, code: 'resume_failed', message: error instanceof Error ? error.message : String(error) };
+  }
+  let leaseReleased = false;
+  try {
+    leaseReleased = await (deps.releaseSessionResume ?? releaseBlindReviewSessionResume)(acquired.binding.id, acquired.leaseId);
+  } catch {
+    leaseReleased = false;
+  }
+  return result.ok ? { ...result, leaseReleased } : result;
 }

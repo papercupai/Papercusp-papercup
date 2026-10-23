@@ -66,6 +66,7 @@ const h = vi.hoisted(() => {
   const kernelAuthority = {
     rows: null as Array<Record<string, unknown>> | null,
     launchRecord: null as { launch_spec: unknown; launch_spec_xmin: string } | null,
+    migrationRead: null as null | (() => Promise<unknown[]>),
   };
   const fakeSql = Object.assign(async (...args: unknown[]) => {
     const template = args[0];
@@ -77,6 +78,7 @@ const h = vi.hoisted(() => {
     // PG-free transport fixture on a known migration frontier so the matrix
     // exercises auth/dispatch wiring instead of failing before listing tools.
     if (query.includes('harness_shared.schema_migrations')) {
+      if (kernelAuthority.migrationRead) return kernelAuthority.migrationRead();
       return [
         { filename: '001-core.sql', sha256: 'sha-core' },
         { filename: '1489-fallback-observations-samples.sql', sha256: 'sha-1489' },
@@ -2199,6 +2201,7 @@ beforeEach(() => {
   h.getSessionBrief.mockResolvedValue(null);
   h.kernelAuthority.rows = null;
   h.kernelAuthority.launchRecord = null;
+  h.kernelAuthority.migrationRead = null;
   seen.length = 0;
   h.resourceReads.length = 0;
   deltaRequested.length = 0;
@@ -4511,6 +4514,52 @@ describe('tools/list — strict-mode listing matrix', () => {
         }),
       ),
     ).rejects.toThrow(/mcp_auth_failed.*superuser_non_loopback/);
+  });
+
+  it('tools/list attributes a pending generation read and retains the completed catalog baseline', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let release!: (rows: unknown[]) => void;
+    let entered!: () => void;
+    const readStarted = new Promise<void>(resolve => { entered = resolve; });
+    const migrationRows = new Promise<unknown[]>(resolve => { release = resolve; });
+    h.kernelAuthority.migrationRead = () => {
+      entered();
+      return migrationRows;
+    };
+    const rows = [{ filename: '1489-fallback-observations-samples.sql', sha256: 'sha-1489' }];
+    try {
+      const request = listTools(superuserExtra('&workspace=ws-test'));
+      await readStarted;
+      await vi.advanceTimersByTimeAsync(5_000);
+      const records = () => info.mock.calls.flatMap(([message]) => {
+        const text = String(message);
+        return text.startsWith('[mcp-request-trace] ')
+          ? [JSON.parse(text.slice('[mcp-request-trace] '.length))] : [];
+      });
+      expect(records()).toContainEqual(expect.objectContaining({
+        toolName: 'tools/list', stage: 'tools_list_pending',
+        toolsListPhases: expect.objectContaining({
+          pending: [expect.objectContaining({ phase: 'servingGeneration' })],
+        }),
+      }));
+      release(rows);
+      const catalog = await request;
+      expect(catalog.tools.length).toBeGreaterThan(0);
+      expect(catalog.tools.every(tool => Boolean(tool._meta?.['papercusp/servingGeneration']))).toBe(true);
+      expect(records()).toContainEqual(expect.objectContaining({
+        toolName: 'tools/list', stage: 'tools_list_completed', outcome: 'success',
+        toolsListPhases: expect.objectContaining({ pending: [] }),
+      }));
+      const count = records().length;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(records()).toHaveLength(count);
+    } finally {
+      release(rows);
+      h.kernelAuthority.migrationRead = null;
+      info.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('a verified role-scoped caller sees ONLY tools its role admits', async () => {

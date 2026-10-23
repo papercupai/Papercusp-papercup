@@ -11,6 +11,9 @@ import { pageHtml } from './tutorial-character-model.mjs';
 export const PREVIEW_TEXT = "Hi, I'm PaperCup, the operator of Papercusp. I'll guide you through your first project.";
 const FPS = 24;
 
+export function characterRenderKey({ narrationHash, audioSha256, alignment, duration, width, height, transparent, svg, renderer, model }) {
+  return createHash('sha256').update(JSON.stringify({ narrationHash, audioSha256, alignment, duration, width, height, transparent, fps: FPS, svg, renderer, model })).digest('hex');
+}
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
@@ -43,18 +46,19 @@ export async function prepareNarration({ outDir, text = PREVIEW_TEXT } = {}) {
   await writeFile(join(outDir, 'narration-receipt.json'), JSON.stringify({ narrationHash, voiceId: prefs.elevenlabsVoiceId, provider: 'elevenlabs', text }));
   const ends = alignment?.character_end_times_seconds ?? [];
   if (!alignment?.characters?.length || alignment.characters.length !== ends.length || ends.some(value => !Number.isFinite(value))) throw new Error('Narration alignment is missing or invalid');
-  return { audioPath: join(outDir, 'narration.mp3'), alignment, duration: Math.max(1, ends.at(-1) + 0.4), narrationHash };
+  return { audioPath: join(outDir, 'narration.mp3'), audioSha256: createHash('sha256').update(audio).digest('hex'), alignment, duration: Math.max(1, ends.at(-1) + 0.4), narrationHash };
 }
 
 export async function renderPreview({ outDir, text = PREVIEW_TEXT, width = 960, height = 540, transparent = false, durationSeconds } = {}) {
   if (!outDir) throw new Error('outDir is required');
   if (![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 1920)) throw new Error('Invalid character dimensions');
-  const { alignment, duration: speechDuration, narrationHash } = await prepareNarration({ outDir, text });
+  const { alignment, duration: speechDuration, narrationHash, audioSha256 } = await prepareNarration({ outDir, text });
   const duration = Math.max(speechDuration, durationSeconds ?? 0);
   if (!Number.isFinite(duration) || duration > 1800) throw new Error('Invalid character duration');
   const svg = await readFile(new URL('../public/tutorial-character.svg', import.meta.url), 'utf8');
   const video = join(outDir, transparent ? 'papercup-character.mov' : 'papercup-speaking-preview.mp4');
-  const renderHash = createHash('sha256').update(JSON.stringify({ narrationHash, duration, width, height, transparent, fps: FPS, svg, renderer: await readFile(new URL(import.meta.url), 'utf8') })).digest('hex');
+  const renderHash = characterRenderKey({ narrationHash, audioSha256, alignment, duration, width, height, transparent, svg,
+    renderer: await readFile(new URL(import.meta.url), 'utf8'), model: await readFile(new URL('./tutorial-character-model.mjs', import.meta.url), 'utf8') });
   try {
     const receipt = JSON.parse(await readFile(join(outDir, 'character-render-receipt.json'), 'utf8'));
     if (receipt.renderHash === renderHash && receipt.videoSha256 === createHash('sha256').update(await readFile(video)).digest('hex')) return { outDir, video, duration, alignmentCharacters: alignment.characters.length, cached: true };

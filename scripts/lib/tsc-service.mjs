@@ -427,6 +427,78 @@ export async function refreshProjectRootFiles({ api, snapshot, projects }) {
   return nextSnapshot;
 }
 
+const TSC_SERVICE_SCOPE_YIELD_EVERY = 128;
+
+/**
+ * @param {Parameters<typeof checkedSetFor>[0]} opts
+ * @returns {Generator<null, ReturnType<typeof checkedSetFor>, unknown>}
+ */
+function* checkedSetForSteps(opts) {
+  const { root, named, programFiles, readText, configFile, dependencyCache, maxFiles } = opts;
+  let workSinceYield = 0;
+  const yieldIfNeeded = () => {
+    workSinceYield += 1;
+    if (workSinceYield < TSC_SERVICE_SCOPE_YIELD_EVERY) return false;
+    workSinceYield = 0;
+    return true;
+  };
+  const rootPrefix = `${resolve(root)}/`;
+  const namedAbs = new Set([...named].map((file) => resolve(root, file)));
+  let namedMembers = 0;
+  for (const abs of programFiles) {
+    if (abs.startsWith(rootPrefix) && !abs.includes('/node_modules/') && namedAbs.has(abs)) namedMembers += 1;
+    if (yieldIfNeeded()) yield null;
+  }
+  const dependent = yield* filesDependingOnChangedModulesSteps({
+    root, named: namedAbs, candidates: programFiles, readText, configFile, dependencyCache,
+    ...(Number.isFinite(maxFiles) ? { stopAfter: Math.max(0, maxFiles - namedMembers) } : {}),
+  });
+
+  const files = [];
+  let namedCount = 0;
+  let typeReferencing = 0;
+  let importers = 0;
+  const inProgram = new Set();
+  for (const abs of programFiles) {
+    if (yieldIfNeeded()) yield null;
+    if (!abs.startsWith(rootPrefix) || abs.includes('/node_modules/')) continue;
+    inProgram.add(abs);
+    if (namedAbs.has(abs)) {
+      files.push(abs);
+      namedCount += 1;
+      continue;
+    }
+    if (dependent.has(abs)) {
+      files.push(abs);
+      importers += 1;
+    }
+  }
+  const namedNotInProgram = [];
+  for (const abs of namedAbs) {
+    if (!inProgram.has(abs)) namedNotInProgram.push(relative(root, abs));
+    if (yieldIfNeeded()) yield null;
+  }
+  return { files, named: namedCount, typeReferencing, importers, namedNotInProgram };
+}
+
+function finishScopeSteps(iterator) {
+  let step = iterator.next();
+  while (!step.done) step = iterator.next();
+  return step.value;
+}
+
+async function finishScopeStepsCooperatively(iterator, isCancelled) {
+  while (true) {
+    if (isCancelled()) {
+      iterator.return();
+      return null;
+    }
+    const step = iterator.next();
+    if (step.done) return isCancelled() ? null : step.value;
+    await new Promise((resume) => setImmediate(resume));
+  }
+}
+
 /**
  * The files a scoped verdict about `named` depends on, drawn from the project's program:
  *
@@ -445,35 +517,20 @@ export async function refreshProjectRootFiles({ api, snapshot, projects }) {
  * }} opts
  * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
  */
-export function checkedSetFor({ root, named, programFiles, readText, configFile, dependencyCache, maxFiles }) {
-  const rootPrefix = `${resolve(root)}/`;
-  const namedAbs = new Set([...named].map((file) => resolve(root, file)));
-  const namedMembers = programFiles.filter((file) => file.startsWith(rootPrefix) && !file.includes('/node_modules/') && namedAbs.has(file)).length;
-  const dependent = filesDependingOnChangedModules({
-    root, named: namedAbs, candidates: programFiles, readText, configFile, dependencyCache,
-    ...(Number.isFinite(maxFiles) ? { stopAfter: Math.max(0, maxFiles - namedMembers) } : {}),
-  });
+export function checkedSetFor(opts) {
+  return finishScopeSteps(checkedSetForSteps(opts));
+}
 
-  const files = [];
-  let namedCount = 0;
-  let typeReferencing = 0;
-  let importers = 0;
-  const inProgram = new Set();
-  for (const abs of programFiles) {
-    if (!abs.startsWith(rootPrefix) || abs.includes('/node_modules/')) continue;
-    inProgram.add(abs);
-    if (namedAbs.has(abs)) {
-      files.push(abs);
-      namedCount += 1;
-      continue;
-    }
-    if (dependent.has(abs)) {
-      files.push(abs);
-      importers += 1;
-    }
-  }
-  const namedNotInProgram = [...namedAbs].filter((abs) => !inProgram.has(abs)).map((abs) => relative(root, abs));
-  return { files, named: namedCount, typeReferencing, importers, namedNotInProgram };
+/**
+ * Cancellable checked-set census for the long-lived service. It yields to the event loop while
+ * walking the project graph and returns null when the client disconnects.
+ *
+ * @param {Parameters<typeof checkedSetFor>[0]} opts
+ * @param {{ isCancelled?: () => boolean }} [controls]
+ * @returns {Promise<ReturnType<typeof checkedSetFor> | null>}
+ */
+export async function checkedSetForCooperatively(opts, { isCancelled = () => false } = {}) {
+  return finishScopeStepsCooperatively(checkedSetForSteps(opts), isCancelled);
 }
 
 /**
@@ -514,11 +571,19 @@ export function namedSetFor({ root, named, programFiles }) {
  * @param {{ root: string, named: Iterable<string>, candidates: Iterable<string>,
  *   readText?: (absFile: string) => string | null, configFile?: string,
  *   dependencyCache?: Map<string, Map<string, Set<string>>>, stopAfter?: number }} opts
- * @returns {Set<string>} Absolute candidate paths depending on a named module.
+ * @returns {Generator<null, Set<string>, unknown>}
  */
-export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile, dependencyCache, stopAfter = Infinity }) {
+function* filesDependingOnChangedModulesSteps(opts) {
+  const { root, named, candidates, readText, configFile, dependencyCache, stopAfter = Infinity } = opts;
+  let workSinceYield = 0;
+  const yieldIfNeeded = () => {
+    workSinceYield += 1;
+    if (workSinceYield < TSC_SERVICE_SCOPE_YIELD_EVERY) return false;
+    workSinceYield = 0;
+    return true;
+  };
   const base = resolve(root);
-  const inside = (file) => file.startsWith(`${base}/`) && !file.includes('/node_modules/');
+  const inside = (file) => file.startsWith(base + '/') && !file.includes('/node_modules/');
   const identity = (file) => file.replace(SOURCE_EXTENSION, '');
   const targets = new Set([...named].map((file) => identity(resolve(base, file))));
   const candidateAbs = [...candidates].map((file) => resolve(base, file)).filter(inside);
@@ -537,16 +602,19 @@ export function filesDependingOnChangedModules({ root, named, candidates, readTe
     for (const file of new Set(candidateAbs)) {
       const module = identity(file);
       if (!targets.has(module)) memberCounts.set(module, (memberCounts.get(module) ?? 0) + 1);
+      if (yieldIfNeeded()) yield null;
     }
     let provenCount = 0;
-    const propagate = (module) => {
+    const propagate = function* (module) {
       const pending = [module];
       for (let i = 0; i < pending.length; i += 1) {
         const next = pending[i];
-        if (proven.has(next)) continue;
-        proven.add(next);
-        provenCount += memberCounts.get(next) ?? 0;
-        for (const importer of reverse.get(next) ?? []) pending.push(importer);
+        if (!proven.has(next)) {
+          proven.add(next);
+          provenCount += memberCounts.get(next) ?? 0;
+          for (const importer of reverse.get(next) ?? []) pending.push(importer);
+        }
+        if (yieldIfNeeded()) yield null;
       }
     };
     const optionsByConfig = new Map();
@@ -569,6 +637,7 @@ export function filesDependingOnChangedModules({ root, named, candidates, readTe
     // The census grows only once per resolved repository file, including shared barrels.
     const moduleFiles = new Set(candidateAbs);
     for (const file of moduleFiles) {
+      if (yieldIfNeeded()) yield null;
       const text = readText ? readText(file) : ts.sys.readFile(file);
       if (text == null) continue;
       const { options, cache } = optionsFor(file);
@@ -578,12 +647,18 @@ export function filesDependingOnChangedModules({ root, named, candidates, readTe
         const key = identity(resolved.resolvedFileName);
         if (!reverse.has(key)) reverse.set(key, new Set());
         reverse.get(key).add(identity(file));
-        if (Number.isFinite(stopAfter) && proven.has(key)) propagate(identity(file));
+        if (Number.isFinite(stopAfter) && proven.has(key)) yield* propagate(identity(file));
         moduleFiles.add(resolved.resolvedFileName);
+        if (yieldIfNeeded()) yield null;
         if (provenCount > stopAfter) {
           // This graph is incomplete: only the proven over-limit refusal is valid, never a
           // reusable dependency index or a successful scoped diagnostic verdict.
-          return new Set(candidateAbs.filter((path) => proven.has(identity(path)) && !targets.has(identity(path))));
+          const lowerBound = new Set();
+          for (const path of candidateAbs) {
+            if (proven.has(identity(path)) && !targets.has(identity(path))) lowerBound.add(path);
+            if (yieldIfNeeded()) yield null;
+          }
+          return lowerBound;
         }
       }
     }
@@ -593,9 +668,30 @@ export function filesDependingOnChangedModules({ root, named, candidates, readTe
   for (const module of reachable) {
     for (const importer of reverse.get(module) ?? []) {
       reachable.add(importer);
+      if (yieldIfNeeded()) yield null;
     }
+    if (yieldIfNeeded()) yield null;
   }
-  return new Set(candidateAbs.filter((file) => reachable.has(identity(file)) && !targets.has(identity(file))));
+  const dependent = new Set();
+  for (const file of candidateAbs) {
+    if (reachable.has(identity(file)) && !targets.has(identity(file))) dependent.add(file);
+    if (yieldIfNeeded()) yield null;
+  }
+  return dependent;
+}
+
+/**
+ * Shared CLI/service attribution (EI-25720784739215773). Resolve actual import/export edges
+ * with TypeScript, then walk reverse edges from the changed modules. Aliases, namespace
+ * imports, inferred callbacks, barrels and cycles retain provenance; comments, strings and
+ * unrelated local declarations cannot invent it. No second compiler program is created.
+ * Companion declarations and their executable source share a module identity.
+ *
+ * @param {Parameters<typeof filesDependingOnChangedModulesSteps>[0]} opts
+ * @returns {Set<string>} Absolute candidate paths depending on a named module.
+ */
+export function filesDependingOnChangedModules(opts) {
+  return finishScopeSteps(filesDependingOnChangedModulesSteps(opts));
 }
 
 /**

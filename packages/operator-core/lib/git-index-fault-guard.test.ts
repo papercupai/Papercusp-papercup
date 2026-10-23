@@ -23,7 +23,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -89,6 +89,32 @@ it('keeps the audit CLI inert when imported into a real sidecar bundle', () => {
   expect(result.error).toBeUndefined();
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout.trim()).toBe('LIBRARY_IMPORTED');
+});
+
+it('reads configured audit logs when capture inherits empty or unrelated piped input', () => {
+  const fixtureDir = mkdtempSync(join(tmp, 'audit-capture-'));
+  const auditLog = join(fixtureDir, 'audit.log');
+  const records = 'type=SYSCALL fixture=stored\ntype=PATH fixture=stored\ntype=PROCTITLE fixture=stored\n';
+  writeFileSync(auditLog, records + 'type=USER fixture=not-a-writer\n');
+  const sudo = join(fixtureDir, 'sudo');
+  // ausearch reads a FIFO on stdin unless --input-logs selects auditd.conf's log.
+  // Model that external CLI contract without needing root or the host audit daemon.
+  writeFileSync(sudo, '#!' + process.execPath + '\n' + [
+    'const fs = require("node:fs");',
+    'const args = process.argv.slice(2);',
+    'if (args.shift() !== "-n" || args.shift() !== "ausearch") process.exit(2);',
+    'process.stdout.write(fs.readFileSync(args.includes("--input-logs") ? process.env.AUDIT_CAPTURE_FIXTURE : 0));',
+  ].join('\n'));
+  chmodSync(sudo, 0o755);
+  for (const input of ['', 'type=SYSCALL fixture=unrelated-stdin\n']) {
+    const result = spawnSync('bash', ['-c', INDEX_FAULT_CAPTURE_COMMAND], {
+      encoding: 'utf8', input, timeout: 10_000,
+      env: { ...process.env, PATH: fixtureDir + ':' + process.env.PATH, AUDIT_CAPTURE_FIXTURE: auditLog },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(records);
+  }
 });
 
 describe('audit sink persistence — kernel intake is not proof of a live log', () => {

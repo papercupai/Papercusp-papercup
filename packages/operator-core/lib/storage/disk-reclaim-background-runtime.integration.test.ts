@@ -22,6 +22,7 @@ const censusSource = 'packages/operator-core/lib/storage/disk-consumer-census.ts
 const censusSelected = [
   'accepts the real native directory-descent disappearance',
   'refuses unproven or incomplete disappearance evidence',
+  'compacts capped native file metadata',
 ];
 const selected = [
   'waits for first mutex admission within the whole run deadline',
@@ -41,6 +42,8 @@ const selected = [
   'refreshes a new pin after a FIFO handoff without repeating the census',
   'refreshes a new lease after a FIFO handoff without repeating the census',
 ];
+// The advancing-root assertion covers four deadline modes under one title.
+const selectedCount = selected.length + 3;
 const buildSelected = [
   'expires build directories',
   'protected build sources',
@@ -169,7 +172,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
         if (selection.census) {
           const census = rows.find(value => value.filePath === censusAssertion);
           expect(census).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
-            passed: 6, failed: 0, collectionFailed: false,
+            passed: 7, failed: 0, collectionFailed: false,
           } } });
           for (const title of censusSelected) expect(census.row.executionDetails.passedCaseTitles.some(
             (passed: string) => passed.includes(title))).toBe(true);
@@ -186,7 +189,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
 };
 it('reclaims private fixtures and reads back the exact durable receipt in the observed background runtime',
   context => runSelection({ reclaimTitles: [...selected, ...buildSelected, ...specialSelected, ...receiptSelected],
-    expectedReclaimCases: selected.length + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true }, context),
+    expectedReclaimCases: selectedCount + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true }, context),
   options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),

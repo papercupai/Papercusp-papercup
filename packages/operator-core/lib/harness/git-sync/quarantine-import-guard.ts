@@ -488,14 +488,7 @@ export async function detectStagedProvidersOfHeldImporters(
   const heldQueue = [...new Set(deps.heldImporters)].filter(isScannableCandidate);
   if (stagedFiles.length === 0 || heldQueue.length === 0) return [];
 
-  const stagedByModule = new Map<string, string[]>();
-  for (const path of stagedFiles) {
-    const key = normalizeModulePath(path);
-    const paths = stagedByModule.get(key) ?? [];
-    paths.push(path);
-    stagedByModule.set(key, paths);
-  }
-
+  const heldSet = new Set(heldQueue);
   const headCache = new Map<string, Promise<string | null>>();
   const indexCache = new Map<string, Promise<string | null>>();
   const readHeadText = (path: string): Promise<string | null> => {
@@ -520,6 +513,47 @@ export async function detectStagedProvidersOfHeldImporters(
     }
     return pending;
   };
+
+  // Most staged edits preserve their export surface. Prove that first, over the
+  // staged providers only: reading every held consumer through a separate Git
+  // dispatch can otherwise occupy an entire fire without finding an API removal.
+  // Use the same surface comparison as the binding check below, including star
+  // re-exports. Unknown reads retain this guard's existing fail-open behavior.
+  type ProviderSurface = { before: ExportSurface; after: ExportSurface };
+  const providerSurfaces = new Map<string, Promise<ProviderSurface | null>>();
+  const readProviderSurface = (path: string): Promise<ProviderSurface | null> => {
+    let pending = providerSurfaces.get(path);
+    if (!pending) {
+      pending = (async () => {
+        const [beforeText, afterText] = await Promise.all([readHeadText(path), readIndexText(path)]);
+        if (beforeText === null || afterText === null) return null;
+        const before = extractExportSurface(beforeText);
+        const after = extractExportSurface(afterText);
+        return removedConsumedExports(['*'], before, after).length > 0 ? { before, after } : null;
+      })();
+      providerSurfaces.set(path, pending);
+    }
+    return pending;
+  };
+  // When consumers are the smaller population, retain the lazy provider lookup:
+  // one held file must not cause HEAD/index reads for thousands of unrelated edits.
+  let candidates = stagedFiles;
+  if (stagedFiles.length < heldQueue.length) {
+    const removals = new Set<string>();
+    await mapPool(stagedFiles, MAX_READ_CONCURRENCY, async path => {
+      if (!heldSet.has(path) && await readProviderSurface(path)) removals.add(path);
+    });
+    candidates = stagedFiles.filter(path => removals.has(path));
+  }
+  if (candidates.length === 0) return [];
+
+  const stagedByModule = new Map<string, string[]>();
+  for (const path of candidates) {
+    const key = normalizeModulePath(path);
+    const paths = stagedByModule.get(key) ?? [];
+    paths.push(path);
+    stagedByModule.set(key, paths);
+  }
 
   // Resolve package aliases against HEAD's manifest: the held importer is the old HEAD
   // text, so its old package export map defines where that specifier points.
@@ -548,9 +582,12 @@ export async function detectStagedProvidersOfHeldImporters(
       if (dir === '.') return;
     }
   };
-  await mapPool(stagedFiles, MAX_READ_CONCURRENCY, registerHeadPackage);
+  await mapPool(candidates, MAX_READ_CONCURRENCY, registerHeadPackage);
 
-  const heldSet = new Set(heldQueue);
+  // Keep the fixed-point walk deterministic while bounding its initial reads.
+  // When providers are the smaller population, this runs only after a removal;
+  // otherwise it reads the smaller consumer set and resolves providers lazily.
+  await mapPool(heldQueue, MAX_READ_CONCURRENCY, async path => { await readHeadText(path); });
   const offenders = new Map<string, ContentOffender>();
   for (let cursor = 0; cursor < heldQueue.length; cursor++) {
     const importer = heldQueue[cursor];
@@ -563,15 +600,12 @@ export async function detectStagedProvidersOfHeldImporters(
       const providers = [...new Set(targets.flatMap(target => stagedByModule.get(target) ?? []))];
       for (const provider of providers) {
         if (heldSet.has(provider)) continue;
-        const [headProvider, stagedProvider] = await Promise.all([
-          readHeadText(provider),
-          readIndexText(provider),
-        ]);
-        if (headProvider === null || stagedProvider === null) continue;
+        const surface = await readProviderSurface(provider);
+        if (!surface) continue;
         const removed = removedConsumedExports(
           reference.names,
-          extractExportSurface(headProvider),
-          extractExportSurface(stagedProvider),
+          surface.before,
+          surface.after,
         );
         if (removed.length === 0) continue;
         heldSet.add(provider);

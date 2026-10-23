@@ -28,7 +28,10 @@ import { hashPlanContent } from './agent-tools/plans/content-hash';
 import { listLocalRubrics } from './cupboard/rubric-store';
 import setTemplateDataTool from './agent-tools/plans/set-template-data';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  shortIdleTimeoutMs: undefined as number | undefined,
+}));
 
 const MAX_BOUNDED_LOCK_BUSY_RETRIES = 2;
 const retryBoundedLockBusy = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -63,6 +66,9 @@ vi.mock('@papercusp/db-org', async (orig) => {
     withWorkspace: async <T>(ws: string, cb: (tx: postgres.Sql) => Promise<T> | T): Promise<T> =>
       h.sql.begin(async (tx) => {
         await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+        if (h.shortIdleTimeoutMs !== undefined) {
+          await tx`SELECT set_config('idle_in_transaction_session_timeout', ${`${h.shortIdleTimeoutMs}ms`}, true)`;
+        }
         return cb(tx as unknown as postgres.Sql);
       }) as Promise<T>,
   };
@@ -3659,6 +3665,150 @@ describe('template_data persistence boundary — the set-template-data door', ()
       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
     return { ...seeded, rubric, content, subjectRevision: Number(row!.version) };
   }
+
+  it('EI-267115: reads the contract snapshot before holding either amendment plan lock', async () => {
+    const seeded = await explicitAmendmentSubject('snapshot-outside-amendment-transaction');
+    const snapshots = await import('./acceptance-bar-contract-snapshot');
+    const phases: string[] = [];
+    let lockAvailability: boolean[] = [];
+    const stop = new Error('snapshot-boundary-measured');
+    const reader = vi.spyOn(snapshots, 'readAcceptanceBarContractSnapshot').mockImplementationOnce(async () => {
+      lockAvailability = await db.adminSql.begin(async (tx) => {
+        const availability: boolean[] = [];
+        for (const slug of [seeded.rubricSlug, seeded.subject]) {
+          const [row] = await tx<{ available: boolean }[]>`SELECT pg_try_advisory_xact_lock(
+            hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
+            hashtext(${planAdvisoryLockKey(seeded.workspaceId, 'papercusp', slug)})) AS available`;
+          availability.push(row!.available);
+        }
+        return availability;
+      });
+      throw stop;
+    });
+    try {
+      await expect(rubrics.amendRubric({
+        rubricId: seeded.rubricSlug, actorId: 'snapshot-boundary-author',
+        reason: 'Measure the independent snapshot reader transaction boundary.',
+        expectedRubricRevision: seeded.rubric.revision,
+        expectedSubjectPlanRevision: seeded.subjectRevision,
+        criterion: { key: seeded.rubric.criteria[0]!.key, field: 'method', mode: 'replace',
+          text: 'Run the updated deterministic fixture.' },
+        onPhase: (phase) => phases.push(phase),
+      })).rejects.toThrow(stop);
+      expect(reader).toHaveBeenCalledOnce();
+      expect(phases.at(-1)).toBe('acceptance-contract-snapshot');
+      expect(lockAvailability).toEqual([true, true]);
+    } finally {
+      reader.mockRestore();
+    }
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.rubric.revision);
+  });
+
+  it('EI-267115: survives a real PostgreSQL idle-transaction timeout during independent snapshot reads', async () => {
+    const seeded = await explicitAmendmentSubject('snapshot-idle-timeout');
+    const amendment = {
+      rubricId: seeded.rubricSlug, actorId: 'snapshot-idle-author',
+      reason: 'Keep independent snapshot work outside the guarded amendment transaction.',
+      expectedRubricRevision: seeded.rubric.revision,
+      expectedSubjectPlanRevision: seeded.subjectRevision,
+      criterion: { key: seeded.rubric.criteria[0]!.key, field: 'method' as const, mode: 'replace' as const,
+        text: 'Run the updated deterministic idle-timeout fixture.' },
+    };
+    const approvalRef = await postApproval(amendment);
+    // Calibrate the failure mechanism on the real server, independent of the
+    // amender. This fixture changes only its own transaction-local setting.
+    await expect(db.adminSql.begin(async (tx) => {
+      await tx`SELECT set_config('idle_in_transaction_session_timeout', '1000ms', true)`;
+      await db.adminSql`SELECT pg_sleep(2)`;
+      await tx`SELECT 1`;
+    })).rejects.toThrow(/CONNECTION_CLOSED|idle-in-transaction timeout/i);
+
+    const snapshots = await import('./acceptance-bar-contract-snapshot');
+    const originalRead = snapshots.readAcceptanceBarContractSnapshot;
+    const reader = vi.spyOn(snapshots, 'readAcceptanceBarContractSnapshot').mockImplementationOnce(async (...args) => {
+      try {
+        const snapshot = await originalRead(...args);
+        await db.adminSql`SELECT pg_sleep(2)`;
+        return snapshot;
+      } finally {
+        // With preparation outside the transaction the subsequent write uses
+        // its normal production guard; never widen that guard to pass the test.
+        h.shortIdleTimeoutMs = undefined;
+      }
+    });
+    h.shortIdleTimeoutMs = 1000;
+    try {
+      const after = (await rubrics.amendRubric({ ...amendment, approvalRef }))!;
+      expect(reader).toHaveBeenCalledOnce();
+      expect(after.revision).toBe(seeded.rubric.revision! + 1);
+      expect(after.criteria[0]!.method).toBe(amendment.criterion.text);
+      const [subject] = await db.adminSql<{ version: number }[]>`SELECT version
+        FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+          AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+      expect(Number(subject!.version)).toBe(seeded.subjectRevision + 1);
+    } finally {
+      h.shortIdleTimeoutMs = undefined;
+      reader.mockRestore();
+    }
+  });
+
+  it.each(['subject', 'rubric', 'clause', 'item', 'composition'] as const)(
+    'EI-267115: refuses a stale %s source after independent snapshot preparation without amendment writes', async (source) => {
+      const seeded = await explicitAmendmentSubject(`snapshot-race-${source}`);
+      const composition = source === 'composition'
+        ? (await rubrics.proposeRubric({ rubricId: 'snapshot-race-parent', characteristic: 'snapshot-race-parent',
+            title: 'Reusable snapshot parent', criteria: sampleCriteria, by: 'snapshot-parent-author' })).rubricId
+        : undefined;
+      const snapshots = await import('./acceptance-bar-contract-snapshot');
+      const originalRead = snapshots.readAcceptanceBarContractSnapshot;
+      let sourcesAfterRace: unknown;
+      const readPlans = () => db.adminSql`SELECT plan_slug, content, content_hash, version, template_data
+        FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+          AND harness_slug='papercusp' AND plan_slug=ANY(${[seeded.subject, seeded.rubricSlug]}::text[])
+        ORDER BY plan_slug`;
+      const reader = vi.spyOn(snapshots, 'readAcceptanceBarContractSnapshot').mockImplementationOnce(async (...args) => {
+        const snapshot = await originalRead(...args);
+        if (source === 'subject' || source === 'rubric') {
+          const slug = source === 'subject' ? seeded.subject : seeded.rubricSlug;
+          await db.adminSql`UPDATE harness_shared.harness_plans SET version=version+1
+            WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${slug}`;
+        } else if (source === 'clause') {
+          const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+          const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
+          const clause = (await listSpecClauses(scope))[0]!;
+          const changed = await setSpecClause({ ...clause, ...scope, expectedRevision: clause.revision,
+            behavior: `${clause.behavior} Concurrent source change.`, actorId: 'snapshot-race-author' });
+          expect(changed.status).toBe('revised');
+        } else if (source === 'item') {
+          await db.adminSql`UPDATE harness_shared.plan_items SET status='dropped'
+            WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+              AND plan_slug=${seeded.subject} AND item_id='P-001'`;
+        } else {
+          await db.adminSql`UPDATE harness_shared.harness_plans SET version=version+1
+            WHERE workspace_id=${seeded.workspaceId} AND plan_slug=${composition!}`;
+        }
+        sourcesAfterRace = [...await readPlans()];
+        return snapshot;
+      });
+      // A deliberately regressed transaction boundary must fail promptly:
+      // otherwise its independent UPDATE can wait behind its own plan lock
+      // until Vitest times out and strands the following fixture cleanup.
+      h.shortIdleTimeoutMs = 1000;
+      try {
+        await expect(rubrics.amendRubric({ rubricId: seeded.rubricSlug, actorId: 'snapshot-race-author',
+          reason: 'Revalidate every governing source after independent reads.',
+          ...(composition ? { composes: [composition] } : {}),
+          criterion: { key: seeded.rubric.criteria[0]!.key, field: 'method', mode: 'replace',
+            text: 'Run the updated deterministic fixture.' },
+        })).rejects.toThrow('acceptance_bar_amendment_revision_conflict');
+        expect(reader).toHaveBeenCalledOnce();
+      } finally {
+        h.shortIdleTimeoutMs = undefined;
+        reader.mockRestore();
+      }
+      expect([...await readPlans()]).toEqual(sourcesAfterRace);
+    },
+  );
 
   it('EI-261580: persists a provenance-only amendment with its authenticated authority', async () => {
     const seeded = await explicitAmendmentSubject('provenance-only-amendment-subject');

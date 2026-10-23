@@ -1396,9 +1396,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     });
 
   it.each([
-    ['spawned', 'repo'], ['pending', 'repo'], ['spawned', 'data'], ['pending', 'data'],
-  ] as const)('terminal task close cleans a real SIGKILL with %s enrollment in %s scratch and preserves peers', async (enrollment, scratchLocation) => {
-    const label = enrollment + '-' + scratchLocation;
+    ['bash-job', 'spawned', 'repo'], ['bash-job', 'pending', 'repo'],
+    ['bash-job', 'spawned', 'data'], ['bash-job', 'pending', 'data'],
+    ['test-run', 'spawned', 'repo'], ['test-run', 'pending', 'repo'],
+    ['test-run', 'spawned', 'data'], ['test-run', 'pending', 'data'],
+  ] as const)('terminal %s close cleans a real SIGKILL with %s enrollment in %s scratch and preserves peers', async (taskClass, enrollment, scratchLocation) => {
+    const label = taskClass + '-' + enrollment + '-' + scratchLocation;
     const fixture = makeSuperproject(join(tmp, 'verifier-command-killed-' + label));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
@@ -1453,17 +1456,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const link = join(scratch, 'verifier-command-link-' + label);
       cleanupPaths.push(link);
       symlinkSync(peer, link, 'dir');
-      const scopeUnit = 'pc-verifierkillfixture.service';
-      const cgroupPath = '/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/' + scopeUnit;
+      const scopeUnit = 'pc-verifierkillfixture.' + (taskClass === 'test-run' ? 'scope' : 'service');
+      const classSlice = taskClass === 'test-run' ? 'papercusp-test.slice/papercusp-test-run.slice/'
+        : 'papercusp-bash.slice/papercusp-bash-job.slice/';
+      const cgroupPath = '/papercusp.slice/' + classSlice + scopeUnit;
       // Model the payload's kernel membership independently of the asynchronous
       // markSpawned write. The real killed process above supplies the death proof.
       const ownedReceipt = { ...receipt, cgroupPath };
       const row = { task_id: taskId, workspace_id: 'fixture-workspace', root_task_id: taskId,
-        class: 'bash-job', cwd: fixture.repo, confined: enrollment === 'spawned',
+        class: taskClass, cwd: fixture.repo, confined: enrollment === 'spawned',
         state: enrollment === 'spawned' ? 'running' : 'pending', scope_unit: scopeUnit,
         cgroup_path: enrollment === 'spawned' ? cgroupPath : null,
         argv: [], launched_by: 'fixture', ended_at: null };
-      const cleanupRow = { taskId, class: 'bash-job', confined: true, cwd: fixture.repo,
+      const cleanupRow = { taskId, class: taskClass, confined: true, cwd: fixture.repo,
         scopeUnit, cgroupPath } as TaskRow;
       for (const changed of [{ taskId: 'other-task' }, { confined: false },
         { scopeUnit: 'wrong-scope.service' }, { cgroupPath: null }]) {
@@ -1502,7 +1507,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(existsSync(peer)).toBe(true);
       expect(existsSync(live)).toBe(true);
       expect(existsSync(link)).toBe(true);
-      await cleanupEndedVerifierDirectories({ taskId, class: 'bash-job', confined: true,
+      await cleanupEndedVerifierDirectories({ taskId, class: taskClass, confined: true,
         cwd: fixture.repo, scopeUnit: row.scope_unit, cgroupPath: row.cgroup_path } as TaskRow);
       expect(existsSync(peer)).toBe(true);
     } finally {

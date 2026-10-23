@@ -19,9 +19,77 @@ import { mapWithConcurrency } from '../../gym/concurrency';
 
 export const FLEET_CAMPAIGN_RECENT_ROW_CAP = 12;
 export const FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY = 4;
+export const FLEET_CAMPAIGN_SLOW_AXIS_LOG_THRESHOLD_MS = 250;
 
-export function runFleetCampaignAxisReads<T>(reads: readonly (() => Promise<T>)[]): Promise<T[]> {
-  return mapWithConcurrency(reads, FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY, (read) => read());
+export type FleetCampaignTimingAxis =
+  | 'everMembers'
+  | 'membership'
+  | 'issues'
+  | 'gateEvents'
+  | 'speaking'
+  | 'claims'
+  | 'terminals'
+  | 'jobs'
+  | 'corrections';
+
+const FLEET_CAMPAIGN_TIMING_AXES: readonly FleetCampaignTimingAxis[] = [
+  'everMembers', 'membership', 'issues', 'gateEvents', 'speaking', 'claims', 'terminals', 'jobs', 'corrections',
+];
+
+interface FleetCampaignTimingOptions {
+  correlationId?: string;
+  onAxisTiming?: (axis: FleetCampaignTimingAxis, elapsedMs: number) => void;
+}
+
+interface TimedFleetCampaignRead<T> {
+  axis: FleetCampaignTimingAxis;
+  value: T;
+  elapsedMs: number;
+}
+
+function logSlowFleetCampaignAxis(
+  axis: FleetCampaignTimingAxis,
+  elapsedMs: number,
+  correlationId?: string,
+  outcome: 'resolved' | 'rejected' = 'resolved',
+): void {
+  if (!correlationId || elapsedMs < FLEET_CAMPAIGN_SLOW_AXIS_LOG_THRESHOLD_MS) return;
+  console.warn(`[fleet-campaign-axis-timing] ${JSON.stringify({
+    correlationId,
+    axis,
+    elapsedMs,
+    thresholdMs: FLEET_CAMPAIGN_SLOW_AXIS_LOG_THRESHOLD_MS,
+    outcome,
+  })}`);
+}
+
+async function timeFleetCampaignAxisRead<T>(
+  axis: FleetCampaignTimingAxis,
+  read: () => Promise<T>,
+  options: FleetCampaignTimingOptions = {},
+): Promise<TimedFleetCampaignRead<T>> {
+  const startedAt = Date.now();
+  try {
+    const value = await read();
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    logSlowFleetCampaignAxis(axis, elapsedMs, options.correlationId);
+    try { options.onAxisTiming?.(axis, elapsedMs); } catch { /* diagnostics must not fail a campaign read */ }
+    return { axis, value, elapsedMs };
+  } catch (error) {
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    logSlowFleetCampaignAxis(axis, elapsedMs, options.correlationId, 'rejected');
+    try { options.onAxisTiming?.(axis, elapsedMs); } catch { /* diagnostics must not fail a campaign read */ }
+    throw error;
+  }
+}
+
+export function runFleetCampaignAxisReads<T>(
+  reads: readonly { axis: FleetCampaignTimingAxis; read: () => Promise<T> }[],
+  options: FleetCampaignTimingOptions = {},
+): Promise<TimedFleetCampaignRead<T>[]> {
+  return mapWithConcurrency(reads, FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY, ({ axis, read }) =>
+    timeFleetCampaignAxisRead(axis, read, options),
+  );
 }
 
 export interface CampaignAxis<T> {
@@ -61,6 +129,8 @@ export interface FleetCampaign {
     jobs: CampaignAxis<unknown>;
     corrections: CampaignAxis<unknown>;
   };
+  /** Per-axis elapsed wall-clock time; slow axes also emit a correlated log row. */
+  readTimingsMs: Record<FleetCampaignTimingAxis, number>;
 }
 
 type FleetCampaignMemberRead = {
@@ -201,6 +271,9 @@ export async function readFleetCampaign(
     fleetCreatedAtMs: number;
     since?: string | null;
     harnessSlug?: string | null;
+    correlationId?: string;
+    signal?: AbortSignal;
+    onAxisTiming?: FleetCampaignTimingOptions['onAxisTiming'];
   },
   sqlOverride?: Sql,
 ): Promise<FleetCampaign> {
@@ -215,6 +288,27 @@ export async function readFleetCampaign(
   const eventWriter = 'harness_shared.event_key_fires';
   const jobWriter = 'harness_shared.task_ledger';
   const correctionWriter = 'harness_shared.coord_event_log.superseded_*';
+  const axisTimingsMs: Partial<Record<FleetCampaignTimingAxis, number>> = {};
+  const timingOptions: FleetCampaignTimingOptions = {
+    correlationId: input.correlationId,
+    onAxisTiming: (axis, elapsedMs) => {
+      axisTimingsMs[axis] = elapsedMs;
+      try { input.onAxisTiming?.(axis, elapsedMs); } catch { /* diagnostics must not fail a campaign read */ }
+    },
+  };
+  const reportTimedOutAxes = () => {
+    if (!input.correlationId) return;
+    const pendingAxes = FLEET_CAMPAIGN_TIMING_AXES.filter((axis) => axisTimingsMs[axis] === undefined);
+    const signalReason = input.signal?.reason;
+    console.warn(`[fleet-campaign-timeout-diagnostic] ${JSON.stringify({
+      correlationId: input.correlationId,
+      reason: signalReason instanceof Error ? signalReason.message : String(signalReason ?? 'aborted'),
+      completedAxes: axisTimingsMs,
+      pendingAxes,
+    })}`);
+  };
+  if (input.signal?.aborted) reportTimedOutAxes();
+  else input.signal?.addEventListener('abort', reportTimedOutAxes, { once: true });
 
   const readMembers = async (): Promise<FleetCampaignMemberRead> => {
     let members: Set<string> | null = null;
@@ -738,19 +832,20 @@ export async function readFleetCampaign(
     return corrections;
   };
 
-  const [memberResult, membership, issues, gateEvents] = await Promise.all([
-    readMembers(),
-    readMembership(),
-    readIssues(),
-    readGateEvents(),
+  const [memberResultRead, membershipRead, issuesRead, gateEventsRead] = await Promise.all([
+    timeFleetCampaignAxisRead('everMembers', readMembers, timingOptions),
+    timeFleetCampaignAxisRead('membership', readMembership, timingOptions),
+    timeFleetCampaignAxisRead('issues', readIssues, timingOptions),
+    timeFleetCampaignAxisRead('gateEvents', readGateEvents, timingOptions),
   ]);
-  const [speaking, claims, terminals, jobs, corrections] = await runFleetCampaignAxisReads([
-    () => readSpeaking(memberResult),
-    () => readClaims(memberResult),
-    () => readTerminals(memberResult),
-    () => readJobs(memberResult),
-    () => readCorrections(memberResult),
-  ]);
+  const memberResult = memberResultRead.value;
+  const [speakingRead, claimsRead, terminalsRead, jobsRead, correctionsRead] = await runFleetCampaignAxisReads([
+    { axis: 'speaking', read: () => readSpeaking(memberResult) },
+    { axis: 'claims', read: () => readClaims(memberResult) },
+    { axis: 'terminals', read: () => readTerminals(memberResult) },
+    { axis: 'jobs', read: () => readJobs(memberResult) },
+    { axis: 'corrections', read: () => readCorrections(memberResult) },
+  ], timingOptions);
 
   return {
     boundary,
@@ -760,6 +855,26 @@ export async function readFleetCampaign(
       writer: membershipWriter,
       ...(memberResult.memberReason ? { reason: memberResult.memberReason } : {}),
     },
-    axes: { membership, speaking, claims, terminals, issues, gateEvents, jobs, corrections },
+    axes: {
+      membership: membershipRead.value,
+      speaking: speakingRead.value,
+      claims: claimsRead.value,
+      terminals: terminalsRead.value,
+      issues: issuesRead.value,
+      gateEvents: gateEventsRead.value,
+      jobs: jobsRead.value,
+      corrections: correctionsRead.value,
+    },
+    readTimingsMs: {
+      everMembers: memberResultRead.elapsedMs,
+      membership: membershipRead.elapsedMs,
+      issues: issuesRead.elapsedMs,
+      gateEvents: gateEventsRead.elapsedMs,
+      speaking: speakingRead.elapsedMs,
+      claims: claimsRead.elapsedMs,
+      terminals: terminalsRead.elapsedMs,
+      jobs: jobsRead.elapsedMs,
+      corrections: correctionsRead.elapsedMs,
+    },
   };
 }

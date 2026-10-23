@@ -1,13 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { findBoxIdentityPaths, findOwnerNameLeaks } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
-import { evaluateToolDeliveryRuns, toolDeliveryExperiment, TOOL_DELIVERY_ARMS, TOOL_DELIVERY_SCENARIOS,
+import { evaluateToolDeliveryRuns, measureToolDeliveryAcceptance, verifyToolDeliverySourceCustody, validateToolDeliveryBatchReceipt,
+  toolDeliveryExperiment, TOOL_DELIVERY_ARMS, TOOL_DELIVERY_SCENARIOS,
   type ToolDeliveryRun, type ToolDeliveryExperiment } from './tool-delivery-acceptance';
 import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { getRegisteredInstrument } from './rubric-instrument-registry';
 import { resolveScorecardInstrumentSnapshots } from './scorecards';
 import type { Rubric } from './rubrics';
+
+const ledger = vi.hoisted(() => ({ sql: vi.fn() }));
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(), getOrgPg: () => ledger,
+}));
 
 const schemas = new Map([['work_items:list', { type: 'object', properties: { limit: { type: 'integer', minimum: 1 } }, additionalProperties: false }]]);
 function fixture(): ToolDeliveryRun[] {
@@ -26,6 +32,8 @@ function candidateFixture() {
     manifestContract: { provider: 'codex', systemSha256: hash('same prompt'), sutModel: 'sut', judgeModel: 'judge',
       scenarioHashes: Object.fromEntries(TOOL_DELIVERY_SCENARIOS.map(scenario => [scenario, `hash-${scenario}`])),
       canonicalBySanitized: [['work_items__list', 'work_items:list']], fullDefinitions: full, compactDefinitions: compact } };
+  Object.assign(experiment, { executionContract: { registeredAt: '2026-10-21T15:00:00Z',
+    ...candidatePreregistration.configuration } });
   const rows = fixture().map(row => {
     const candidate = row.variant === TOOL_DELIVERY_ARMS.compactArm;
     const manifest = (responseIndex: number) => {
@@ -40,7 +48,41 @@ function candidateFixture() {
       raw_events: [manifest(0), { name: 'tool_call', data: { name: 'work_items:list', input: { limit: 2 } } },
         manifest(1), { name: 'done', data: {} }] };
   });
-  return { experiment, rows };
+  const ordered = candidatePreregistration.configuration.armOrder.flatMap(block => block.arms.flatMap(arm =>
+    rows.filter(row => row.scenario_id === block.scenario && row.variant === (arm === 'compact' ? arms.compactArm : arms.fullArm))));
+  ordered.forEach((row, i) => Object.assign(row, { started_at: new Date(Date.parse('2026-10-22T19:00:00Z') + i * 2000),
+    finished_at: new Date(Date.parse('2026-10-22T19:00:01Z') + i * 2000), matrix_index: i % 3,
+    matrix_group_id: `${row.scenario_id}:${row.variant}` }));
+  return { experiment, rows: ordered };
+}
+function custodyFixture() {
+  const registration = structuredClone(candidatePreregistration);
+  const sources = new Map<string, Buffer>();
+  for (const path of Object.keys(registration.sourcePins.files)) {
+    const bytes = Buffer.from(`pinned source: ${path}`); sources.set(path, bytes);
+    (registration.sourcePins.files as Record<string, string>)[path] = createHash('sha256').update(bytes).digest('hex');
+  }
+  for (const [scenario, path] of Object.entries(registration.sourcePins.scenarioPaths)) {
+    const bytes = Buffer.from(`scenario: ${scenario}`); sources.set(path, bytes);
+    (registration.experiment.manifestContract.scenarioHashes as Record<string, string>)[scenario] = createHash('sha256').update(bytes).digest('hex');
+  }
+  const prompt = 'Synthetic private prompt';
+  const promptSha = createHash('sha256').update(prompt).digest('hex');
+  registration.experiment.manifestContract.systemSha256 = hash(prompt);
+  registration.variants.compact.systemPromptTextSha256 = registration.variants.full.systemPromptTextSha256 = promptSha;
+  const frozen = structuredClone(registration);
+  for (const arm of ['compact', 'full'] as const) Object.assign(frozen.variants[arm].configDelta, { systemPromptText: prompt });
+  const privateCapture = Buffer.from(JSON.stringify(frozen));
+  registration.capture.privateCapture.originalSha256 = createHash('sha256').update(privateCapture).digest('hex');
+  const oraclePath = 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts';
+  sources.set(oraclePath, Buffer.from('pinned oracle'));
+  const amendment = { decisionRef: 'deterministic-tool-definition-delivery-2026-09-21#D-999', registeredAt: '2026-10-22T18:00:00Z',
+    sourceReplacements: { 'packages/operator-core/lib/tool-delivery-acceptance.ts': {
+      originalSha256: registration.sourcePins.files['packages/operator-core/lib/tool-delivery-acceptance.ts'],
+      sha256: registration.sourcePins.files['packages/operator-core/lib/tool-delivery-acceptance.ts'],
+    } }, addedFiles: { [oraclePath]: createHash('sha256').update(sources.get(oraclePath)!).digest('hex') } };
+  Object.assign(registration, { measurementAmendment: amendment });
+  return { registration, privateCapture, buildSha: '0123456789abcdef', readSource: (path: string, _ref?: string) => sources.get(path)!, sources };
 }
 describe('tool-delivery acceptance instruments', () => {
   it('ships a portable preregistration while retaining the exact private prompt hash', () => {
@@ -62,6 +104,47 @@ describe('tool-delivery acceptance instruments', () => {
     expect(result.powered).toEqual(TOOL_DELIVERY_SCENARIOS);
     expect(result.compactAllPassed).toEqual(TOOL_DELIVERY_SCENARIOS);
     expect(result.runIds).toHaveLength(30);
+  });
+  it('verifies immutable private treatment and fails closed on missing, altered or unregistered source custody', () => {
+    expect(verifyToolDeliverySourceCustody(custodyFixture()).verified).toBe(true);
+    const mutations: Array<(input: ReturnType<typeof custodyFixture>) => void> = [
+      input => { input.privateCapture = Buffer.from('altered private original'); },
+      input => { input.registration.experiment.manifestContract.systemSha256 = 'changed'; },
+      input => { input.registration.configuration.armOrder.reverse(); },
+      input => { input.registration.sourcePins.head = 'different'; },
+      input => { input.sources.set('packages/operator-core/lib/tool-delivery-acceptance.ts', Buffer.from('unregistered repair')); },
+      input => { input.readSource = (path, ref) => ref === input.buildSha ? Buffer.from('different loaded build') : input.sources.get(path)!; },
+      input => { input.buildSha = ''; },
+      input => { input.readSource = () => { throw new Error('missing'); }; },
+      input => { delete (input.registration as any).measurementAmendment; },
+      input => { (input.registration as any).measurementAmendment.sourceReplacements['packages/operator-core/lib/llm-testing/targets/su.ts'] = {
+        originalSha256: input.registration.sourcePins.files['packages/operator-core/lib/llm-testing/targets/su.ts'], sha256: 'changed treatment' }; },
+    ];
+    for (const mutate of mutations) {
+      const input = custodyFixture(); mutate(input);
+      expect(verifyToolDeliverySourceCustody(input).verified).toBe(false);
+    }
+  });
+  it('binds the complete first execution receipt and rejects earlier attempts, omissions and substituted rows', () => {
+    const { rows } = candidateFixture();
+    const registration = custodyFixture().registration;
+    const candidateArms = { compactArm: 'preregistered-candidate', fullArm: 'preregistered-control' };
+    rows.forEach(row => { row.variant = row.variant === candidateArms.compactArm ? registration.experiment.arms.compactArm : registration.experiment.arms.fullArm; });
+    const started = { at: '2026-10-22T18:59:00Z', experimentId: registration.experiment.id,
+      privateSha256: registration.capture.privateCapture.originalSha256 };
+    const receipt = registration.configuration.armOrder.flatMap(block => block.arms.map(arm => {
+      const variantId = arm === 'compact' ? registration.experiment.arms.compactArm : registration.experiment.arms.fullArm;
+      const subset = rows.filter(row => row.scenario_id === block.scenario && row.variant === variantId);
+      return { scenario: block.scenario, arm, variantId, ids: subset.map(row => row.id), statuses: subset.map(row => row.status) };
+    }));
+    expect(validateToolDeliveryBatchReceipt(rows, started, receipt, registration)).toBeUndefined();
+    for (const [marker, records] of [
+      [{ ...started, at: '2026-10-22T20:00:00Z' }, receipt],
+      [{ ...started, at: '2026-10-22T17:00:00Z' }, receipt],
+      [{ ...started, privateSha256: 'changed' }, receipt],
+      [started, receipt.slice(1)],
+      [started, [{ ...receipt[0]!, ids: ['replacement'] }, ...receipt.slice(1)]],
+    ]) expect(validateToolDeliveryBatchReceipt(rows, marker, records, registration)).toBeTypeOf('string');
   });
   it('cannot pass a short, errored, asymmetric, duplicated, or model-confounded batch', () => {
     const errored = fixture(); errored[0]!.status = 'errored';
@@ -126,6 +209,25 @@ describe('tool-delivery acceptance instruments', () => {
     rows[0]!.status = 'failed';
     expect(evaluateToolDeliveryRuns(rows, schemas, experiment).comprehension.verdict).toBe('fail');
   });
+  it('enforces the preregistered chronological blocks, registration anchor and unretried matrix indices', () => {
+    const mutations: Array<(rows: ToolDeliveryRun[], experiment: ToolDeliveryExperiment) => void> = [
+      rows => { Object.assign(rows[0]!, { started_at: '2026-10-20T00:00:00Z' }); },
+      rows => { const first = { ...rows[0]! }; Object.assign(rows[0]!, { started_at: (rows[3] as any).started_at,
+        finished_at: (rows[3] as any).finished_at }); Object.assign(rows[3]!, { started_at: (first as any).started_at,
+        finished_at: (first as any).finished_at }); },
+      rows => { Object.assign(rows[1]!, { matrix_index: 0 }); },
+      rows => { Object.assign(rows[1]!, { matrix_group_id: 'retry-group' }); },
+      rows => { Object.assign(rows[1]!, { started_at: (rows[0] as any).started_at }); },
+      rows => { Object.assign(rows[1]!, { finished_at: null }); },
+      (_rows, experiment) => { delete (experiment as any).executionContract; },
+    ];
+    for (const mutate of mutations) {
+      const { rows, experiment } = candidateFixture(); mutate(rows, experiment);
+      const result = evaluateToolDeliveryRuns(rows, schemas, experiment);
+      expect(result.comprehension.verdict, result.comprehension.reason).toBe('unknown');
+      expect(result.invalidArguments.verdict).toBe('unknown');
+    }
+  });
   it('detects a compact deficit even when the strict all-replications rule cannot fire', () => {
     const rows = fixture(); rows[0]!.status = 'failed'; rows[3]!.status = 'failed'; rows[1]!.status = 'failed';
     const result = evaluateToolDeliveryRuns(rows, schemas);
@@ -136,6 +238,36 @@ describe('tool-delivery acceptance instruments', () => {
     expect(evaluateToolDeliveryRuns(fixture().map(r => ({ ...r, status: 'failed' })), schemas).comprehension.verdict).toBe('unknown');
     expect(evaluateToolDeliveryRuns(fixture().map(r => ({ ...r, transcript_norm_json: [] })), schemas).invalidArguments.verdict).toBe('unknown');
     expect(evaluateToolDeliveryRuns(fixture(), new Map()).invalidArguments.verdict).toBe('unknown');
+  });
+  it('refuses one judged call per arm across an otherwise complete thirty-run batch', () => {
+    const rows = fixture();
+    for (const row of rows) if (row.scenario_id !== TOOL_DELIVERY_SCENARIOS[0]) row.transcript_norm_json = [];
+    for (const i of [1, 2, 4, 5]) rows[i]!.transcript_norm_json = [];
+    const result = evaluateToolDeliveryRuns(rows, schemas);
+    expect(result.comprehension.verdict).toBe('pass');
+    expect(result.invalidArguments.verdict).toBe('unknown');
+  });
+  it('requires judged coverage in every scenario and arm, not merely calls with uncompilable schemas', () => {
+    const rows = fixture();
+    for (const row of rows.filter(r => r.scenario_id === TOOL_DELIVERY_SCENARIOS[4] && r.variant === TOOL_DELIVERY_ARMS.fullArm)) {
+      row.transcript_norm_json = [{ toolCalls: [{ name: 'uncompilable', input: {} }] }];
+    }
+    const result = evaluateToolDeliveryRuns(rows, new Map<string, Record<string, unknown>>([...schemas, ['uncompilable', { $ref: 'missing-schema' }]]));
+    expect(result.invalidArguments.verdict).toBe('unknown');
+    expect(result.oracle?.scenarioCoverage).toContainEqual({ scenario: TOOL_DELIVERY_SCENARIOS[4], arm: TOOL_DELIVERY_ARMS.fullArm,
+      calls: 3, judged: 0, unmeasured: 3 });
+  });
+  it('queries the entire candidate population so a narrow window cannot erase an earlier errored attempt', async () => {
+    const extra = { ...fixture()[0]!, id: 'earlier-error', status: 'errored' };
+    ledger.sql.mockImplementation(async (strings: TemplateStringsArray) => {
+      // A time-constrained SQL query would hide this adverse attempt.
+      return strings.join('').includes('started_at >=') ? [] : [extra];
+    });
+    const result = await measureToolDeliveryAcceptance({ workspaceId: 'papercusp-workspace',
+      windowStart: '2026-10-22T20:00:00Z', windowEnd: '2026-10-22T21:00:00Z', experimentId: 'session-tool-delivery-full-after-use-20261021' });
+    expect(ledger.sql.mock.calls.at(-1)![0].join('')).not.toContain('started_at >=');
+    expect(result.unmeasuredRunIds).toContain('earlier-error');
+    expect(result.comprehension.verdict).toBe('unknown');
   });
   it('fails a compact-only malformed-call class while retaining a clean comprehension reading', () => {
     const rows = fixture(); rows[0]!.transcript_norm_json = [{ toolCalls: [{ name: 'work_items:list', input: { limit: -1 } }] }];

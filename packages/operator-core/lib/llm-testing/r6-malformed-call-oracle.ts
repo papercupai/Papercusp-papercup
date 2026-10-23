@@ -93,6 +93,8 @@ export type R6Verdict = {
   callCounts: Record<string, number>;
   /** Calls the oracle could NOT judge, per arm — a ceiling on power, never a class. */
   unmeasuredCalls: Record<string, number>;
+  /** Explicit denominator, including empty cells in a preregistered scenario population. */
+  scenarioCoverage: Array<{ scenario: string; arm: string; calls: number; judged: number; unmeasured: number }>;
   reason: string;
 };
 
@@ -304,18 +306,26 @@ export function r6PrimaryVerdict(
   rows: readonly OracleToolCall[],
   schemas: ReadonlyMap<string, Record<string, unknown>>,
   arms: { compactArm: string; fullArm: string },
+  requiredScenarios: readonly string[] = [],
 ): R6Verdict {
   const { perArm, callCounts, unmeasured } = classifyArms(rows, schemas, arms);
   const compact = perArm.get(arms.compactArm) ?? new Map();
   const full = perArm.get(arms.fullArm) ?? new Map();
   const onlyInCompact = [...compact.keys()].filter((cls) => !full.has(cls)).sort();
   const counts = Object.fromEntries(callCounts);
+  const scenarioCoverage = [...new Set([...requiredScenarios, ...rows.map(row => row.scenario ?? '?')])].flatMap(scenario =>
+    Object.values(arms).map(arm => {
+      const subset = rows.filter(row => (row.scenario ?? '?') === scenario && row.arm === arm);
+      const missing = subset.filter(row => validateToolCall(schemas, row.name, row.input).some(v => v.kind === UNMEASURED_KIND)).length;
+      return { scenario, arm, calls: subset.length, judged: subset.length - missing, unmeasured: missing };
+    }));
   const base = {
     onlyInCompact,
     compactClasses: [...compact.keys()].sort(),
     fullClasses: [...full.keys()].sort(),
     callCounts: counts,
     unmeasuredCalls: Object.fromEntries(unmeasured),
+    scenarioCoverage,
   };
   if (!callCounts.get(arms.compactArm) || !callCounts.get(arms.fullArm)) {
     return { ...base, verdict: 'INDETERMINATE', reason: 'one arm contributed no calls — not a pass' };
@@ -337,6 +347,9 @@ export function r6PrimaryVerdict(
       verdict: 'FAIL',
       reason: `${onlyInCompact.length} malformed-call class(es) present ONLY in the compact arm`,
     };
+  }
+  if (scenarioCoverage.some(cell => requiredScenarios.includes(cell.scenario) && cell.judged < 1)) {
+    return { ...base, verdict: 'INDETERMINATE', reason: 'at least one judged call is required in every preregistered scenario and arm' };
   }
   return {
     ...base,

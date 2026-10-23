@@ -31,6 +31,12 @@ Migration 1507 creates the `spec_conformance_state` watermark table. Each plan/w
 
 The seed script `packages/operator-core/lib/harness/routines/seed-spec-conformance-sweep-routine.ts` creates one operator-home ephemeral routine with a recurring interval and `system:spec-conformance-sweep` as its registered target. New rows are active by default; reseeding preserves an operator's existing pause. Run it only when the actual executor has the handler and migration loaded. The background host arms ephemeral rows at startup. Inspect the routine's real fire/outcome record before claiming continuous execution; a seeded row alone is insufficient.
 
+## Run one plan now
+
+Call `plans:conformance { op:'run', harness:'papercusp', slug:'<plan-slug>' }` to run one named plan through the same conformance and footprint runner. The exact plan is read in the resolved workspace/harness scope; the periodic selection cap and interval do not defer it. Only that plan runs and receives a new watermark. A missing plan or a plan without applicable requirements returns an unsuccessful result and does not fall back to a cross-plan sweep.
+
+Read `ran[].summary`, `skipped`, and `footprintProbeErrors` for the actual outcome. `ok` reports whether the runner completed, while drifting or unmeasured requirements remain explicit in the summary; it does not certify final acceptance. Confirm the serving runtime supports `op:'run'` before calling it. Existing owner-gated or no-replay acceptance restrictions still apply.
+
 ## Census and retrofit report
 
 Call `plans:conformance { op:'report', harness:'papercusp' }` for the plan census. Its requested status population determines coverage; counts are derived by `conformance-report.ts`. The report separates applicable requirements, enforced/unenforced checks, invalid contracts, and missing footprint declarations. A count does not certify passing behavior. Publish the complete retrofit Markdown through `reports:publish`, read it back with `reports:get`, and retain the report id and source path. Re-run the census to compare later editions instead of treating historical totals as current.

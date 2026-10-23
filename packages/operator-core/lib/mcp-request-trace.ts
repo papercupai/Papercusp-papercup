@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { createPhaseTracker, type PhaseTracker, type HandlerPhasesMetadata } from '@papercusp/tooldef';
 import { headersFromExtra, urlFromExtra } from '@papercusp/tooldef-mcp';
 import type { ScratchWriteProgress, ScratchWriteTimings } from './scratch-gc';
 
@@ -23,6 +24,7 @@ export type McpRequestTraceStage =
   | 'scratch_write_progress'
   | 'scratch_write_settled'
   | 'tools_list_completed'
+  | 'tools_list_pending'
   | 'proxy_response_finished'
   | 'stale_contract_rejected';
 
@@ -86,6 +88,8 @@ export interface McpRequestTraceEvent {
   preDispatchPhaseTimingsMs?: McpPreDispatchPhaseTimingsMs;
   /** The phase still awaiting when a pre-dispatch deadline fired. */
   preDispatchActivePhase?: McpPreDispatchPhaseName;
+  /** Discovery runs before tool dispatch, so it needs its own bounded phase snapshot. */
+  toolsListPhases?: HandlerPhasesMetadata | null;
   /** Per-request subphases inside the idempotency replay lookup. */
   idempotencyReplayPhaseTimingsMs?: McpReplayLookupPhaseTimingsMs;
   /** One-shot phase snapshot when a result-door scratch spill exceeds five seconds. */
@@ -190,7 +194,8 @@ type McpSessionSurfaceTraceInput = Pick<
   extra: unknown;
   sessionKey: string | null;
   sessionBaseline: McpSessionBaselineObservation;
-  servingGeneration: string;
+  servingGeneration?: string;
+  toolsListPhases?: HandlerPhasesMetadata | null;
   previousGeneration?: string;
   declaredGeneration?: string;
   phase?: McpRequestTraceEvent['phase'];
@@ -235,9 +240,40 @@ export function buildMcpSessionSurfaceTraceEvent(input: McpSessionSurfaceTraceIn
     nativeSessionCarrier: nativeHeader ? 'header' : nativeQuery ? 'query' : 'none',
     sessionBaseline: input.sessionBaseline,
     servingGeneration: input.servingGeneration,
+    ...(input.toolsListPhases ? { toolsListPhases: input.toolsListPhases } : {}),
     ...(input.previousGeneration ? { previousGeneration: input.previousGeneration } : {}),
     ...(input.declaredGeneration ? { declaredGeneration: input.declaredGeneration } : {}),
   };
+}
+
+/** Locate a discovery wait even when the client leaves before tools/list completes. */
+export async function withMcpToolsListPhaseTrace<T>(
+  extra: unknown,
+  work: (phases: PhaseTracker) => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  const traceId = resolveMcpRequestTraceId(extra);
+  const phases = createPhaseTracker({ historyCap: 32 });
+  const rawSessionKey = (extra as { sessionId?: unknown } | undefined)?.sessionId;
+  const sessionKey = typeof rawSessionKey === 'string' && rawSessionKey ? rawSessionKey : null;
+  const timer = setTimeout(() => {
+    logMcpRequestTrace(buildMcpSessionSurfaceTraceEvent({
+      traceId,
+      toolName: 'tools/list',
+      stage: 'tools_list_pending',
+      elapsedMs: Math.max(0, Date.now() - startedAt),
+      extra,
+      sessionKey,
+      sessionBaseline: 'unavailable',
+      toolsListPhases: phases.toMetadata(),
+    }));
+  }, 5_000);
+  timer.unref?.();
+  try {
+    return await work(phases);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Emit bounded, argument-free evidence with an epoch-ms clock for file-backed logs. */

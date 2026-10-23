@@ -217,7 +217,7 @@ describe.each(["driver", "joyride"] as const)("%s on the maintained React/TanSta
 });
 
 describe("Selected nonmodal Joyride highlight lifecycle", () => {
-  it("keeps the focused target visible after layout resize without scrolling another control", async () => {
+  it("keeps a focused control inside the highlighted container visible after resize without scrolling another control", async () => {
     const observers: Array<ResizeObserver & { targets: Set<Element>; callback: ResizeObserverCallback }> = [];
     vi.stubGlobal("ResizeObserver", class {
       targets = new Set<Element>();
@@ -226,7 +226,7 @@ describe("Selected nonmodal Joyride highlight lifecycle", () => {
       unobserve(target: Element) { this.targets.delete(target); }
       disconnect() { this.targets.clear(); }
     });
-    render(<><input aria-label="Resizing target" data-tutorial-target="resize" /><Button>Other control</Button>
+    render(<><div data-tutorial-target="resize"><input aria-label="Resizing target" /></div><Button>Other control</Button>
       <CloudTutorialHighlight target="[data-tutorial-target='resize']" active contextKey="workspace-a" reducedMotion /></>);
     await waitFor(() => expect(document.querySelector(".react-joyride__overlay")).not.toBeNull());
     const input = screen.getByRole("textbox", { name: "Resizing target" });
@@ -234,17 +234,18 @@ describe("Selected nonmodal Joyride highlight lifecycle", () => {
     vi.spyOn(input, "getBoundingClientRect").mockImplementation(() => bounds);
     const resize = async () => {
       await act(async () => {
-        for (const observer of observers) if (observer.targets.has(input)) {
-          observer.callback([{ target: input, contentRect: bounds } as ResizeObserverEntry], observer);
+        for (const observer of observers) if (observer.targets.has(input.parentElement!)) {
+          observer.callback([{ target: input.parentElement!, contentRect: bounds } as ResizeObserverEntry], observer);
         }
         await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
       });
     };
     input.focus();
     vi.mocked(Element.prototype.scrollIntoView).mockClear();
-    bounds = { ...bounds, top: innerHeight - 20, bottom: innerHeight + 20, width: 360 };
+    // The measured browser failure left only 0.3125px below the viewport.
+    bounds = { ...bounds, top: innerHeight - 28.28125, bottom: innerHeight + 0.3125, width: 360 };
     await resize();
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "instant", block: "nearest", inline: "nearest" });
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "instant", block: "center", inline: "nearest" });
     expect(document.activeElement).toBe(input);
 
     const other = screen.getByRole("button", { name: "Other control" });

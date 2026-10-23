@@ -48,26 +48,29 @@ export function inspectIdopP001Coverage(baseline: CoverageInput) {
   const roles = new Set(baseline.population.roles.map(({ id }) => id));
   const expected = new Set(population);
   const checked = new Set<string>();
+  const refused = new Set<string>();
   const invalid: string[] = [];
   for (const row of baseline.observations) {
     const key = `${roles.has(row.identity) ? 'role' : 'identity'}:${row.identity}`;
-    const receipt = row.status === 'launch-refused'
+    const invocation = Number.isSafeInteger(row.toolInvocationId) && Number(row.toolInvocationId) > 0;
+    const receipt = invocation && (row.status === 'launch-refused'
       ? Boolean(row.refusal?.trim())
-      : /^su-/.test(row.ownerId) && Number.isSafeInteger(row.toolInvocationId) &&
-        Number(row.toolInvocationId) > 0 && (row.status === 'observed' ||
-          (row.status === 'tool-refused' && Boolean(row.refusal?.trim())));
+      : /^su-/.test(row.ownerId) && (row.status === 'observed' ||
+          (row.status === 'tool-refused' && Boolean(row.refusal?.trim()))));
     // Activation proves a worn layer, but does not by itself prove its effective tool set.
     if (!expected.has(key) || !receipt || !Number.isFinite(Date.parse(row.observedAt))) {
       invalid.push(key);
       continue;
     }
-    checked.add(key);
+    if (row.status === 'observed') checked.add(key);
+    else refused.add(key);
   }
-  const missing = population.filter((key) => !checked.has(key));
+  const missing = population.filter((key) => !checked.has(key) && !refused.has(key));
   return {
-    complete: missing.length === 0 && invalid.length === 0 && expected.size === population.length,
+    complete: missing.length === 0 && refused.size === 0 && invalid.length === 0 && expected.size === population.length,
     population,
     checked: [...checked].sort(),
+    refused: [...refused].sort(),
     missing,
     invalid: [...new Set(invalid)].sort(),
     duplicatePopulation: population.filter((key, index) => population.indexOf(key) !== index),

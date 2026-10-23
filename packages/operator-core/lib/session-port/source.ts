@@ -11,6 +11,13 @@ import {
 
 export const MAX_SESSION_PORT_SOURCE_BYTES = 64 * 1024 * 1024;
 
+/** Reuse the request's content-free phase recorder for source I/O. */
+export interface SessionSourceDiagnostics {
+  measure<T>(phase: string, work: () => T | PromiseLike<T>): Promise<T>;
+}
+
+const directSourcePhase: SessionSourceDiagnostics['measure'] = (_phase, work) => Promise.resolve().then(work);
+
 /** Carry-respawn rotates the tracked row's native id. The latest indexed
  * owner of the exact, backend-pinned evidence incarnation is the shared guard
  * used by both the dispatcher and the session-port inspection route. */
@@ -74,8 +81,10 @@ export async function readCanonicalNativeArchive(
   key: { backend: Exclude<SessionBackend, 'claude'>; sessionId: string },
   store: SessionArchiveStore,
   maxBytes = MAX_SESSION_PORT_SOURCE_BYTES,
+  diagnostics?: SessionSourceDiagnostics,
 ): Promise<StableSource> {
-  const stamp = await store.readStamp(key.backend, key.sessionId);
+  const measure = diagnostics?.measure.bind(diagnostics) ?? directSourcePhase;
+  const stamp = await measure('port.source.archive-stamp', () => store.readStamp(key.backend, key.sessionId));
   if (!stamp) throw new Error(`canonical ${key.backend} archive not found`);
   const primary = stamp.manifest.filter((entry) =>
     nativeTranscriptName(key.backend, basename(entry.relpath), key.sessionId) &&
@@ -83,11 +92,11 @@ export async function readCanonicalNativeArchive(
   if (primary.length !== 1) throw new Error(`canonical ${key.backend} archive is ${primary.length ? 'ambiguous' : 'missing'}`);
   const manifest = primary[0]!;
   if (manifest.bytes_raw > maxBytes) throw new Error(`archive source ${manifest.bytes_raw} exceeds ${maxBytes} byte cap`);
-  const rows = await store.readFiles(key.backend, key.sessionId);
+  const rows = await measure('port.source.archive-files', () => store.readFiles(key.backend, key.sessionId));
   const row = rows.find((candidate) => candidate.relpath === manifest.relpath);
   if (!row || row.bytes_raw !== manifest.bytes_raw || row.sha256 !== manifest.sha256) throw new Error('canonical native archive manifest/file metadata mismatch');
-  const bytes = await decompressArchiveBlobBounded(row, maxBytes);
-  if (sha256Hex(bytes) !== manifest.sha256) throw new Error('canonical native archive sha mismatch');
+  const bytes = await measure('port.source.archive-decompress', () => decompressArchiveBlobBounded(row, maxBytes));
+  if (await measure('port.source.archive-hash', () => sha256Hex(bytes)) !== manifest.sha256) throw new Error('canonical native archive sha mismatch');
   return { bytes, sha256: manifest.sha256, highWaterBytes: bytes.length, completeBytes: bytes.length,
     source: 'archive-manifest', relpath: manifest.relpath };
 }
@@ -158,7 +167,9 @@ export async function readCanonicalClaudeArchive(
   key: { sessionId: string },
   store: SessionArchiveStore,
   maxBytes = MAX_SESSION_PORT_SOURCE_BYTES,
+  diagnostics?: SessionSourceDiagnostics,
 ): Promise<StableSource> {
+  const measure = diagnostics?.measure.bind(diagnostics) ?? directSourcePhase;
   // Key by (source_kind, session_id) ONLY — the same key archive-at-death WRITES.
   // This previously passed the adv row's `workspaceId` ('papercusp-workspace'),
   // which can never match: the archive ref carries no workspaceId, so every row
@@ -168,7 +179,7 @@ export async function readCanonicalClaudeArchive(
   // always threw 'canonical Claude archive not found'. Same defect as the
   // /adv/sessions/resumable `hasArchive` lookup (WI-38236); found by re-probing
   // every archive-store call site after fixing that one.
-  const stamp = await store.readStamp('claude', key.sessionId);
+  const stamp = await measure('port.source.archive-stamp', () => store.readStamp('claude', key.sessionId));
   if (!stamp) throw new Error('canonical Claude archive not found');
   const primary = stamp.manifest.filter(
     (entry) =>
@@ -178,14 +189,14 @@ export async function readCanonicalClaudeArchive(
   if (primary.length !== 1) throw new Error(`canonical Claude archive is ${primary.length ? 'ambiguous' : 'missing'}`);
   const manifest = primary[0];
   if (manifest.bytes_raw > maxBytes) throw new Error(`archive source ${manifest.bytes_raw} exceeds ${maxBytes} byte cap`);
-  const rows = await store.readFiles('claude', key.sessionId);
+  const rows = await measure('port.source.archive-files', () => store.readFiles('claude', key.sessionId));
   const row = rows.find((candidate) => candidate.relpath === manifest.relpath);
   if (!row) throw new Error('canonical Claude archive file row missing');
   if (row.bytes_raw !== manifest.bytes_raw || row.sha256 !== manifest.sha256) {
     throw new Error('canonical Claude archive manifest/file metadata mismatch');
   }
-  const raw = await decompressArchiveBlobBounded(row, maxBytes);
-  if (sha256Hex(raw) !== manifest.sha256) throw new Error('canonical Claude archive sha mismatch');
+  const raw = await measure('port.source.archive-decompress', () => decompressArchiveBlobBounded(row, maxBytes));
+  if (await measure('port.source.archive-hash', () => sha256Hex(raw)) !== manifest.sha256) throw new Error('canonical Claude archive sha mismatch');
   return {
     bytes: raw,
     sha256: manifest.sha256,

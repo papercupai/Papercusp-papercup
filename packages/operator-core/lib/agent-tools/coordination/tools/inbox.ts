@@ -1117,6 +1117,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    const internalCorrelationId = (args as typeof args & { __correlationId?: unknown }).__correlationId;
+    const correlationId =
+      typeof internalCorrelationId === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(internalCorrelationId)
+        ? internalCorrelationId
+        : null;
     // D-013 R2: agents supply no floor (the parameter is gone); only the
     // cursor-owning delivery path does.
     const deliveryFloorTs = internalDeliveryFloor(args);
@@ -1195,6 +1201,7 @@ export default defineTool({
               hasFrom: Boolean(args.from),
               directed: directedOnly,
               unansweredOnly,
+              ...(correlationId ? { correlationId } : {}),
             },
             elapsedMs: Math.max(0, Math.round(performance.now() - phaseTraceStartedAt)),
             activePhases: [...activeInboxPhases.values()],
@@ -1839,6 +1846,7 @@ export default defineTool({
               "rebootstrap-presence-snapshot",
               () => assemblePresenceSnapshot(resolved, {
                 includeDesktopEnrichment: false,
+                rebootstrapProjection: true,
                 onDiagnostic: (diagnostic) => {
                   inboxPhases.push({
                     name: `rebootstrap-presence-snapshot:${diagnostic.phase}:${diagnostic.name}`,

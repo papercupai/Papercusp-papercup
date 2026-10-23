@@ -683,6 +683,8 @@ describe('P-007: the four verdict cells', () => {
     expect(assessment!.evidence).toContain('gate.ownerBrief.remediation.signature');
     expect(assessment!.evidence).toContain('gate.ownerBrief.remediation.legs');
     expect(assessment!.evidence).toContain('gate.ownerBrief.remediation.blockedReason');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.testProgress');
+    expect(GATE_OWNER_BRIEF_CELL.shape).toContain('testProgress');
   });
 
   /** Axis 4 admits no fixture-only registration, and every one of these carries a

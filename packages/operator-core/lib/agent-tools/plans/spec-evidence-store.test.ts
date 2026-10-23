@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import * as coldEnvironment from '../../storage/cold-tier-evidence';
 import * as verificationHarness from '@papercusp/verification-harness';
+import { TREE_SCAN_MAX_REQUESTS } from '../../cpu-task-worker';
 
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
@@ -940,6 +941,51 @@ afterAll(async () => {
 });
 
 describe('repo-backed server measurement', () => {
+  it.each([false, true])('honors AST worker admission for a larger working-tree batch without weakening the census guard (broadScan=%s)', async (broadScan) => {
+    const previousRoot = h.measurementRoot;
+    const root = await mkdtemp(join(tmpdir(), 'spec-scan-admission-'));
+    try {
+      h.measurementRoot = root;
+      await Promise.all([
+        mkdir(join(root, 'src'), { recursive: true }),
+        mkdir(join(root, 'test'), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(join(root, 'src/feature.ts'), 'export const value = 1;\n'),
+        writeFile(join(root, 'test/feature.test.ts'), broadScan
+          ? "const APP_ROOTS = ['src']; function walk() { return readdir(APP_ROOTS[0]); }\n"
+          : 'expect(value).toBe(1);\n'),
+      ]);
+      const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+        sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.test.ts'] };
+      const measured = await measureRepoFilesEvidenceAtRoot(root, recipe);
+      const count = TREE_SCAN_MAX_REQUESTS + 3;
+      h.rows = Array.from({ length: count }, (_, index) => ({
+        id: 800 + index, work_item_id: 'WI-scan', plan_slug: 'plan-one', spec_id: `SPEC-scan-${index}`,
+        source_val_id: null, spec_revision: 1, current_revision: 1, spec_fingerprint: 'sha256:spec',
+        evidence_kind: 'manual', evidence_ref: `scan:${index}`, source_fingerprint: measured.sourceFingerprint,
+        test_fingerprint: measured.testFingerprint, fixture_fingerprint: null, rubric_fingerprint: null,
+        environment_fingerprint: null, coverage_evidence_ref: null, coverage_evidence_present: false,
+        test_run_id: null, test_run_present: false, details: { currentMeasurement: recipe, evidencePlane: 'tree' },
+        observed_at: '2026-10-10T00:00:00Z', created_at: '2026-10-10T00:00:00Z', created_by: 'su-test',
+        binding_fingerprint: `binding-${index}`, spec_is_current: true,
+      }));
+
+      const rows = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+
+      expect(rows).toHaveLength(count);
+      for (const row of rows) {
+        expect(row.serverMeasurement, JSON.stringify(row.serverMeasurement)).toMatchObject(broadScan
+          ? { status: 'unavailable', reason: expect.stringContaining('repo_measurement_broad_tree_scan_requires_source_globs:') }
+          : { status: 'measured' });
+        if (!broadScan) expect(row.currentness.overall).toBe('current');
+      }
+    } finally {
+      h.measurementRoot = previousRoot;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('remeasures a final package on the deployed plane without caller testimony or a live PID', async () => {
     const receiptPath = 'docs/evidence/shipment.json';
     const artifacts = await mkdtemp(join(tmpdir(), 'spec-final-package-'));
@@ -1059,7 +1105,7 @@ export const census = () => Promise.all(APP_ROOTS.map(walk));
         created_by: 'su-test', binding_fingerprint: 'tree-working-binding', spec_is_current: true,
       }];
 
-      expect(detectBroadRepoTreeScan(treeTest)).toBe(true);
+      expect(await detectBroadRepoTreeScan(treeTest)).toBe(true);
       const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
       expect(row).toHaveProperty('serverMeasurement.status', 'unavailable');
       expect(row.currentness.overall).toBe('unknown');
@@ -1165,7 +1211,7 @@ export const census = () => APP_ROOTS.map(walk);
         'packages/operator-core/lib/integrations/provider-options.ts': 'export const a = 1;\n',
         'test/census.test.ts': treeTest,
       });
-      expect(detectBroadRepoTreeScan(treeTest)).toBe(true);
+      expect(await detectBroadRepoTreeScan(treeTest)).toBe(true);
       const baseline = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, git('rev-parse', 'HEAD'));
       expect(baseline.sourceFingerprint).toMatch(/^sha256-tree-instrument-v1:/);
       h.measurementRoot = root;

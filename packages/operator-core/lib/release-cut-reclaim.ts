@@ -1290,7 +1290,6 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
     const startedAt = performance.now();
     let metadataRecords = 0, stdoutBytes = 0, lastMetadataAt: number | null = null;
     let lastMetadataPath: string | null = null;
-    let progressTimer: ReturnType<typeof setTimeout>;
     let deadlineTimer: ReturnType<typeof setTimeout>;
     if (!Number.isFinite(notAfterMs) || notAfterMs <= Date.now()) {
       reject(new Error('release-cut usage run deadline exhausted')); return;
@@ -1302,17 +1301,12 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
       failure ??= reason;
       child.kill('SIGKILL');
     };
-    const armProgress = () => {
-      clearTimeout(progressTimer);
-      progressTimer = setTimeout(() => stop('release-cut usage made no metadata progress for 10 seconds'), 10_000);
-    };
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(progressTimer); clearTimeout(deadlineTimer);
+      clearTimeout(deadlineTimer);
       if (error) reject(error); else resolve(bytes);
     };
-    armProgress();
     deadlineTimer = setTimeout(() => stop('release-cut usage run deadline exhausted'), notAfterMs - Date.now());
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -1331,9 +1325,8 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
         if (roots.includes(p)) bytes.set(p, n);
       }
       // Bound an unterminated row, not the streamed population. Partial records
-      // and stderr noise cannot renew a stuck command's inactivity deadline.
+      // and stderr noise cannot advance the last-metadata timestamp.
       if (pending.length > 64 * 1024) { stop('oversized release-cut usage record'); return; }
-      if (rows.length) armProgress();
     });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });

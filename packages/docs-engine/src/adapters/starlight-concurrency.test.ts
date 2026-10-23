@@ -12,6 +12,25 @@ afterEach(async () => {
 });
 
 describe('starlightContentAdapter concurrent cold reads', () => {
+  it('reports cold listing subphases without exposing file paths or content', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'starlight-timing-'));
+    roots.push(root);
+    await fs.writeFile(path.join(root, 'guide.md'), '# Guide\n\nprivate body');
+    const adapter = starlightContentAdapter({ contentRoot: root });
+    const events: unknown[] = [];
+
+    const pages = await adapter.listPages({ onTiming: (event) => events.push(event) });
+
+    expect(pages).toHaveLength(1);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: 'starlight', phase: 'walk', state: 'completed', count: 1 }),
+      expect.objectContaining({ component: 'starlight', phase: 'read-parse', state: 'completed', count: 1 }),
+      expect.objectContaining({ component: 'starlight', phase: 'build', state: 'completed', count: 1 }),
+    ]));
+    expect(JSON.stringify(events)).not.toContain('private body');
+    expect(JSON.stringify(events)).not.toContain(root);
+  });
+
   it('shares one in-flight content read across concurrent searches', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'starlight-concurrency-'));
     roots.push(root);

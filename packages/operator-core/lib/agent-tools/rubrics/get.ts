@@ -126,6 +126,11 @@ export default defineTool({
   ignoreSessionPayloadTier: true,
   capability: 'coord:read',
   requirePrincipal: false,
+  // This reader opens its own rubric, vetting, scorecard and plan reads. Do not
+  // retain an unused ambient workspace transaction while those reads wait for
+  // their own transactions; the idle outer transaction can consume the MCP
+  // deadline before the read finishes (see scorecards:get).
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES, 'judge'],
   args: z
     .object({

@@ -24,6 +24,14 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { z } from 'zod';
 import type { OutlinePayload } from '@papercusp/docs-engine';
 
+// These tests exercise the docs handlers, not agent-mcp's tool registration.
+// Keep the large package barrel out of the warm-up import graph so a handler
+// regression cannot be hidden behind an unrelated package bootstrap timeout.
+vi.mock('@papercusp/agent-mcp', () => ({
+  defineTool: (tool: unknown) => tool,
+  SU_ROLES: [],
+}));
+
 // --- Mock the docs-engine so no real fs/content tree is read. ----------------
 // Each engine fn returns a recognizable payload; adapter factories return an
 // opaque sentinel (handlers only pass it through to the engine fn).

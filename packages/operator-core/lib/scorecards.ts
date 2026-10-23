@@ -35,6 +35,9 @@ import {
   parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
+import { CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY } from './cold-boot-drill';
+import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY, DREAM_CONTROL_SOURCE_PLAN, measureDreamControlLiveEdition } from './dream/dream-control-live-instrument';
+import type { measureCarryDrillShipment } from './carry-drill-shipment';
 import { measureToolDeliveryAcceptance, toolDeliveryExperiment, TOOL_DELIVERY_INSTRUMENTS, TOOL_DELIVERY_PLAN } from './tool-delivery-acceptance';
 import { measureProviderPackageAcceptance, PROVIDER_PACKAGE_INSTRUMENT_KEYS, PROVIDER_PACKAGE_PLAN } from './integrations/provider-package-acceptance';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
@@ -419,6 +422,8 @@ export async function resolveScorecardInstrumentSnapshots(
     list?: typeof listScorecardPage;
     rubric?: typeof getRubric;
     now?: () => number;
+    carryDrill?: typeof measureCarryDrillShipment;
+    dreamControlLive?: typeof measureDreamControlLiveEdition;
     /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
     readArtifact?: (path: string) => Promise<string>;
     providerPackages?: typeof measureProviderPackageAcceptance;
@@ -560,6 +565,26 @@ export async function resolveScorecardInstrumentSnapshots(
       value: { resolver: key, resolverVersion: 2, reason },
       evidenceRef: 'scorecards:list:goal-mode-e2e',
     });
+    if (key === DREAM_CONTROL_LIVE_INSTRUMENT_KEY) {
+      const evidenceRef = 'spec-evidence:Dream-R4-live-edition';
+      if (subject?.kind !== 'plan' || subject.ref !== DREAM_CONTROL_SOURCE_PLAN
+        || input.rubric.subjectPlan !== subject.ref || input.rubric.subjectHarnessSlug !== 'papercusp'
+        || !subject.windowStart || !subject.windowEnd) {
+        snapshots[key] = { ...unknown('Exact Dream source plan, harness and observation window required.'), evidenceRef };
+        continue;
+      }
+      try {
+        const measurement = await (deps.dreamControlLive ?? measureDreamControlLiveEdition)({
+          workspaceId: input.rubric.workspaceId, harnessSlug: 'papercusp', planSlug: subject.ref,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+        });
+        snapshots[key] = { verdict: measurement.verdict, measuredAt, provenance: 'platform-computed', window,
+          evidenceRef, value: measurement };
+      } catch (error) {
+        snapshots[key] = { ...unknown(error instanceof Error ? error.message : String(error)), evidenceRef };
+      }
+      continue;
+    }
     if (Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS).some(instrumentKey => instrumentKey === key)) {
       const evidenceRef = 'libs/papercusp/plugins/*/{papercusp.json,README.md}';
       if (subject?.kind !== 'plan' || subject.ref !== PROVIDER_PACKAGE_PLAN || input.rubric.subjectPlan !== subject.ref ||
@@ -591,6 +616,32 @@ export async function resolveScorecardInstrumentSnapshots(
     const end = Date.parse(subject.windowEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
       snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    if (key === CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY) {
+      const selected = input.supplied?.[key]?.window;
+      const ownerId = selected?.ownerId, drillId = selected?.drillId;
+      const deploymentId = selected?.deploymentId, reportId = selected?.reportId;
+      const evidenceRef = 'session:carry-drill:ledger+owner-host+exact-native-transcript';
+      if (subject.kind !== 'plan' || input.rubric.subjectPlan !== subject.ref ||
+          !input.rubric.workspaceId || !input.rubric.subjectHarnessSlug || start >= end || end > Date.parse(measuredAt) ||
+          typeof ownerId !== 'string' || !ownerId.trim() || typeof drillId !== 'string' || !drillId.trim() ||
+          typeof deploymentId !== 'string' || typeof reportId !== 'string') {
+        snapshots[key] = { ...unknown('An exact subject plan, completed window and native ownerId/drillId selection are required.'), evidenceRef };
+        continue;
+      }
+      try {
+        const measure = deps.carryDrill ?? (await import('./carry-drill-shipment')).measureCarryDrillShipment;
+        const measurement = await measure({ ownerId, drillId, deploymentId, reportId,
+          workspaceId: input.rubric.workspaceId, harnessSlug: input.rubric.subjectHarnessSlug, planSlug: subject.ref,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+        snapshots[key] = { verdict: measurement.verdict, measuredAt, provenance: 'platform-computed',
+          evidenceRef, window: { ...window, ownerId, drillId, deploymentId, reportId },
+          value: { resolver: key, resolverVersion: 1, ...measurement,
+            unresolved: ['Independent acceptance judgment, class-wide sufficiency and older-host adoption/residue interpretation.'] } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Native drill measurement unavailable: ${String(error)}`), evidenceRef };
+      }
       continue;
     }
     const overheadCriterion = workOverheadCriterionForInstrument(key);

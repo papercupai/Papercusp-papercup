@@ -198,6 +198,8 @@ export interface CarryBrief {
   directives: OwnerDirectiveRow[];
   /** Total open directives (may exceed directives.length — the fetch is bounded). */
   directivesTotalOpen: number;
+  /** Exact own count when the bounded directive fetch omits some own rows. */
+  directivesOwnTotalOpen?: number | null;
   /** Open WALLS (P-006): owner-gated commitments as structured rows, parsed out of
    *  the loop carry-note's `## Walls` section. The brief carries them VERBATIM —
    *  they are open commitments, and prose dissolves them. */
@@ -1062,7 +1064,7 @@ export interface BuildCarryBriefOpts {
   getFleetFn?: (ownerId: string) => Promise<{ slug: string; role: string | null } | null>;
   listOpenDirectivesFn?: (
     workspaceId: string,
-  ) => Promise<{ rows: OwnerDirectiveRow[]; totalOpen: number }>;
+  ) => Promise<{ rows: OwnerDirectiveRow[]; totalOpen: number; totalOwnOpen?: number | null }>;
   /** P-002 seam: hydrate WI-/EI- ids cited in the carry note into live one-liners.
    *  Defaults to the P-008 detect→hydrate→render pipeline. */
   hydrateNoteRefsFn?: (
@@ -1528,18 +1530,12 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
       const listDirectives =
         opts.listOpenDirectivesFn ??
         (async (ws: string) => {
-          const { listOpenOwnerDirectives, countOpenOwnerDirectives, OWNER_DIRECTIVES_RENDER_MAX_ROWS } =
-            await import('./owner-directives');
+          const { loadOpenOwnerDirectives } = await import('./owner-directives');
           // Workspace-scoped, but rendered FOR this owner: rows THIS session
           // cleared off its own agenda drop out (P-008 / D-008). That is not a
           // narrowing of the survives-its-recorder rule above — the directive
           // stays open, and every other session still carries it.
-          const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql, ownerId);
-          const totalOpen =
-            rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
-              ? await countOpenOwnerDirectives(ws, opts.sql, ownerId).catch(() => rows.length)
-              : rows.length;
-          return { rows, totalOpen };
+          return loadOpenOwnerDirectives(ws, { sql: opts.sql, viewerOwnerId: ownerId });
         });
       return listDirectives(workspaceId);
     },
@@ -1736,6 +1732,7 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
 
   brief.directives = directives.rows;
   brief.directivesTotalOpen = directives.totalOpen;
+  brief.directivesOwnTotalOpen = directives.totalOwnOpen;
   brief.loop = loopRead.loop;
   brief.walls = loopRead.walls;
   if (loopRead.checks !== undefined) brief.checks = loopRead.checks;
@@ -2133,6 +2130,7 @@ export function renderCarryBriefColdExtras(
     // + orders:get pointer, block cap + "+N more").
     const block = renderOwnerDirectivesBlock(brief.directives, {
       totalOpen: brief.directivesTotalOpen,
+      totalOwnOpen: brief.directivesOwnTotalOpen,
       viewerOwnerId: brief.ownerId,
     });
     if (block) sections.push(block);
@@ -2384,6 +2382,7 @@ export function renderCarryBriefText(
       ? renderOwnerDirectivesBlock(brief.directives, {
           nowMs: now,
           totalOpen: brief.directivesTotalOpen,
+          totalOwnOpen: brief.directivesOwnTotalOpen,
           viewerOwnerId: brief.ownerId,
         })
       : null;

@@ -34,10 +34,18 @@ import type { GovernedExecution } from '../resource-governor/execution';
  * here, so every fixture below is deliberately non-ASCII or outright binary.
  */
 
-// Mock ONLY the two things that are genuinely out of process: launching the
-// sidecar child, and the Unix-socket hop. `execProcess` underneath is the REAL
-// server-side implementation running REAL git, so the whole byte path
+// Keep the launcher/socket and forkserver bookkeeping out of this unit layer.
+// `execProcess` underneath runs REAL git, so the whole byte path
 // (tmpfile → fd → git → fd → readback → size cross-check) is exercised.
+// The integration suites exercise the managed forkserver and kernel scopes.
+vi.mock('./forkserver/forkserver-client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./forkserver/forkserver-client')>()),
+  spawnSidecarChild: async (req: import('./forkserver/forkserver-client').SidecarSpawnRequest) => {
+    const { spawn } = await import('node:child_process');
+    return spawn(req.command, req.args, { cwd: req.cwd, env: req.env, detached: req.detached,
+      stdio: [req.stdin?.fd ?? 'ignore', req.stdout?.fd ?? 'pipe', 'pipe'] });
+  },
+}));
 let rpcOverride: ((params: unknown) => Promise<unknown>) | null = null;
 
 function testExecution(): GovernedExecution {

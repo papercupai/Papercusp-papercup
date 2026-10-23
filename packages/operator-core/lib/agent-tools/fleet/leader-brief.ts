@@ -39,6 +39,7 @@
  * leader's monitor wake is then ONE round-trip instead of orient + a separate
  * fleet:assignments scan.
  */
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
@@ -453,15 +454,17 @@ export async function runLeaderBriefReads<T extends readonly (() => Promise<unkn
  */
 async function boundedLeaderBriefRead<T>(
   label: string,
-  work: () => Promise<T>,
+  work: (signal: AbortSignal) => Promise<T>,
   fallback: T,
   timeoutMs = LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+  correlationId?: string,
 ): Promise<T> {
   try {
-    const result = await withBoundedTimeout(work, {
+    const result = await withBoundedTimeout((signal) => work(signal), {
       fallback,
       timeoutMs,
       label: `leader-brief:${label}`,
+      ...(correlationId ? { correlationId } : {}),
     });
     return result.value;
   } catch {
@@ -486,14 +489,16 @@ export function boundedLeaderBriefFleetMetricsRead<T>(
 
 /** Apply the dedicated deadline to the cross-epoch campaign leg. */
 export function boundedLeaderBriefFleetCampaignRead<T>(
-  work: () => Promise<T>,
+  work: (correlationId: string, signal: AbortSignal) => Promise<T>,
   fallback: T,
+  correlationId = randomUUID(),
 ): Promise<T> {
   return boundedLeaderBriefRead(
     'fleet-campaign',
-    work,
+    (signal) => work(correlationId, signal),
     fallback,
     LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS,
+    correlationId,
   );
 }
 
@@ -5321,7 +5326,7 @@ export async function buildLeaderBrief(
   let campaign: FleetCampaign | undefined;
   if (fleetCreatedAtMs != null) {
     const campaignRead = await boundedLeaderBriefFleetCampaignRead(
-      async () => {
+      async (correlationId, signal) => {
         const { readFleetCampaign } = await import('./fleet-campaign');
         return readFleetCampaign({
           workspaceId,
@@ -5329,6 +5334,8 @@ export async function buildLeaderBrief(
           fleetCreatedAtMs,
           since: args.since ?? null,
           harnessSlug: args.harness ?? null,
+          correlationId,
+          signal,
         });
       },
       undefined,

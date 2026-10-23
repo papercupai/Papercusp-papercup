@@ -143,6 +143,25 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     expect(await deliver([fact('one')], workspace)).not.toBe('');
   });
 
+  it('delivers the same fact independently to separate owners and dedupes only its own owner', async () => {
+    const workspace = 'push-integration-separate-owners';
+    const shared = fact('same-eligible-fact');
+    const send = (owner: string) => commitPushFacts({ ...input, workspace, owner }, snapshot(),
+      [shared], CODE_INTEL_PUSH_TURN_CHARS, new AbortController().signal);
+
+    expect(await send('owner-A')).not.toBe('');
+    expect(await send('owner-B')).not.toBe('');
+    expect(await send('owner-A')).toBe('');
+    expect(await send('owner-B')).toBe('');
+    const rows = await db.adminSql<{ owner_id: string; epoch: number; leg: string; subject: string }[]>`
+      SELECT owner_id, epoch, leg, subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${workspace} ORDER BY owner_id`;
+    expect(rows).toEqual([
+      { owner_id: 'owner-A', epoch: 0, leg: shared.leg, subject: shared.subject },
+      { owner_id: 'owner-B', epoch: 0, leg: shared.leg, subject: shared.subject },
+    ]);
+  });
+
   it('dedupes concurrent same-fact attempts and enforces RLS on the real app role', async () => {
     const workspace = 'push-integration-C';
     const texts = await Promise.all([deliver([fact('same')], workspace), deliver([fact('same')], workspace)]);

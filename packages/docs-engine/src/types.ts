@@ -69,6 +69,19 @@ export interface DocContentOptions {
   signal?: AbortSignal;
 }
 
+export interface DocListPagesTimingEvent {
+  component: 'starlight' | 'canonical-overlay';
+  phase: 'revision' | 'cache' | 'build' | 'walk' | 'read-parse' | 'base-list-pages' | 'canonical-read' | 'overlay';
+  state: 'started' | 'completed' | 'cached' | 'shared';
+  elapsedMs?: number;
+  count?: number;
+}
+
+export interface DocListPagesOptions {
+  /** Query-free subphase timings for callers that need to diagnose a slow cold listing. */
+  onTiming?: (event: DocListPagesTimingEvent) => void;
+}
+
 /**
  * Pluggable source of doc pages. Adapters wrap fumadocs, filesystem walks,
  * HTTP endpoints, etc., and present a uniform interface to the engine.
@@ -77,7 +90,7 @@ export interface DocSource {
   /** Identifier for logs, error messages, and cache namespacing. */
   name: string;
   /** List every page in the source. Should be cheap; engines call it freely. */
-  listPages(): Promise<DocPage[]>;
+  listPages(options?: DocListPagesOptions): Promise<DocPage[]>;
   /** Look up by slash-joined slug. Return null if not found. */
   getPage(slug: string): Promise<DocPage | null>;
   /** Render the page's MDX/markdown body to clean markdown (no JSX). */

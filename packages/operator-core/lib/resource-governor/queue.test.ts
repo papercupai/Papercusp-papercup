@@ -16,6 +16,7 @@ import {
   mapGovernorQueuePopulationRows,
   mapQueueLeaseOwnerRows,
   selectEndedLeaseOwners,
+  readResumeStartupLaunchers,
   type DurableAdmissionQueueStore,
   type DurableAdmissionRecord,
   type QueueLeaseOwnerObservation,
@@ -388,6 +389,34 @@ describe('resource-governor queue liveness and census boundaries (EI-219699)', (
       ['stale', { sessionState: 'draining' as const }],
     ]);
     expect(selectEndedLeaseOwners(rows, verdicts)).toEqual([rows[0]]);
+  });
+
+  it('protects only the exact reserved lease while its launcher is live, without changing source liveness', () => {
+    const rows = [{ receiptId: 'new', leaseId: 'new-lease', owner: 'ended-source' },
+      { receiptId: 'old', leaseId: 'old-lease', owner: 'ended-source' }];
+    const verdicts = new Map([['ended-source', { sessionState: 'ended' as const }],
+      ['launcher', { sessionState: 'live' as const }]]);
+    const reserved = new Map([['new', 'launcher']]);
+    expect(selectEndedLeaseOwners(rows, verdicts, reserved)).toEqual([rows[1]]);
+    for (const sessionState of ['ended', 'suspect', null] as const) {
+      const changed = new Map<string, { sessionState: any }>(verdicts);
+      changed.set('launcher', { sessionState });
+      expect(selectEndedLeaseOwners(rows, changed, reserved)).toEqual(rows);
+    }
+    expect(verdicts.get('ended-source')?.sessionState).toBe('ended');
+  });
+
+  it('does not look up a reservation for malformed, expired, or unrelated admission metadata', async () => {
+    const sql = vi.fn();
+    for (const meta of [{}, { targetOwnerId: 'other' }, {
+      targetOwnerId: 'source', launchedBy: 'launcher', resumeAdvSessionId: 1,
+      resumeClaimKey: 'key', resumeStartupExpiresAtMs: 50_000,
+    }]) {
+      expect(await readResumeStartupLaunchers(sql as never, 'ws', [
+        { receiptId: 'r', leaseId: 'l', owner: 'source', resumeMetadata: meta },
+      ], 50_000)).toEqual(new Map());
+    }
+    expect(sql).not.toHaveBeenCalled();
   });
 
   it('maps complete census rows and PostgreSQL numeric strings without bounding the input', () => {

@@ -11,8 +11,102 @@ import { describe, it, expect } from 'vitest';
 import {
   collectDirtyImportEdges,
   detectQuarantineImporters,
+  detectStagedProvidersOfHeldImporters,
   extractSideEffectOnlySpecifiers,
 } from './quarantine-import-guard';
+
+describe('detectStagedProvidersOfHeldImporters read budget', () => {
+  it.each([
+    ['unchanged exports', 'export const value = 1;', 'export const value = 2;'],
+    ['additive exports', 'export const value = 1;', 'export const value = 1; export const added = 2;'],
+    ['new provider', null, 'export const value = 1;'],
+  ])('does not read held consumers for %s', async (_label, head, index) => {
+    const headReads: string[] = [];
+    const held = Array.from({ length: 256 }, (_, n) => `held/consumer-${n}.ts`);
+    const offenders = await detectStagedProvidersOfHeldImporters({
+      stagedFiles: ['provider.ts'],
+      heldImporters: held,
+      readHeadText: async path => {
+        headReads.push(path);
+        return path === 'provider.ts' ? head : "import { value } from '../provider';";
+      },
+      readIndexText: async path => path === 'provider.ts' ? index : null,
+    });
+    expect(offenders).toEqual([]);
+    expect(headReads).toEqual(['provider.ts']);
+  });
+
+  it('still follows removed exports through held providers to a fixed point', async () => {
+    const head: Record<string, string> = {
+      'consumer.ts': "import { first } from './first';",
+      'first.ts': "import { second } from './second'; export const first = second;",
+      'second.ts': 'export const second = 1;',
+    };
+    const index: Record<string, string> = {
+      'first.ts': 'export const replacement = 1;',
+      'second.ts': 'export const replacement = 2;',
+    };
+    const offenders = await detectStagedProvidersOfHeldImporters({
+      stagedFiles: Object.keys(index),
+      heldImporters: ['consumer.ts'],
+      readHeadText: async path => head[path] ?? null,
+      readIndexText: async path => index[path] ?? null,
+    });
+    expect(offenders.map(row => row.file)).toEqual(['first.ts', 'second.ts']);
+  });
+
+  it('does not scan unrelated staged providers when held consumers are the smaller set', async () => {
+    const unrelated = Array.from({ length: 256 }, (_, n) => `unrelated-${n}.ts`);
+    const reads: string[] = [];
+    const offenders = await detectStagedProvidersOfHeldImporters({
+      stagedFiles: ['provider.ts', ...unrelated],
+      heldImporters: ['consumer.ts'],
+      readHeadText: async path => {
+        reads.push(path);
+        if (path === 'consumer.ts') return "import { value } from './provider';";
+        return path.endsWith('.ts') ? 'export const value = 1;' : null;
+      },
+      readIndexText: async path => { reads.push(path); return 'export const value = 2;'; },
+    });
+    expect(offenders).toEqual([]);
+    expect(reads.filter(path => unrelated.includes(path))).toEqual([]);
+  });
+
+  it.each([
+    ['default', "import old from './provider';", 'export default 1;', 'export const replacement = 1;'],
+    ['namespace', "import * as old from './provider';", 'export const old = 1;', 'export const replacement = 1;'],
+    ['star edge', "import { old } from './provider';", "export * from './old';", "export * from './replacement';"],
+  ])('preserves the removal guard for a %s binding', async (_label, consumer, before, after) => {
+    const offenders = await detectStagedProvidersOfHeldImporters({
+      stagedFiles: ['provider.ts'],
+      heldImporters: ['consumer.ts'],
+      readHeadText: async path => path === 'provider.ts' ? before : path === 'consumer.ts' ? consumer : null,
+      readIndexText: async path => path === 'provider.ts' ? after : null,
+    });
+    expect(offenders.map(row => row.file)).toEqual(['provider.ts']);
+  });
+
+  it('bounds concurrent consumer reads while avoiding a serial Git round trip per consumer', async () => {
+    let active = 0;
+    let peak = 0;
+    const offenders = await detectStagedProvidersOfHeldImporters({
+      stagedFiles: ['provider.ts'],
+      heldImporters: Array.from({ length: 40 }, (_, n) => `held/consumer-${n}.ts`),
+      readHeadText: async path => {
+        if (path === 'provider.ts') return 'export const old = 1;';
+        if (!path.startsWith('held/')) return null;
+        peak = Math.max(peak, ++active);
+        await Promise.resolve();
+        active--;
+        return "import { old } from '../provider';";
+      },
+      readIndexText: async () => 'export const replacement = 1;',
+    });
+    expect(offenders.map(row => row.file)).toEqual(['provider.ts']);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(16);
+  });
+});
 
 describe('collectDirtyImportEdges (WI-6554700010019415)', () => {
   const files: Record<string, string> = {

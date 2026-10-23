@@ -940,32 +940,35 @@ describe('gather + execute against a real temporary repo', () => {
     } finally { process.env.PATH = previous; }
   });
 
-  it('finishes a productive usage walk past ten seconds and counts only complete root totals', async () => {
-    const tree = path.join(tmp, 'productive-usage');
-    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+  it('finishes a quiet multi-root usage walk past ten seconds and counts only complete root totals', async () => {
+    const first = path.join(tmp, 'quiet-usage-first');
+    const second = path.join(tmp, 'quiet-usage-second');
+    g(repo, 'worktree', 'add', '-q', '--detach', first);
+    g(repo, 'worktree', 'add', '-q', '--detach', second);
     const plan = await gather();
-    const bin = path.join(tmp, 'streaming-du');
+    const bin = path.join(tmp, 'quiet-du');
     fs.mkdirSync(bin);
-    // One root can contain millions of files: summaries alone give no progress
-    // until its whole walk ends. Keep the real child alive beyond the old 10s
-    // absolute timeout, emitting the same NUL-framed records as du --all.
+    // A metadata silence does not prove the traversal is stuck: a single large
+    // directory or a buffered du stream can be quiet for more than ten seconds.
+    // Keep the whole-population command quiet past the former watchdog, then
+    // emit a complete NUL-framed root total for every requested root.
     fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}
-const root = ${JSON.stringify(tree)};
-let index = 0;
-const timer = setInterval(() => {
-  if (index++ < 11) process.stdout.write('4096\\t' + root + '/file-' + index + '\\0');
-  else { clearInterval(timer); process.stdout.write('8192\\t' + root + '\\0'); }
-}, 1000);
+const roots = process.argv.slice(process.argv.indexOf('--') + 1);
+setTimeout(() => {
+  for (const root of roots) process.stdout.write('8192\\t' + root + '\\0');
+}, 11_000);
 `, { mode: 0o755 });
     const previous = process.env.PATH;
     process.env.PATH = bin;
     try {
-      const result = await reclaimCutWorktrees(plan, { dryRun: true, maxBytes: 1 });
+      const result = await reclaimCutWorktrees(plan, { dryRun: true, maxBytes: 1, notAfterMs: Date.now() + 20_000 });
       expect(result.errors).toEqual([]);
       expect(result.ok).toBe(true);
-      expect(result.cap.beforeBytes).toBe(8192);
-      expect(result.cap.retainedPaths).toEqual([tree]);
-      expect(fs.existsSync(tree)).toBe(true);
+      expect(result.cap.beforeBytes).toBe(8192 * result.cap.retainedPaths.length);
+      expect(result.cap.retainedPaths).toContain(first);
+      expect(result.cap.retainedPaths).toContain(second);
+      expect(fs.existsSync(first)).toBe(true);
+      expect(fs.existsSync(second)).toBe(true);
     } finally { process.env.PATH = previous; }
   }, 25_000);
 
@@ -1017,7 +1020,7 @@ setInterval(() => process.stdout.write('4096\\t' + ${JSON.stringify(tree)} + '/c
     } finally { process.env.PATH = previous; }
   });
 
-  it.each([false, true])('retains measured progress when an idle usage walk refuses (initial record: %s)', async (initialRecord) => {
+  it.each([false, true])('retains diagnostics when an idle usage walk reaches its run deadline (initial record: %s)', async (initialRecord) => {
     const tree = path.join(tmp, 'idle-usage');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
     const plan = await gather();
@@ -1031,9 +1034,9 @@ setInterval(() => { process.stdout.write('1'); process.stderr.write('noise'); },
     const previous = process.env.PATH;
     process.env.PATH = bin;
     try {
-      const result = await reclaimCutWorktrees(plan);
+      const result = await reclaimCutWorktrees(plan, { notAfterMs: Date.now() + 3_000 });
       expect(result.ok).toBe(false);
-      expect(result.errors[0]).toContain('no metadata progress for 10 seconds');
+      expect(result.errors[0]).toContain('run deadline exhausted');
       const failure = JSON.parse(result.errors[0]!.split('usage before reclaim: ')[1]!);
       expect(failure.usageProgress).toMatchObject({
         metadataRecords: initialRecord ? 1 : 0, completedRoots: 0, totalRoots: 1,
@@ -1041,8 +1044,8 @@ setInterval(() => { process.stdout.write('1'); process.stderr.write('noise'); },
       });
       expect(failure.usageProgress.stdoutBytes).toBeGreaterThan(0);
       expect(failure.usageProgress.pendingBytes).toBeGreaterThan(0);
-      expect(failure.usageProgress.elapsedMs).toBeGreaterThanOrEqual(10_000);
-      if (initialRecord) expect(failure.usageProgress.lastMetadataAgeMs).toBeGreaterThanOrEqual(10_000);
+      expect(failure.usageProgress.elapsedMs).toBeGreaterThanOrEqual(2_500);
+      if (initialRecord) expect(failure.usageProgress.lastMetadataAgeMs).toBeGreaterThanOrEqual(2_500);
       else expect(failure.usageProgress.lastMetadataAgeMs).toBeNull();
       expect(result.cap.beforeBytes).toBeNull();
       expect(fs.existsSync(tree)).toBe(true);

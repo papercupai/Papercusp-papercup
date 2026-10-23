@@ -45,7 +45,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(JSON.stringify({ ok: false, reason: 'no-frozen-queue', read: read.status }));
     return 0;
   }
-  const root = resolveCanonicalIntegrationRoot(integrationRoot());
+  const root = await resolveCanonicalIntegrationRoot(integrationRoot());
   const result = await computeStagingFixProposal(queue, root, operatorHomeHarnessSlug(), only);
   console.log(JSON.stringify(result, null, 2));
   return 0;
@@ -119,7 +119,7 @@ export async function scheduleStagingFixProposal(
         import('./admission-fix-precheck-managed'), import('../task-manager/types'),
         import('../release-deploy-launch'), import('../release-checkpoint-launch'),
       ]);
-      const root = resolveCanonicalIntegrationRoot(integrationRoot());
+      const root = await resolveCanonicalIntegrationRoot(integrationRoot());
       const spawned = await startAdmissionPrecheckWorker({ operationId, taskId: newTaskId(), queueTarget: target,
         integrationRoot: root, checkpointRoot: checkpointRootMirror(root), expiresAtMs,
         proposal: { candidate: queue.candidate, repairHead: queue.repairHead } });

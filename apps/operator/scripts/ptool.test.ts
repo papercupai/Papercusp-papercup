@@ -556,7 +556,7 @@ describe('ptool operator routing', () => {
     })).toBe('http://127.0.0.1:3170');
   });
 
-  it('routes configured local staging pins through the same-vintage staging proxy', () => {
+  it('routes local staging pins through the same-vintage proxy and falls back to the pinned operator on upstream failure', async () => {
     expect(resolvePtoolOperatorBase({
       PAPERCUSP_HONO_PORT: '3170',
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
@@ -564,10 +564,30 @@ describe('ptool operator routing', () => {
       PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
     })).toBe('http://127.0.0.1:9171');
 
-    expect(resolvePtoolOperatorCandidates(
+    const pin = 'http://localhost:3170/api/mcp?superuser=1';
+    const candidates = resolvePtoolOperatorCandidates(
       { PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171' },
-      'http://localhost:3170/api/mcp?superuser=1',
-    )).toEqual(['http://127.0.0.1:9171/api/mcp?superuser=1']);
+      pin,
+    );
+    expect(candidates).toEqual([
+      'http://127.0.0.1:9171/api/mcp?superuser=1',
+      pin,
+    ]);
+
+    const upstreamFailure = Object.assign(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_upstream_error","forwardingResult":"outcome_unknown"}',
+    ), { code: 502 });
+    const client = { close: vi.fn() };
+    const connectOnce = vi.fn()
+      .mockRejectedValueOnce(upstreamFailure)
+      .mockResolvedValueOnce(client);
+
+    await expect(connectWithOperatorCandidates(connectOnce, candidates, {}, {
+      maxAttempts: 1,
+      primaryAttemptOptions: { maxAttempts: 1 },
+      sleep: async () => {},
+    })).resolves.toEqual({ client, operatorUrl: pin });
+    expect(connectOnce.mock.calls.map(([url]) => url)).toEqual(candidates);
   });
 
   it('keeps direct staging pins when staging proxy routing is disabled', () => {

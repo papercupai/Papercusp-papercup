@@ -171,7 +171,7 @@ describe('admission off-thread host (WI-10005223)', () => {
       expect(git(canonicalChild, 'cat-file', '-t', pin)).toBe('commit');
       expect(() => git(generationChild, 'cat-file', '-e', pin + '^{commit}')).toThrow();
 
-      const result = executeAdmissionJob({ kind: 'precheck-population', input: {
+      const result = await executeAdmissionJob({ kind: 'precheck-population', input: {
         root: generation, commit, admittedPaths: ['component'], signature: [],
       } });
       if (!result.ok) throw new Error('canonical pin inventory failed: ' + result.detail);
@@ -275,9 +275,9 @@ describe('admission off-thread host (WI-10005223)', () => {
       await runAdmissionJob({ ...containmentJob, paths: [...containmentJob.paths] }),
     ];
     expect(admissionOffthreadStats().jobsOnWorker).toBe(2);
-    expect(viaWorkerGit).toEqual(executeAdmissionJob({ ...gitJob, argv: [...gitJob.argv] }));
+    expect(viaWorkerGit).toEqual(await executeAdmissionJob({ ...gitJob, argv: [...gitJob.argv] }));
     expect(viaWorkerContainment).toEqual(
-      executeAdmissionJob({ ...containmentJob, paths: [...containmentJob.paths] }),
+      await executeAdmissionJob({ ...containmentJob, paths: [...containmentJob.paths] }),
     );
     expect(viaWorkerContainment[0]).toMatchObject({ path: 'a.txt', containedInJudgedSha: true });
   }, 60_000);
@@ -378,7 +378,7 @@ describe('admission off-thread host (WI-10005223)', () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     configureAdmissionOffthread({ workerPath: join(repo, 'no-such-worker.mjs') });
     const result = await runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo });
-    expect(result).toEqual(executeAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo }));
+    expect(result).toEqual(await executeAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo }));
     expect(admissionOffthreadStats()).toMatchObject({ loadFailures: 1, jobsInline: 1, jobsOnWorker: 0 });
     expect(logged).toHaveBeenCalledWith(expect.stringContaining('running admission git INLINE'));
   }, 60_000);

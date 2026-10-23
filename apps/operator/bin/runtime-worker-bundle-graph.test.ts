@@ -170,6 +170,31 @@ describe('bg-host runtime worker bundles stay small and buildable', () => {
     expect(BUNDLER_FLAGS.external).toContain('ssh2');
   });
 
+  it('keeps the tracing SDK on its runtime boundary and boots the generated ESM', async () => {
+    const consumerRoot = join(REPO_ROOT, 'packages/operator-core');
+    const result = await build({
+      ...BUNDLER_FLAGS,
+      stdin: {
+        contents: `import { TracerProvider } from '@opentelemetry/sdk-trace';
+          const tracer = new TracerProvider().getTracer('host-boundary-regression');
+          console.log('host-otel-ready', typeof tracer.startSpan);`,
+        resolveDir: consumerRoot,
+        sourcefile: 'host-otel-boundary.fixture.ts',
+        loader: 'ts',
+      },
+    });
+    const imports = Object.values(result.metafile!.outputs).flatMap((output) => output.imports);
+    expect(imports).toContainEqual(expect.objectContaining({ path: '@opentelemetry/sdk-trace', external: true }));
+    expect(Object.keys(result.metafile!.inputs).some((path) => path.includes('node_modules/@opentelemetry/sdk-trace/'))).toBe(false);
+    const output = execFileSync(process.execPath, ['--input-type=module'], {
+      cwd: consumerRoot,
+      input: result.outputFiles![0]!.text,
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(output.trim()).toBe('host-otel-ready function');
+  }, 30_000);
+
   it('calibration: a worker importing a small leaf module is NOT flagged', async () => {
     const v = await withFixture(
       `export * from ${importOf('packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts')};\n`,

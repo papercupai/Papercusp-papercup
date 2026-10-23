@@ -196,19 +196,25 @@ describe("coord:inbox — cache the derive, keep side effects", () => {
 
   it("records default-read phases on indirect dispatch without the diagnostic env flag", async () => {
     const previousTraceFlag = process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+    const correlationId = "b497d96b-f582-49b0-9397-94610fd9b04e";
     delete process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
     try {
       const metadata = vi.fn();
-      await inbox("owner-a", {}, metadata, true);
+      await inbox("owner-a", { __correlationId: correlationId }, metadata, true);
 
       const traces = metadata.mock.calls
         .map(([value]) => (value as { coordInboxRead?: {
-          request: { hasFrom: boolean; directed: boolean; unansweredOnly: boolean };
+          request: { hasFrom: boolean; directed: boolean; unansweredOnly: boolean; correlationId?: string };
           phases: Array<{ name: string; status: string; elapsedMs: number | null }>;
         } }).coordInboxRead)
         .filter((trace): trace is NonNullable<typeof trace> => trace !== undefined);
       const settled = traces.at(-1);
-      expect(settled?.request).toEqual({ hasFrom: false, directed: false, unansweredOnly: false });
+      expect(settled?.request).toEqual({
+        hasFrom: false,
+        directed: false,
+        unansweredOnly: false,
+        correlationId,
+      });
       expect(settled?.phases.map(({ name }) => name)).toEqual(expect.arrayContaining([
         "resolve-actor-identity",
         "drain-user-mailbox",

@@ -730,75 +730,72 @@ export function renderOwnerDirectiveRow(
 }
 
 export const OWNER_DIRECTIVES_BLOCK_HEADER =
-  '📌 OPEN OWNER DIRECTIVES — workspace-wide visibility. Rows marked [FOR THIS SESSION] are this session\'s ' +
-  'action obligations and outrank its loop agenda; [FYI] rows are context only, not action assignments. ' +
-  'Only disposition a row marked [FOR THIS SESSION] with orders:disposition { id, status: done|declined, note }.';
-
-/** Heads the grouped [FYI] ids in renderOwnerDirectivesBlock. */
-export const OWNER_DIRECTIVES_FYI_LEGEND =
-  "  [FYI] other sessions' open directives, by recording session — not an action assignment for this " +
-  'session; full text: orders:get #<id>';
+  '📌 OPEN OWNER DIRECTIVES — rows marked [FOR THIS SESSION] are this session\'s action obligations ' +
+  'and outrank its loop agenda. Close each finished or declined directive with ' +
+  'orders:disposition { id, status: done|declined, note }.';
 
 /**
  * The block every render point injects. Returns null when there are no open
- * rows. `totalOpen` (when it exceeds rows.length) adds the "+N more" line even
- * if the char cap was not hit — the fetch itself is bounded.
+ * rows. Only this session's rows render individually. Counts distinguish its
+ * own overflow from other sessions, even when the fetch contains only own rows.
  */
 export function renderOwnerDirectivesBlock(
   rows: ReadonlyArray<OwnerDirectiveRow>,
-  opts: { nowMs?: number; totalOpen?: number; viewerOwnerId?: string | null } = {},
+  opts: { nowMs?: number; totalOpen?: number; totalOwnOpen?: number | null; viewerOwnerId?: string | null } = {},
 ): string | null {
-  if (!rows.length) return null;
+  if (!rows.length && !opts.totalOpen) return null;
   const nowMs = opts.nowMs ?? Date.now();
   const totalOpen = Math.max(opts.totalOpen ?? rows.length, rows.length);
   const lines: string[] = [OWNER_DIRECTIVES_BLOCK_HEADER];
   let used = OWNER_DIRECTIVES_BLOCK_HEADER.length;
   let shown = 0;
-  // WI-10002888: the viewer's own rows are its only action obligations, so they
-  // render before any [FYI] row and are never the ones the char cap folds into
-  // "+N more". Stable within each group, so the given (oldest-first) order holds.
+  // The bounded query fetches own rows first. Its length alone cannot tell us
+  // how many of the unfetched directives belong to this session.
   const viewer = opts.viewerOwnerId ?? null;
   const own = viewer ? rows.filter((r) => r.recordedBy === viewer) : [];
-  const fyi = viewer ? rows.filter((r) => r.recordedBy !== viewer) : rows;
-  let capped = false;
+  const totalOwn = opts.totalOwnOpen === null ? null : Math.max(opts.totalOwnOpen ?? own.length, own.length);
   for (const row of own) {
     const line = renderOwnerDirectiveRow(row, nowMs, viewer);
     if (used + line.length + 1 > OWNER_DIRECTIVES_BLOCK_CHAR_CAP) {
-      capped = true;
       break;
     }
     lines.push(line);
     used += line.length + 1;
     shown += 1;
   }
-  // WI-6554700010009314 (P-006): [FYI] rows are other sessions' directives, and
-  // the only thing a reader may do with one is look it up. One legend plus one
-  // id line per recording session carries that; the per-row form repeated ~150
-  // chars of the same disclaimer for every id, on every orient, loop wake and
-  // carry document. Ids stay oldest-first within the same char cap.
-  if (!capped && fyi.length && used + OWNER_DIRECTIVES_FYI_LEGEND.length + 1 <= OWNER_DIRECTIVES_BLOCK_CHAR_CAP) {
-    const groups = new Map<string, number[]>();
-    let fyiUsed = OWNER_DIRECTIVES_FYI_LEGEND.length + 1;
-    for (const row of fyi) {
-      const ids = groups.get(row.recordedBy);
-      const cost = ids ? ` #${row.id}`.length : `  • ${shortOwner(row.recordedBy)}: #${row.id}`.length + 1;
-      if (used + fyiUsed + cost > OWNER_DIRECTIVES_BLOCK_CHAR_CAP) break;
-      if (ids) ids.push(row.id);
-      else groups.set(row.recordedBy, [row.id]);
-      fyiUsed += cost;
-      shown += 1;
-    }
-    if (groups.size) {
-      lines.push(OWNER_DIRECTIVES_FYI_LEGEND);
-      for (const [recordedBy, ids] of groups) {
-        lines.push(`  • ${shortOwner(recordedBy)}: ${ids.map((id) => `#${id}`).join(' ')}`);
-      }
-      used += fyiUsed;
+  if (viewer && totalOwn === null) {
+    lines.push('  Own directive count unavailable — orders:list { open: true, mine: true, limit: 200 }');
+  } else if (viewer && totalOwn !== null && totalOwn > shown) {
+    lines.push(`  +${totalOwn - shown} more open for this session — orders:list { open: true, mine: true, limit: 200 }`);
+  }
+  if (!viewer) {
+    lines.push(`  Workspace: ${totalOpen} open directives — orders:list { open: true, limit: 200 }`);
+  } else if (totalOwn === null) {
+    lines.push('  Other sessions: count unavailable — orders:list { open: true, mine: false, limit: 200 }');
+  } else {
+    const foreign = Math.max(totalOpen - totalOwn, rows.length - own.length);
+    if (foreign > 0) {
+      lines.push(`  Other sessions: ${foreign} open directive${foreign === 1 ? '' : 's'} — awareness only; orders:list { open: true, mine: false, limit: 200 }`);
     }
   }
-  const hidden = totalOpen - shown;
-  if (hidden > 0) lines.push(`  +${hidden} more open — orders:list { open: true }`);
   return lines.join('\n');
+}
+
+/** Shared bounded read for carry briefs, orient, and loop wakes. */
+export async function loadOpenOwnerDirectives(
+  workspaceId: string,
+  opts: { sql?: Sql; viewerOwnerId?: string | null } = {},
+): Promise<{ rows: OwnerDirectiveRow[]; totalOpen: number; totalOwnOpen: number | null }> {
+  const rows = await listOpenOwnerDirectives(workspaceId, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql, opts.viewerOwnerId);
+  const own = opts.viewerOwnerId ? rows.filter((row) => row.recordedBy === opts.viewerOwnerId).length : 0;
+  if (rows.length < OWNER_DIRECTIVES_RENDER_MAX_ROWS) return { rows, totalOpen: rows.length, totalOwnOpen: own };
+  const [totalOpen, totalOwnOpen] = await Promise.all([
+    countOpenOwnerDirectives(workspaceId, opts.sql, opts.viewerOwnerId).catch(() => rows.length),
+    opts.viewerOwnerId && own === rows.length
+      ? countOpenOwnerDirectives(workspaceId, opts.sql, opts.viewerOwnerId, opts.viewerOwnerId).catch(() => null)
+      : Promise.resolve(own),
+  ]);
+  return { rows, totalOpen, totalOwnOpen };
 }
 
 /**
@@ -816,15 +813,11 @@ export async function renderOpenOwnerDirectivesBlock(
   const ws = workspaceId || activeWorkspaceId();
   if (!ws) return null;
   try {
-    const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql, opts.viewerOwnerId);
-    if (!rows.length) return null;
-    const totalOpen =
-      rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
-        ? await countOpenOwnerDirectives(ws, opts.sql, opts.viewerOwnerId).catch(() => rows.length)
-        : rows.length;
+    const { rows, totalOpen, totalOwnOpen } = await loadOpenOwnerDirectives(ws, opts);
     return renderOwnerDirectivesBlock(rows, {
       nowMs: opts.nowMs,
       totalOpen,
+      totalOwnOpen,
       viewerOwnerId: opts.viewerOwnerId,
     });
   } catch {

@@ -8,7 +8,10 @@ import {
   deriveCandidateProvenance,
   deriveJourneyEvidence,
   evidenceVerdict,
+  ENDGAME_SHIPMENT_PLANS,
   parseLegBuildProvenance,
+  validateEndgameDefaultChoice,
+  validateEndgameShipmentLedger,
   type LegBuildProvenance,
   type LegProvenanceInput,
   type ReleaseLedgerRecord,
@@ -24,6 +27,83 @@ import {
 const SRC = '93f1c72063bb422583c9c24e7092f1bed767f64f';
 const DESKTOP = 'cddbd8d530d8d3a7c49f22a371347d601a24ba47';
 const h = (seed: string) => createHash('sha256').update(seed).digest('hex');
+
+describe('endgame R-15 persisted default choice', () => {
+  const pins = { artifactDigest: h('private-candidate'), sourceSha: SRC };
+  const valid = () => ({
+    ...pins, decisionRef: 'p2p-public-release-endgame-2026-09-01#D-300', choice: 'legacy',
+    rationale: 'Keep the current default after inspecting the witness and recovery drill.',
+    recordedAt: '2026-10-22T10:00:03Z',
+    evidence: ['witness', 'independent-go', 'owner-freeze-recovery-drill'].map((kind, i) => ({
+      ...pins, kind, status: 'passed', ref: `docs/evidence/${kind}.json`, sha256: h(kind),
+      finishedAt: `2026-10-22T10:00:0${i}Z`,
+    })),
+  });
+  it('accepts a persisted choice tied to a witness and post-GO drill without an elapsed soak', () => {
+    expect(validateEndgameDefaultChoice(valid(), pins)).toEqual([]);
+  });
+  it.each(['missing-decision', 'missing-drill', 'foreign-artifact', 'unknown-drill', 'pre-go-drill', 'late-evidence', 'malformed-extra'])
+  ('rejects %s independently of the passing witness', fault => {
+    const input = valid();
+    if (fault === 'missing-decision') input.decisionRef = '';
+    if (fault === 'missing-drill') input.evidence.pop();
+    if (fault === 'foreign-artifact') input.evidence[2]!.artifactDigest = h('other-candidate');
+    if (fault === 'unknown-drill') input.evidence[2]!.status = 'unknown';
+    if (fault === 'pre-go-drill') input.evidence[2]!.finishedAt = input.evidence[0]!.finishedAt;
+    if (fault === 'late-evidence') input.recordedAt = input.evidence[0]!.finishedAt;
+    if (fault === 'malformed-extra') Object.assign(input, { evidence: [...input.evidence, null] });
+    expect(validateEndgameDefaultChoice(input, pins).length).toBeGreaterThan(0);
+  });
+});
+
+describe('endgame R-17 exact six-plan shipment ledger', () => {
+  const pins = { artifactDigest: h('private-candidate'), sourceSha: SRC };
+  const valid = () => ENDGAME_SHIPMENT_PLANS.map((planSlug, i) => ({
+    ...pins, planSlug: String(planSlug), status: 'shipped', forcedPast: null as unknown,
+    acceptanceRubricRevision: 1, acceptanceCriteriaHash: h(`criteria:${planSlug}`),
+    codeTruthAudit: { ref: `plan-audit:${i + 1}`, planSlug: String(planSlug), verdict: 'implemented' },
+    independentGrade: {
+      rubricRef: `acceptance-${planSlug}`, rubricRevision: 1, criteriaHash: h(`criteria:${planSlug}`), scorecardId: `EI-${i + 1}`,
+      graderId: 'independent-grader', gradingAuditRef: `EI-${i + 100}`,
+      eligibility: { ref: `lineage:${i + 1}`, graderId: 'independent-grader', rubricAuthorId: 'implementer',
+        implementerIds: ['implementer'], outsideImplementationLineage: true, outsideRubricAuthorLineage: true, liveAtGrading: true,
+        soleVettingCritic: false, launchedByImplementer: false },
+    },
+    authorVerdict: { ref: `EI-${i + 200}`, verdict: 'accept', acceptanceOf: `EI-${i + 1}`, authorId: 'implementer' },
+  }));
+  it('accepts six distinct shipped plans including both stragglers with independent grades and author verdicts', () => {
+    expect(validateEndgameShipmentLedger(valid(), pins)).toEqual([]);
+  });
+  it.each(['missing', 'extra', 'duplicate', 'foreign-slug', 'not-shipped', 'foreign-bytes', 'forced',
+    'missing-audit', 'wrong-rubric', 'missing-grade-audit', 'implementer-grader', 'related-lineage',
+    'sole-critic', 'implementer-launch', 'wrong-author-card', 'missing-lineage-evidence',
+    'stale-rubric-revision', 'foreign-criteria-hash', 'rubric-author-lineage', 'not-live-at-grade'])
+  ('rejects %s while the other five rows remain valid', fault => {
+    const rows = valid();
+    const row = rows[0]!;
+    if (fault === 'missing') rows.pop();
+    if (fault === 'extra') rows.push(structuredClone(row));
+    if (fault === 'duplicate') rows[1] = structuredClone(row);
+    if (fault === 'foreign-slug') row.planSlug = 'unrelated-plan';
+    if (fault === 'not-shipped') row.status = 'ready';
+    if (fault === 'foreign-bytes') row.artifactDigest = h('other-candidate');
+    if (fault === 'forced') row.forcedPast = { checks: ['rubric-grading'] };
+    if (fault === 'missing-audit') row.codeTruthAudit.ref = '';
+    if (fault === 'wrong-rubric') row.independentGrade.rubricRef = 'acceptance-other';
+    if (fault === 'missing-grade-audit') row.independentGrade.gradingAuditRef = '';
+    if (fault === 'implementer-grader') row.independentGrade.graderId = 'implementer';
+    if (fault === 'related-lineage') row.independentGrade.eligibility.outsideImplementationLineage = false;
+    if (fault === 'sole-critic') row.independentGrade.eligibility.soleVettingCritic = true;
+    if (fault === 'implementer-launch') row.independentGrade.eligibility.launchedByImplementer = true;
+    if (fault === 'wrong-author-card') row.authorVerdict.acceptanceOf = 'EI-999';
+    if (fault === 'missing-lineage-evidence') row.independentGrade.eligibility.ref = '';
+    if (fault === 'stale-rubric-revision') row.independentGrade.rubricRevision = 2;
+    if (fault === 'foreign-criteria-hash') row.independentGrade.criteriaHash = h('old-criteria');
+    if (fault === 'rubric-author-lineage') row.independentGrade.eligibility.outsideRubricAuthorLineage = false;
+    if (fault === 'not-live-at-grade') row.independentGrade.eligibility.liveAtGrading = false;
+    expect(validateEndgameShipmentLedger(rows, pins).length).toBeGreaterThan(0);
+  });
+});
 
 // Independent oracle for the candidate identity: sha256 over sorted "<sha>  <basename>\n".
 function digestOracle(pairs: [string, string][]): string {

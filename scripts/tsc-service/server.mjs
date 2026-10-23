@@ -17,7 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   TSC_SERVICE_MAX_CHECKED_FILES,
-  checkedSetFor,
+  checkedSetForCooperatively,
   namedSetFor,
   refreshProjectRootFiles,
   renderDiagnostics,
@@ -127,8 +127,9 @@ async function refresh(projects) {
   dependencyCache.clear();
 }
 
-async function serve({ request, arrivedAt, trace }) {
+async function serve({ request, arrivedAt, trace, isCancelled }) {
   const started = Date.now();
+  if (isCancelled()) return null;
   trace('program-files');
   const project = state.snapshot.getProject(request.project);
   if (!project) return { ok: false, reason: 'project-not-loaded', detail: request.project };
@@ -140,10 +141,11 @@ async function serve({ request, arrivedAt, trace }) {
   }
   const program = project.program;
   const programFiles = await program.getSourceFileNames();
+  if (isCancelled()) return null;
   trace('scope');
   const scope = request.scope === 'named'
     ? namedSetFor({ root: ROOT, named: request.files, programFiles })
-    : checkedSetFor({
+    : await checkedSetForCooperatively({
         root: ROOT,
         named: request.files,
         programFiles,
@@ -151,7 +153,8 @@ async function serve({ request, arrivedAt, trace }) {
         readText: cachedText,
         dependencyCache,
         maxFiles: TSC_SERVICE_MAX_CHECKED_FILES,
-      });
+      }, { isCancelled });
+  if (!scope || isCancelled()) return null;
   if (scope.files.length > TSC_SERVICE_MAX_CHECKED_FILES) {
     return {
       ok: false,
@@ -161,10 +164,17 @@ async function serve({ request, arrivedAt, trace }) {
   }
 
   trace(`program-diagnostics checked=${scope.files.length}`);
-  const diagnostics = [...(await program.getConfigFileParsingDiagnostics()), ...(await program.getProgramDiagnostics())];
+  const diagnostics = await program.getConfigFileParsingDiagnostics();
+  if (isCancelled()) return null;
+  diagnostics.push(...(await program.getProgramDiagnostics()));
+  if (isCancelled()) return null;
   trace(`file-diagnostics checked=${scope.files.length}`);
   for (const file of scope.files) {
-    diagnostics.push(...(await program.getSyntacticDiagnostics(file)), ...(await program.getSemanticDiagnostics(file)));
+    if (isCancelled()) return null;
+    diagnostics.push(...(await program.getSyntacticDiagnostics(file)));
+    if (isCancelled()) return null;
+    diagnostics.push(...(await program.getSemanticDiagnostics(file)));
+    if (isCancelled()) return null;
   }
   // Deliberately NO getGlobalDiagnostics(): it checks the WHOLE program first (measured on
   // operator-core: 75 s and 3.7 -> 10 GB, against 30 ms for one file). Global diagnostics are
@@ -186,14 +196,18 @@ async function serve({ request, arrivedAt, trace }) {
   const texts = new Map();
   trace(`render-diagnostics errors=${errors.length}`);
   for (const fileName of new Set(errors.map((d) => d.fileName).filter(Boolean))) {
+    if (isCancelled()) return null;
     const sourceFile = await program.getSourceFile(fileName);
+    if (isCancelled()) return null;
     texts.set(fileName, typeof sourceFile?.text === 'string' ? sourceFile.text : cachedText(fileName));
   }
+  if (isCancelled()) return null;
   const output = renderDiagnostics(errors, { root: ROOT, textFor: (fileName) => texts.get(fileName) ?? null });
 
   const judged = new Set(scope.files.map((abs) => relative(ROOT, abs)));
   for (const d of errors) if (d.fileName) judged.add(relative(ROOT, d.fileName));
   const now = Date.now();
+  if (isCancelled()) return null;
   return {
     ok: true,
     output,
@@ -247,7 +261,11 @@ async function drain() {
         const item = batch[i];
         if (item.cancelled) continue;
         try {
-          const response = await serve(item);
+          const response = await serve({ ...item, isCancelled: () => item.cancelled });
+          if (!response || item.cancelled) {
+            item.trace('cancelled');
+            continue;
+          }
           item.reply(response);
           item.trace(response.ok ? 'complete' : `declined reason=${response.reason}`);
           log(

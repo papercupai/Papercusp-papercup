@@ -23,6 +23,41 @@ vi.mock('node:http', async (importOriginal) => ({
 const isRoot = process.getuid?.() === 0;
 
 describe('streaming retention census evidence', () => {
+  it('compacts capped native file metadata without changing allocation, boundaries or build evidence', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-compact-capped-'));
+    try {
+      const tree = join(root, 'tree'); await fsp.mkdir(tree);
+      await Promise.all(Array.from({ length: 512 }, (_, index) => fsp.writeFile(join(tree, `file-${index}`), 'allocated')));
+      const modules = join(tree, 'node_modules'); await fsp.mkdir(modules);
+      await fsp.writeFile(join(modules, 'CACHEDIR.TAG'), 'Signature: 8a477f597d28d172789f06886806bc55');
+      await fsp.link(join(tree, 'file-0'), join(tree, 'shared'));
+      await fsp.link(join(tree, 'file-0'), join(root, 'shared-sibling'));
+      const protectedTree = join(root, 'protected'); await fsp.mkdir(protectedTree);
+      await fsp.symlink('/never-follow-retention-link', join(protectedTree, 'link'));
+      const options = { retainAfterMs: Infinity, includeRecent: true, collectBuildDirs: true };
+      const expected = await inspectRetentionTrees(root, options);
+      let wire = '';
+      const native = ((_: string, args: string[]) => {
+        // Exercise the real privileged supervisor/timeout as our fixture uid.
+        const child = spawnProcess(args[2]!, args.slice(3), { stdio: ['ignore', 'pipe', 'pipe'] });
+        child.stdout.on('data', (chunk: Buffer) => { wire += chunk.toString(); });
+        return child;
+      }) as CensusSpawn;
+      const compact = await inspectRetentionTrees(root, { ...options, sudo: '/usr/bin/sudo', spawn: native,
+        timeoutMs: 10_000, progressTimeoutMs: 5000 });
+      const ordered = (value: typeof expected) => ({ ...value, timing: undefined,
+        entries: [...value.entries].sort((a, b) => a.path.localeCompare(b.path)),
+        retained: [...value.retained].sort((a, b) => a.path.localeCompare(b.path)) });
+      expect(compact.error).toBeUndefined();
+      expect(ordered(compact)).toEqual(ordered(expected));
+      expect(compact.inspectedNodes).toBeGreaterThan(512);
+      expect(wire.split('\0').length / 9).toBeLessThan(compact.inspectedNodes / 4);
+      expect(compact.entries.find(entry => entry.path === tree)?.hardlinks?.[0]?.paths).toHaveLength(2);
+      expect(compact.entries.find(entry => entry.path === tree)?.buildDirs).toContainEqual(expect.objectContaining({ path: modules }));
+      expect(compact.retained).toContainEqual(expect.objectContaining({ path: protectedTree, reason: 'symlink boundary' }));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.each(['symlink', 'special', 'policy'])('stops an uncapped candidate at its first conclusive %s boundary in one native walk', async (boundary) => {
     const root = mkdtempSync(join(tmpdir(), 'retention-early-protection-'));
     try {

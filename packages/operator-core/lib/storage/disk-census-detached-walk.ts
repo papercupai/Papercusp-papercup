@@ -355,25 +355,22 @@ const { resolve } = require('node:path');
 const roots = JSON.parse(process.argv[1]), progressPath = process.argv[2];
 const totals = new Map();
 let pending = '', stderr = '', failure = '', records = 0, stdoutBytes = 0;
-let lastMetadataAt = null, lastMetadataPath = null, savedAt = 0, timer;
+let lastMetadataAt = null, lastMetadataPath = null, savedAt = 0;
 const startedAt = Date.now();
 const child = spawn(process.argv[3], process.argv.slice(4), { stdio: ['ignore', 'pipe', 'pipe'] });
 function progress(finishedAt = null) {
   const at = Date.now();
   if (finishedAt === null && at - savedAt < 1000) return;
   savedAt = at;
-  const row = { startedAt, finishedAt, metadataRecords: records, stdoutBytes,
+  const row = { startedAt, finishedAt, heartbeatAt: at, metadataRecords: records, stdoutBytes,
     completedRoots: totals.size, totalRoots: roots.length, lastMetadataAt,
     lastMetadataPath, error: failure || null };
   writeFileSync(progressPath + '.part', JSON.stringify(row));
   renameSync(progressPath + '.part', progressPath);
 }
 function stop(reason) { failure ||= reason; child.kill('SIGKILL'); }
-function arm() {
-  clearTimeout(timer);
-  timer = setTimeout(() => stop('usage walk made no metadata progress for 10 seconds'), 10000);
-}
-progress(); arm();
+progress();
+const heartbeat = setInterval(() => progress(), 1000);
 child.stdout.setEncoding('utf8');
 child.stdout.on('data', chunk => {
   if (failure) return;
@@ -389,14 +386,13 @@ child.stdout.on('data', chunk => {
     if (roots.includes(p)) totals.set(p, n);
   }
   if (pending.length > 65536) { stop('oversized usage walk record'); return; }
-  if (rows.length) arm();
   progress();
 });
 child.stderr.setEncoding('utf8');
 child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
 child.once('error', error => { failure ||= error.message; });
 child.once('close', (code, signal) => {
-  clearTimeout(timer);
+  clearInterval(heartbeat);
   if (code !== 0 || signal || pending || totals.size !== roots.length) failure ||= 'incomplete usage walk';
   progress(Date.now());
   if (failure) { process.stderr.write(failure + '\n' + stderr); process.exitCode = 1; }

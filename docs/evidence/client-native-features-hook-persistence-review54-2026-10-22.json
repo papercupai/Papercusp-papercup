@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Review54 failure-hook persistence receipts",
+  "framework": "operational",
+  "command": [
+    "node apps/operator/scripts/hooks/cc/stop-failure-record.mjs",
+    "node apps/operator/scripts/hooks/cc/posttooluse-failure-record.mjs"
+  ],
+  "startedAt": "2026-10-22T17:35:00Z",
+  "finishedAt": "2026-10-22T17:37:12Z",
+  "exitCode": 0,
+  "summary": "Separate the review54 hook executions from the combined archive's earlier native observations. The start is the conservative lower bound of the saved 17:35 probe window. Three persisted rows were independently read back; the four-second acknowledgements remained unconfirmed and were preserved without replay. The exact serving build was subsequently recovered from all three matching activity:report invocation records. This receipt establishes persistence and runtime identity, not acknowledgement latency.",
+  "assertions": [
+    {
+      "id": "stopfailure-persisted",
+      "passed": true,
+      "evidence": "Actual stop-failure-record.mjs entrypoint persisted lifecycle/error row8979862 at2026-10-22T17:36:33.509471Z for session acceptance-review54-c5ca-20261022-1735, error review54_synthetic_stop, hook_event_name StopFailure. Server readback reconfirmed the row; acknowledgement was unconfirmed."
+    },
+    {
+      "id": "tool-error-persisted",
+      "passed": true,
+      "evidence": "Actual posttooluse-failure-record.mjs entrypoint persisted tool/error/post row8979879 at2026-10-22T17:36:41.535747Z for the same private session, tool review54_acceptance_probe, tool_use_id review54_error and detail {command:synthetic-persistence-check}. Acknowledgement was unconfirmed."
+    },
+    {
+      "id": "tool-interrupt-persisted",
+      "passed": true,
+      "evidence": "Actual posttooluse-failure-record.mjs entrypoint persisted tool/interrupted/post row8979888 at2026-10-22T17:36:45.134004Z for the same private session and tool, tool_use_id review54_interrupt and scalar-only detail. Acknowledgement was unconfirmed."
+    }
+  ],
+  "review54HookPersistence": {
+    "workspace": "papercusp-workspace",
+    "session": "acceptance-review54-c5ca-20261022-1735",
+    "operatorRoute": "http://127.0.0.1:3170",
+    "runtimeIdentity": "All three exact activity:report invocation records independently identify serving_build_sha4ad5a574aa. Recovered by the known private session identity and bounded17:35-17:37:30Z window; this corroborates the pre-probe pipeline read without relying on it for invocation-time identity.",
+    "toolInvocations": [
+      {"id": 43067774, "invokedAt": "2026-10-22T17:36:33.519Z", "status": "ok", "servingBuildSha": "4ad5a574aa", "kind": "lifecycle", "reportStatus": "error", "toolUseId": null},
+      {"id": 43067838, "invokedAt": "2026-10-22T17:36:43.229Z", "status": "ok", "servingBuildSha": "4ad5a574aa", "kind": "tool", "reportStatus": "error", "toolUseId": "review54_error"},
+      {"id": 43067869, "invokedAt": "2026-10-22T17:36:46.068Z", "status": "ok", "servingBuildSha": "4ad5a574aa", "kind": "tool", "reportStatus": "interrupted", "toolUseId": "review54_interrupt"}
+    ],
+    "rowIds": [8979862, 8979879, 8979888],
+    "acknowledgements": "All three helper calls exceeded their four-second bound and retained private recovery files. No confirmed acknowledgement or safe automatic retry is claimed.",
+    "sourceArchive": "docs/evidence/client-native-features-operational-2026-10-22.json",
+    "scope": "Only the review54 hook persistence observations are repeated here. The original combined archive retains the older Codex, Channels and compaction observations."
+  },
+  "sourcePaths": [
+    "apps/operator/scripts/hooks/cc/pc_activity_report.mjs",
+    "apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs",
+    "apps/operator/scripts/hooks/cc/stop-failure-record.mjs",
+    "apps/operator/scripts/hooks/cc/posttooluse-failure-record.mjs"
+  ]
+}

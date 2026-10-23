@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
-import type { PushSnapshot, SnapshotSymbol } from '../../code-intelligence/push-snapshot';
+import { parsePushSnapshot, type PushSnapshot } from '../../code-intelligence/push-snapshot';
+import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import * as anchorStore from '../../plan-items/anchor-store';
 import { setupPlanPgFixture, seedPlan, cleanupPlans, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 import addTool from './add-item';
@@ -52,11 +53,15 @@ beforeAll(async () => {
   await writeFile(join(fixture.root, 'code.ts'), source);
   const caller = "import { linked } from './code';\nlinked();\n";
   await writeFile(join(fixture.root, 'flow.test.ts'), caller);
-  const symbol: SnapshotSymbol = { id: 'fixture:linked', name: 'linked', path: 'code.ts', line: 1, column: 17,
-    signature: 'linked()', sha256: digest, aliases: [], callers: [{ path: 'flow.test.ts', line: 2, column: 1,
-      sha256: createHash('sha256').update(caller).digest('hex'), spelling: 'linked' }] };
-  fixture.snapshot = { commit: 'fixture', generatedAt: new Date().toISOString(), generatedMs: Date.now(),
-    hashes: new Map(), importers: new Map(), symbols: new Map([['linked', [symbol]]]) };
+  const files: Record<string, string> = { 'code.ts': source, 'flow.test.ts': caller };
+  const paths = Object.keys(files);
+  const symbols = buildSymbolSnapshot({ files: paths, readSource: path => files[path] ?? null,
+    resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, new Set(paths)) });
+  fixture.snapshot = parsePushSnapshot(JSON.stringify({ schema: 'graph-dependency-snapshot-v1',
+    index: { backend: 'first-party-imports', lastCommit: 'd'.repeat(40) }, generatedAt: new Date().toISOString(),
+    edges: [{ importer: 'flow.test.ts', imported: 'code.ts',
+      importerSha256: createHash('sha256').update(caller).digest('hex') }], symbols }));
+  expect(fixture.snapshot?.symbols?.get('linked')).toHaveLength(1);
 }, 180_000);
 beforeEach(async () => {
   vi.restoreAllMocks();
@@ -80,8 +85,8 @@ describe('plan item anchors through the real plan tools', () => {
     const added = result.results[0];
     expect(added.ok).toBe(true);
     expect(added.anchors[0]).toMatchObject({
-      symbolId: 'fixture:linked', symbolName: 'linked', path: 'code.ts',
-      signature: 'linked()', contentHash: declarationDigest, resolution: 'resolved',
+      symbolId: 'code.ts:1:linked', symbolName: 'linked', path: 'code.ts',
+      signature: 'export function linked() ', contentHash: declarationDigest, resolution: 'resolved',
       consumers: [{ path: 'flow.test.ts', line: 2 }], consumersTotal: 1, tests: ['flow.test.ts'],
     });
     const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS, itemId: 'P-001', anchors: [{ symbol: 'linked' }] } as never, ctx()));

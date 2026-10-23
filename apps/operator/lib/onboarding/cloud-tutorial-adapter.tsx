@@ -38,13 +38,17 @@ export function CloudTutorialHighlight({
     const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
       if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
       // A late rail reservation can reflow the form after the guide focused it.
-      // Scroll after layout, and only while the user is still editing this target.
+      // A lesson highlights a section, while its form focuses a child input.
+      // Reveal that focused control after layout without taking focus from elsewhere.
       resizeFrame = requestAnimationFrame(() => {
         resizeFrame = undefined;
-        if (disposed || !current || document.activeElement !== current) return;
-        const rect = current.getBoundingClientRect();
+        const focused = document.activeElement;
+        if (disposed || !current || !(focused instanceof HTMLElement) || !current.contains(focused)) return;
+        const rect = focused.getBoundingClientRect();
         if (rect.top < 0 || rect.left < 0 || rect.bottom > innerHeight || rect.right > innerWidth) {
-          current.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
+          // Nearest-edge scrolling can round a fractional overflow back outside
+          // the viewport. Center vertically to leave clearance after reflow.
+          focused.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
         }
       });
     });

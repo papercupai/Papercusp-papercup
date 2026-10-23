@@ -16,6 +16,43 @@ import { clearStaleIndexLock, lockHasLiveHolder, lsofLockHolder, probeLockHolder
 
 type RunResult = { code: number | null; stdout: string; stderr: string; missing?: boolean };
 
+describe('targeted Linux lock-holder probe (EI-26694305758493084)', () => {
+  it.each([true, false, null] as const)('keeps the native %s verdict without a whole-host fallback', async (held) => {
+    const calls: string[] = [];
+    const probe = await probeLockHolder('/x/.git/index.lock', {
+      platform: 'linux',
+      targetedHolder: async (path) => { calls.push(path); return held; },
+      procHolder: async () => { throw new Error('unexpected whole-host scan'); },
+      lsofHolder: async () => { throw new Error('unexpected lsof scan'); },
+    });
+    expect(calls).toEqual(['/x/.git/index.lock']);
+    expect(probe).toEqual({
+      held: held !== false, source: 'fuser',
+      verdict: held === null ? 'unknown' : held ? 'held' : 'absent',
+    });
+  });
+
+  it('uses the existing fallback when the native instrument is unavailable', async () => {
+    const calls: string[] = [];
+    expect(await probeLockHolder('/x', {
+      platform: 'linux',
+      targetedHolder: async () => { calls.push('native'); return 'unavailable'; },
+      procHolder: async () => { calls.push('proc'); return null; },
+      lsofHolder: async () => { calls.push('lsof'); return false; },
+    })).toEqual({ held: false, source: 'lsof', verdict: 'absent' });
+    expect(calls).toEqual(['native', 'proc', 'lsof']);
+  });
+
+  it('retains the macOS fallback without invoking a Linux instrument', async () => {
+    expect(await probeLockHolder('/x', {
+      platform: 'darwin',
+      targetedHolder: async () => { throw new Error('unexpected Linux instrument'); },
+      procHolder: async () => null,
+      lsofHolder: async () => false,
+    })).toEqual({ held: false, source: 'lsof', verdict: 'absent' });
+  });
+});
+
 describe('lockHasLiveHolder (WI-10003529)', () => {
   it('retains an UNKNOWN probe verdict while the boolean seam still fails closed', async () => {
     const probe = await probeLockHolder('/x/.git/index.lock', {
@@ -166,6 +203,33 @@ try {
   // `lsof -v` exits non-zero on some builds while still existing; only ENOENT means absent.
   hasLsof = (e as NodeJS.ErrnoException).code !== 'ENOENT';
 }
+
+let hasFuser = false;
+if (process.platform === 'linux') {
+  try {
+    execFileSync('fuser', ['-V'], { stdio: 'ignore', timeout: 2000 });
+    hasFuser = true;
+  } catch { /* The unavailable-instrument fallback is covered above. */ }
+}
+
+describe.skipIf(!hasFuser)('probeLockHolder against the real native instrument (EI-26694305758493084)', () => {
+  it('observes a live descriptor and its closure through the production selector', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-lock-holder-'));
+    const lock = join(dir, 'index.lock');
+    try {
+      await writeFile(lock, '');
+      const fh = await open(lock, 'r');
+      try {
+        expect(await probeLockHolder(lock)).toEqual({ held: true, source: 'fuser', verdict: 'held' });
+      } finally {
+        await fh.close();
+      }
+      expect(await probeLockHolder(lock)).toEqual({ held: false, source: 'fuser', verdict: 'absent' });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
 
 // This case checks lsof's VERDICTS, not its speed. On the dev box one call scans
 // ~8,000 processes and took 9.6-11.6s on 2026-10-01, past the 10s production

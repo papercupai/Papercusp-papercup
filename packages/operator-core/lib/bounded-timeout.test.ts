@@ -43,10 +43,12 @@ describe('withBoundedTimeout (WI-3818)', () => {
   it('degrades to the fallback with reason "timeout" when the work never settles in time', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const neverSettles = new Promise<string>(() => {});
+    const correlationId = 'b497d96b-f582-49b0-9397-94610fd9b04e';
     const resultPromise = withBoundedTimeout(neverSettles, {
       fallback: 'fallback-value',
       timeoutMs: 5000,
-      label: 'slow-query',
+      label: 'orient:coord:inbox',
+      correlationId,
     });
     await vi.advanceTimersByTimeAsync(5000);
     const result = await resultPromise;
@@ -54,6 +56,11 @@ describe('withBoundedTimeout (WI-3818)', () => {
     expect(result.degraded).toBe(true);
     expect(result.reason).toBe('timeout');
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(recorder.observeFallback).toHaveBeenCalledWith(
+      'bounded-operation',
+      { eligible: 1, applied: 0, reason: 'timeout', scope: 'orient:coord:inbox' },
+      expect.objectContaining({ correlationId }),
+    );
     expect(warnSpy).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();
   });

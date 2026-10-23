@@ -1934,6 +1934,11 @@ describe('background job deadlines (WI-6677)', () => {
       'VERIFY_TAURI_ISOLATED_DB=1 bash ./scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
       'cd apps/operator && bash ../../scripts/run-operator-e2e-isolated.sh e2e/content-reading.spec.ts',
       'env -- FOO=1 bash -- /workspace/papercusp/scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+      'VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS="completion kindEvidence" scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+      "env -- LABEL='with spaces' bash -- scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime",
+      'LABEL=with\\ spaces scripts/run-operator-e2e-isolated.sh e2e/content-reading.spec.ts',
+      'LABEL=prefix" with spaces"suffix scripts/run-operator-e2e-isolated.sh e2e/content-reading.spec.ts',
+      'LABEL="" scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
     ]) expect(isBackgroundTestCommand(command), command).toBe(true);
     for (const command of [
       'rg scripts/run-operator-e2e-isolated.sh',
@@ -1941,12 +1946,16 @@ describe('background job deadlines (WI-6677)', () => {
       'cat scripts/verify-tauri-headless.sh',
       'bash scripts/verify-tauri-headless.sh.backup',
       'bash scripts/unrelated.sh',
+      'LABEL="with spaces" printf "bash scripts/verify-tauri-headless.sh"',
+      'LABEL="with spaces" cat scripts/verify-tauri-headless.sh',
     ]) expect(isBackgroundTestCommand(command), command).toBe(false);
   });
 
   it.each([
     "env PAPERCUSP_TEST_RUN_HARNESS=papercusp bash scripts/run-operator-e2e-isolated.sh e2e/ongoing-work-ui.spec.ts --grep 'ongoing work stays visible|mobile strip preserves' --workers=1",
     'bash scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+    'VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS="completion kindEvidence" scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+    "env -- LABEL='with spaces' bash -- scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime",
   ])('budgets a maintained verifier before preparation: %s', (command) => {
     const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
     const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});

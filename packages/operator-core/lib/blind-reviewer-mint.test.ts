@@ -22,7 +22,9 @@ import {
   blindReviewerConfinement,
   buildBlindReviewerKickoff,
   mintBlindGapReviewer,
+  resumeBlindGapReviewer,
 } from './blind-reviewer-mint';
+import { INTERNAL_BLIND_REVIEW_RESUME } from './blind-review-session-bindings';
 
 const REPO = resolve(__dirname, '../../..');
 
@@ -308,10 +310,26 @@ describe('mintBlindGapReviewer', () => {
   const KEY = Symbol('test-confinement-key');
 
   function deps(brief: BlindReviewBrief | null = BRIEF) {
-    const handler = vi.fn(async () => ({ ok: true, ownerId: 'su-reviewer-1' }));
+    const handler = vi.fn(async () => ({ data: { launch: {
+      ownerIds: ['su-reviewer-1'],
+      freshVerdict: { sessions: [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' }] },
+    } } }));
     const loadBrief = vi.fn(async () => brief);
     const launcher = vi.fn(async () => ({ handler, confinementKey: KEY }));
-    return { handler, loadBrief, launcher, deps: { loadBrief, launcher } };
+    const binding = {
+      id: 7, workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: SLUG, activationAuditSeq: 7,
+      reviewerOwnerId: 'su-reviewer-1', advSessionId: 42, nativeSessionId: 'native-review-1',
+      launchParentOwner: BLIND_GAP_REVIEW_ACTOR, accountRoute: 'auto', modelSpec: null,
+      confinementSnapshot: CONFINEMENT, status: 'ready' as const, resumeLeaseId: null,
+      resumeLeaseExpiresAt: null, reviewId: null,
+    };
+    const createSessionBinding = vi.fn(async (input: { reviewerOwnerId: string; confinement: typeof CONFINEMENT }) => ({
+      ok: true as const, created: true, binding: { ...binding, reviewerOwnerId: input.reviewerOwnerId, confinementSnapshot: input.confinement },
+    }));
+    const acquireSessionResume = vi.fn(async () => ({ ok: true as const, binding: { ...binding, status: 'resuming' as const, resumeLeaseId: 'lease-1' }, leaseId: 'lease-1' }));
+    const releaseSessionResume = vi.fn(async () => true);
+    return { handler, loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume,
+      deps: { loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume } };
   }
 
   it('attaches the nominated product read boundary before launch and supplies executable read hints', async () => {
@@ -365,6 +383,40 @@ describe('mintBlindGapReviewer', () => {
     expect(result.scratchPrefix).toMatch(/^blind-review-scratch-[a-f0-9]{12}-$/);
     expect(ctx[KEY]).toEqual(blindReviewerConfinement(SLUG, undefined,
       { scratchPrefix: result.scratchPrefix!, reviewedSlug: SLUG, harness: 'papercusp' }));
+    expect(d.createSessionBinding).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: SLUG, activationAuditSeq: 7,
+      reviewerOwnerId: 'su-reviewer-1', advSessionId: 42, nativeSessionId: 'native-review-1',
+      launchParentOwner: BLIND_GAP_REVIEW_ACTOR,
+    }));
+  });
+
+  it('recovers only the bound native transcript in place under the system recruiter and releases its lease', async () => {
+    const d = deps();
+    const result = await resumeBlindGapReviewer({
+      slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1', ownerId: 'su-author' },
+    }, d.deps);
+    expect(result).toMatchObject({ ok: true, activationAuditSeq: 7, reviewerOwnerId: 'su-reviewer-1', leaseReleased: true });
+    const [args, ctx] = d.handler.mock.calls[0] as unknown as [Record<string, unknown>, Record<PropertyKey, unknown>];
+    expect(args).toMatchObject({ resume: { sessionId: 'native-review-1' }, fork: false, headless: true, harness: 'papercusp' });
+    expect(args).not.toHaveProperty('agent');
+    expect(args).not.toHaveProperty('account');
+    expect(args).not.toHaveProperty('model');
+    expect(ctx.ownerId).toBe(BLIND_GAP_REVIEW_ACTOR);
+    expect(ctx[INTERNAL_BLIND_REVIEW_RESUME]).toMatchObject({ bindingId: 7, leaseId: 'lease-1', nativeSessionId: 'native-review-1' });
+    expect(ctx[KEY]).toEqual(CONFINEMENT);
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it('refuses a reviewer from recruiting its own recovery', async () => {
+    const d = deps();
+    const result = await resumeBlindGapReviewer({
+      slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-reviewer-1',
+      ctx: { workspaceId: 'ws-1', ownerId: 'su-reviewer-1' },
+    }, d.deps);
+    expect(result).toMatchObject({ ok: false, code: 'recruiter_only' });
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
   });
 
   it('attaches a fresh scratch-plan boundary before launch and names its prefix in the kickoff (D-050)', async () => {

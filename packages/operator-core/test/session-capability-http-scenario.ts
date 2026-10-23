@@ -21,11 +21,22 @@ export async function measureSessionCapabilityScenario(options: {
   assert.ok(options.workspace, 'select the private-fixture workspace explicitly');
   assert.match(options.expectedSha, /^[a-f0-9]{10,40}$/);
   const request = async (path: string, method = 'GET', token?: string, body?: object): Promise<Reply> => {
-    const response = await fetch(options.api.replace(/\/$/, '') + path, { method,
-      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}),
-        ...(body ? { 'content-type': 'application/json' } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
-    return { status: response.status, data: await response.json() };
+    const startedAt = performance.now();
+    try {
+      const response = await fetch(options.api.replace(/\/$/, '') + path, { method,
+        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...(body ? { 'content-type': 'application/json' } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
+      return { status: response.status, data: await response.json() };
+    } catch (error) {
+      // Raw fetch/JSON errors can contain pairing credentials. Preserve the
+      // failed door and duration without copying request or response data.
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      const errorName = error instanceof Error ? error.name : 'UnknownError';
+      throw new Error(redactSensitiveText(
+        `${method} ${path} failed after ${elapsedMs}ms (${errorName})`,
+      ));
+    }
   };
   const health = await request('/health');
   assert.equal(health.status, 200, diagnostic(health));
@@ -45,6 +56,7 @@ export async function measureSessionCapabilityScenario(options: {
   const checks = { missingJwt: 0, invalidJwt: 0, defaultDenied: 0, granted: 0, revokedCapability: 0 };
   let deviceId: string | undefined;
   let deviceRevoked = false;
+  let scenarioFailure: unknown;
   try {
     for (const [method, path] of doors) {
       for (const token of [undefined, 'invalid-device-jwt']) {
@@ -90,11 +102,22 @@ export async function measureSessionCapabilityScenario(options: {
     assert.equal(after.status, 200, diagnostic(after));
     assert.equal(after.data.sha, health.data.sha, 'the serving build must remain pinned throughout the journey');
     assert.equal(after.data.bundleStale, undefined);
+  } catch (error) {
+    scenarioFailure = error;
+    throw error;
   } finally {
     if (deviceId) {
-      const cleanup = await request(`/device/desktop/devices/${deviceId}`, 'DELETE');
-      assert.equal(cleanup.status, 200, diagnostic(cleanup));
-      deviceRevoked = true;
+      try {
+        const cleanup = await request(`/device/desktop/devices/${deviceId}`, 'DELETE');
+        assert.equal(cleanup.status, 200, diagnostic(cleanup));
+        deviceRevoked = true;
+      } catch (cleanupFailure) {
+        if (scenarioFailure !== undefined) {
+          throw new AggregateError([scenarioFailure, cleanupFailure],
+            'Device-session verification and private-device cleanup both failed');
+        }
+        throw cleanupFailure;
+      }
     }
   }
   return { workspace: options.workspace, sha: health.data.sha, checks, deviceRevoked };

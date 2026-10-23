@@ -5,6 +5,7 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { configureOperatorUi } from '@papercusp/operator-ui/seam';
 import { ADV_TAB_SURFACE_KINDS } from '@papercusp/operator-ui/adv-navigation';
 import type { ReactNode } from 'react';
+import type { BlueprintOperationHandle, WorkflowAdministration } from '@papercusp/pot-app-seam';
 import type { AutomationCatalog, AutomationRoutine } from '@papercusp/operator-core/lib/automation/catalog';
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
 
@@ -366,7 +367,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); configureOperatorUi({ advNavigation: undefined }); });
 
 describe('Enterprise workspace — D-050', () => {
-  function expectEnterpriseJourney(root: HTMLElement) {
+  function expectEnterpriseJourney(root: HTMLElement, loaded = false) {
     const route = within(root);
     expect(route.getByRole('region', { name: 'Enterprise journey' })).toBeTruthy();
     expect((route.getByRole('combobox', { name: 'Departmental workflow' }) as HTMLSelectElement).value)
@@ -377,12 +378,77 @@ describe('Enterprise workspace — D-050', () => {
     expect(employee.getByRole('button', { name: 'Prepare handoff' })).toBeTruthy();
     expect(employee.getByText('a'.repeat(64))).toBeTruthy();
     const reviewer = within(route.getByRole('region', { name: 'Operation result' }));
-    expect(reviewer.getByRole('heading', { name: 'Reviewer decision' })).toBeTruthy();
-    expect(reviewer.getByText(/Business outcome pending/)).toBeTruthy();
+    if (loaded) {
+      expect(reviewer.getByText(/Cited support summary/)).toBeTruthy();
+      expect(reviewer.getByText('Business outcome: pending')).toBeTruthy();
+      expect(reviewer.getByText('evidence:output')).toBeTruthy();
+      expect(reviewer.getByRole('textbox', { name: 'Review reason' })).toBeTruthy();
+      expect((reviewer.getByRole('button', { name: 'Accept result' }) as HTMLButtonElement).disabled).toBe(false);
+    } else {
+      expect(reviewer.getByRole('heading', { name: 'Reviewer decision' })).toBeTruthy();
+      expect(reviewer.getByText(/Business outcome pending/)).toBeTruthy();
+    }
     const administration = within(route.getByRole('region', { name: 'Workflow administration' }));
     expect(administration.getByRole('button', { name: 'Refresh administration' })).toBeTruthy();
-    expect(administration.getByText(/Approved version, funding\/cost evidence, promotion, rollback, and history have not been read/))
-      .toBeTruthy();
+    if (loaded) {
+      expect(administration.getByRole('heading', { name: 'Approved version 2' })).toBeTruthy();
+      expect(administration.getByText('b'.repeat(64))).toBeTruthy();
+      expect(administration.getByText(/Finite allocation: \$1.000000/)).toBeTruthy();
+      expect(administration.getByText(/Observed: \$0.012000/)).toBeTruthy();
+      expect(administration.getByText(/Unknown \(provider-final-bill-not-recorded\)/)).toBeTruthy();
+      expect(administration.getByText('reservation:42')).toBeTruthy();
+      expect((administration.getByRole('button', { name: 'Roll back revision' }) as HTMLButtonElement).disabled).toBe(false);
+      expect(administration.getByRole('button', { name: 'Stop selected run' })).toBeTruthy();
+      expect(administration.getByText('admin:rollback:1')).toBeTruthy();
+      expect(administration.getByText('business-review:earlier')).toBeTruthy();
+    } else {
+      expect(administration.getByText(/Approved version, funding\/cost evidence, promotion, rollback, and history have not been read/))
+        .toBeTruthy();
+    }
+  }
+
+  async function loadEnterpriseJourney() {
+    H.enterpriseOperations = true;
+    const handle: BlueprintOperationHandle = { workspaceId: 'workspace', harnessSlug: 'papercusp',
+      operationId: 'support-handoff', receiptId: 42, specificationRevision: 'a'.repeat(64),
+      target: { kind: 'work-item', id: 'WI-42' } };
+    const administration: WorkflowAdministration = { harnessSlug: handle.harnessSlug, operationId: handle.operationId,
+      approvedRevision: 'b'.repeat(64), version: '2', accountableOwner: 'support-owner', reviewerPrincipals: ['reviewer'],
+      retainedRevisions: [{ revision: handle.specificationRevision, version: '1' }],
+      funding: { allocationId: 'support', month: '2026-10', maximumCostMicros: 100_000, capMicros: 1_000_000,
+        availableMicros: 900_000, committedMicros: 100_000, unknownReason: null,
+        costs: [{ reservationId: 'reservation:42', observedCostMicros: { value: 12_000 },
+          providerFinalCostMicros: { unknownReason: 'provider-final-bill-not-recorded' } }] },
+      history: [{ eventId: 'admin:rollback:1', body: { action: 'rollback', principalId: 'support-owner', reason: 'Earlier rollback' } }],
+      businessReviews: [{ eventId: 'business-review:earlier', body: { decision: 'rework', reviewerPrincipal: 'reviewer',
+        receiptId: 41, reason: 'Earlier business review' } }] };
+    H.runTool.mockImplementation(async (name) => {
+      if (name === 'blueprint:status') return { ok: true, data: { administration } };
+      if (name === 'blueprint:result') return { ok: true, data: {
+        state: 'ready', status: { handle, phase: 'terminal', outcome: 'succeeded', items: [], planRun: null,
+          cancellationRequested: false, wait: null }, output: 'Cited support summary', evidenceRef: 'evidence:output',
+        acceptanceEvidenceRef: 'evidence:evaluation',
+        businessReview: { state: 'pending', accountableOwner: 'support-owner', resultFingerprint: 'f'.repeat(64) },
+      } };
+      throw new Error(`Unexpected loaded journey tool: ${name}`);
+    });
+    renderTab({ wfSelId: 'operation:papercusp:support-handoff', wfRun: JSON.stringify(handle), wfReview: 'true' }, true);
+    await screen.findByRole('button', { name: 'Accept result' });
+    const root = screen.getByRole('region', { name: 'Enterprise workspace' });
+    const administrationRegion = within(root).getByRole('region', { name: 'Workflow administration' });
+    fireEvent.click(within(administrationRegion).getByRole('button', { name: 'Refresh administration' }));
+    await within(administrationRegion).findByRole('heading', { name: 'Approved version 2' });
+    fireEvent.change(within(administrationRegion).getByRole('combobox', { name: 'Retained local revision' }),
+      { target: { value: handle.specificationRevision } });
+    fireEvent.change(within(administrationRegion).getByRole('textbox', { name: 'Administrative reason' }),
+      { target: { value: 'Owner rollback control' } });
+    fireEvent.change(within(root).getByRole('textbox', { name: 'Review reason' }),
+      { target: { value: 'Distinct reviewer decision' } });
+    expect(H.runTool).toHaveBeenCalledWith('blueprint:result', { handle, review: true });
+    expect(H.runTool).toHaveBeenCalledWith('blueprint:status', {
+      harness: handle.harnessSlug, operationId: handle.operationId, administration: true,
+    });
+    return root;
   }
 
   function expectUnavailableInventory(root: HTMLElement) {
@@ -458,6 +524,34 @@ describe('Enterprise workspace — D-050', () => {
     const counterexample = route.cloneNode(true) as HTMLElement;
     mutate(counterexample);
     expect(() => expectEnterpriseJourney(counterexample)).toThrow();
+  });
+
+  it('keeps loaded funding, cost, history, and enabled reviewer/admin controls in the canonical journey', async () => {
+    expectEnterpriseJourney(await loadEnterpriseJourney(), true);
+  });
+
+  it.each<[string, (root: HTMLElement) => void]>([
+    ['missing loaded funding', root => within(root).getByText(/Finite allocation:/).remove()],
+    ['missing measured cost', root => within(root).getByText(/Observed: \$0.012000/).remove()],
+    ['missing unknown final cost', root => {
+      const cost = within(root).getByText(/Unknown \(provider-final-bill-not-recorded\)/);
+      cost.textContent = cost.textContent!.replace('Unknown (provider-final-bill-not-recorded)', '');
+    }],
+    ['missing rollback control', root => within(root).getByRole('button', { name: 'Roll back revision' }).remove()],
+    ['missing rollback history evidence', root => within(root).getByText('admin:rollback:1').remove()],
+    ['missing loaded reviewer action', root => within(root).getByRole('button', { name: 'Accept result' }).remove()],
+    ['loaded reviewer fragmented into another route', root => {
+      document.createElement('section').appendChild(within(root).getByRole('region', { name: 'Operation result' }));
+    }],
+    ['loaded administration fragmented into another route', root => {
+      document.createElement('section').appendChild(within(root).getByRole('region', { name: 'Workflow administration' }));
+    }],
+  ])('rejects the loaded journey with %s', async (_name, mutate) => {
+    const root = await loadEnterpriseJourney();
+    expectEnterpriseJourney(root, true);
+    const counterexample = root.cloneNode(true) as HTMLElement;
+    mutate(counterexample);
+    expect(() => expectEnterpriseJourney(counterexample, true)).toThrow();
   });
 
   it('distinguishes an unavailable inventory from an installed-workflow count of zero', async () => {

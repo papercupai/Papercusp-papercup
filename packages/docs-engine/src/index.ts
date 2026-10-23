@@ -9,6 +9,8 @@
 
 export type {
   DocHeading,
+  DocListPagesOptions,
+  DocListPagesTimingEvent,
   DocPage,
   DocSource,
   SectionMeta,

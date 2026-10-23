@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   FLEET_CAMPAIGN_RECENT_ROW_CAP,
   partitionTerminalGroups,
@@ -6,6 +6,7 @@ import {
   recentEvidence,
   resolveFleetCampaignBoundary,
   FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY,
+  FLEET_CAMPAIGN_SLOW_AXIS_LOG_THRESHOLD_MS,
   runFleetCampaignAxisReads,
 } from './fleet-campaign';
 
@@ -13,16 +14,44 @@ describe('fleet campaign pure contracts', () => {
   it('runs independent campaign axes concurrently with a bounded stable width', async () => {
     let inFlight = 0;
     let peakInFlight = 0;
-    const reads = Array.from({ length: 7 }, (_, index) => async () => {
-      inFlight += 1;
-      peakInFlight = Math.max(peakInFlight, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      inFlight -= 1;
-      return index;
-    });
+    const reads = Array.from({ length: 7 }, (_, index) => ({
+      axis: 'speaking' as const,
+      read: async () => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        return index;
+      },
+    }));
 
-    await expect(runFleetCampaignAxisReads(reads)).resolves.toEqual([0, 1, 2, 3, 4, 5, 6]);
+    const results = await runFleetCampaignAxisReads(reads);
+    expect(results.map(({ value }) => value)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(results.every(({ elapsedMs }) => elapsedMs >= 0)).toBe(true);
     expect(peakInFlight).toBe(FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY);
+  });
+
+  it('logs a slow axis duration with the parent campaign correlation id', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const correlationId = 'b497d96b-f582-49b0-9397-94610fd9b04e';
+    const elapsedMs = FLEET_CAMPAIGN_SLOW_AXIS_LOG_THRESHOLD_MS + 1;
+    try {
+      const pending = runFleetCampaignAxisReads([
+        { axis: 'terminals' as const, read: () => new Promise<string>((resolve) => setTimeout(() => resolve('ready'), elapsedMs)) },
+      ], { correlationId });
+      await vi.advanceTimersByTimeAsync(elapsedMs);
+      await expect(pending).resolves.toEqual([
+        { axis: 'terminals', value: 'ready', elapsedMs },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(correlationId));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"axis":"terminals"'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"elapsedMs":${elapsedMs}`));
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it('uses a valid explicit since boundary and otherwise falls back to fleet creation', () => {

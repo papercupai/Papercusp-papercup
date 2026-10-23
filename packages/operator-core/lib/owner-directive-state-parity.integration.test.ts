@@ -27,7 +27,9 @@ import {
   OWNER_DIRECTIVE_STATES,
   dispositionOwnerDirective,
   listOwnerDirectives,
+  loadOpenOwnerDirectives,
   ownerDirectiveState,
+  renderOwnerDirectivesBlock,
   recordOwnerDirective,
   type OwnerDirectiveState,
 } from './owner-directives';
@@ -141,6 +143,27 @@ describe('owner-directive lifecycle state: SQL filter vs TS derivation (P-005)',
     const unfiltered = await listOwnerDirectives({ workspaceId, limit: 1 }, db.adminSql);
     expect(unfiltered).toHaveLength(1);
     expect(ownerDirectiveState(unfiltered[0])).not.toBe('declined');
+  });
+
+  it('keeps own overflow separate from foreign counts when own rows fill the page', async () => {
+    const countWorkspace = 'owner-directive-count-summary-ws';
+    const viewerOwnerId = 'su-count-summary';
+    await Promise.all(Array.from({ length: 20 }, (_, i) => recordOwnerDirective({
+      workspaceId: countWorkspace,
+      sourceTurnRef: `count-summary-turn-${i}`,
+      verbatimText: `Count summary request ${i}`,
+      recordedBy: i < 17 ? viewerOwnerId : 'su-count-summary-peer',
+    }, db.adminSql)));
+
+    const snapshot = await loadOpenOwnerDirectives(countWorkspace, { sql: db.adminSql, viewerOwnerId });
+    expect(snapshot.rows).toHaveLength(12);
+    expect(snapshot.rows.every((row) => row.recordedBy === viewerOwnerId)).toBe(true);
+    expect(snapshot.totalOpen).toBe(20);
+    expect(snapshot.totalOwnOpen).toBe(17);
+    const out = renderOwnerDirectivesBlock(snapshot.rows, { ...snapshot, viewerOwnerId })!;
+    expect(out).toContain('+5 more open for this session');
+    expect(out).toContain('Other sessions: 3 open directives');
+    expect(out).not.toContain('su-count-summary-peer');
   });
 
   it('applies the recordedBy ledger filter before limit', async () => {

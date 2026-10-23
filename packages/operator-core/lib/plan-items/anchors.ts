@@ -55,6 +55,25 @@ export async function declarationContentHash(source: string, symbol: SnapshotSym
   const ts = await import('typescript');
   const file = ts.createSourceFile(symbol.path, source, ts.ScriptTarget.Latest, true);
   let declaration: string | null = null;
+  function normalize(node: import('typescript').Node): string {
+    const chunks: string[] = [];
+    let offset = node.getStart(file);
+    function preserveLiterals(child: import('typescript').Node): void {
+      if (ts.isStringLiteralLike(child) || ts.isTemplateLiteralToken(child)
+        || child.kind === ts.SyntaxKind.RegularExpressionLiteral || child.kind === ts.SyntaxKind.JsxText) {
+        const start = child.getStart(file);
+        chunks.push(source.slice(offset, start).replace(/\s+/g, ' '), source.slice(start, child.end));
+        offset = child.end;
+        return;
+      }
+      ts.forEachChild(child, preserveLiterals);
+    }
+    // Whitespace in literal tokens is a value, not formatting. Let the parser
+    // identify template/regex boundaries rather than trying to quote-match text.
+    preserveLiterals(node);
+    chunks.push(source.slice(offset, node.end).replace(/\s+/g, ' '));
+    return chunks.join('').trim();
+  }
   function visit(node: import('typescript').Node): void {
     if (declaration !== null) return;
     if (ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isMethodDeclaration(node)
@@ -62,13 +81,13 @@ export async function declarationContentHash(source: string, symbol: SnapshotSym
       const name = node.name;
       if (name && name.getText(file) === symbol.name) {
         const at = file.getLineAndCharacterOfPosition(name.getStart(file));
-        if (at.line + 1 === symbol.line && at.character + 1 === symbol.column) declaration = node.getText(file);
+        if (at.line + 1 === symbol.line && at.character + 1 === symbol.column) declaration = normalize(node);
       }
     }
     ts.forEachChild(node, visit);
   }
   visit(file);
-  return declaration === null ? null : hash(String(declaration).replace(/\s+/g, ' ').trim());
+  return declaration === null ? null : hash(declaration);
 }
 
 async function readAnchorSource(root: string, path: string, signal: AbortSignal): Promise<Buffer | null> {
@@ -87,7 +106,7 @@ async function readAnchorSource(root: string, path: string, signal: AbortSignal)
 const testPath = (path: string) => /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)__tests__\/)/.test(path);
 function reachingTests(snapshot: PushSnapshot, path: string, symbol: SnapshotSymbol): { tests: string[]; proofs: PushProofSource[] } {
   const found = new Set(symbol.callers.filter(c => testPath(c.path)).map(c => c.path));
-  const proofs: PushProofSource[] = [];
+  const parents = new Map<string, string | null>([[path, null]]);
   const seen = new Set<string>();
   const queue = [path];
   while (queue.length && seen.size < 128 && found.size < 50) {
@@ -97,12 +116,27 @@ function reachingTests(snapshot: PushSnapshot, path: string, symbol: SnapshotSym
     for (const importer of snapshot.importers.get(next) ?? []) {
       const sha256 = snapshot.hashes.get(importer);
       if (!sha256) continue; // An uncorroboratable edge establishes no positive test reachability.
-      proofs.push({ path: importer, sha256 });
       if (testPath(importer)) found.add(importer);
-      if (!seen.has(importer)) queue.push(importer);
+      if (!parents.has(importer)) {
+        parents.set(importer, next);
+        queue.push(importer);
+      }
     }
   }
-  return { tests: [...found].sort().slice(0, 50), proofs };
+  const tests = [...found].sort().slice(0, 50);
+  const proofs = new Map<string, PushProofSource>();
+  // Reachability is positive evidence: one corroborated path per returned test
+  // proves it. Unselected import branches establish no returned fact and must
+  // not consume the source budget or invalidate an otherwise sound anchor.
+  for (const test of tests) {
+    let current: string | null | undefined = test;
+    while (current && current !== path) {
+      const sha256 = snapshot.hashes.get(current);
+      if (sha256) proofs.set(current, { path: current, sha256 });
+      current = parents.get(current);
+    }
+  }
+  return { tests, proofs: [...proofs.values()] };
 }
 
 export interface AnchorResolveOptions {

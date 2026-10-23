@@ -217,6 +217,48 @@ describe('refreshLiveSessionsBeforeRead', () => {
     }
   });
 
+  it('shares one deadline across owner lookup, liveness, resolve, and ingest', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const sql = vi.fn(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+        return [{ owner: 'su-slow' }];
+      });
+      const resolveStates = vi.fn(async (subjects: readonly { ownerId: string }[]) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+        return new Map(subjects.map(({ ownerId }) => [ownerId, { sessionState: 'live' as const }]));
+      });
+      const resolve = vi.fn(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+        return { filePath: '/tmp/slow.jsonl', sessionId: 'slow' };
+      });
+      const ingest = vi.fn(() => new Promise<never>(() => {}));
+      const pending = refreshLiveSessionsBeforeRead(sql as never, ['su-slow'], {
+        resolveStates,
+        resolve,
+        ingest,
+      });
+      let settled = false;
+      void pending.then(() => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(SESSION_READ_REFRESH_TIMEOUT_MS);
+
+      expect(settled).toBe(true);
+      await expect(pending).resolves.toEqual({
+        attempted: 1,
+        refreshed: 0,
+        failureReasons: { ingest_timeout: 1 },
+      });
+      expect(resolveStates).toHaveBeenCalledOnce();
+      expect(resolve).toHaveBeenCalledOnce();
+      expect(ingest).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('refreshes an active target session with its resolved owner and target id', async () => {
     const sql = vi.fn(async () => [{
       id: 42,

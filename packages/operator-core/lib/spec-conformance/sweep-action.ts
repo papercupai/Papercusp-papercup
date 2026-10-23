@@ -62,6 +62,7 @@ export const SPEC_CONFORMANCE_STARVATION_INTERVALS = 2;
 export const SPEC_CONFORMANCE_SWEEP_STATUSES: readonly string[] = ['active', 'ready'];
 
 export type SweepTrigger =
+  | 'requested'
   | 'never-run'
   | 'footprint-changed'
   | 'work-item-transitioned'
@@ -206,6 +207,8 @@ export interface SpecConformanceSweepDeps {
 }
 
 export interface SpecConformanceSweepOptions {
+  /** Run exactly this plan now, independent of its periodic triggers and tick cap. */
+  target?: { harnessSlug: string; planSlug: string };
   planIntervalSec?: number;
   maxRunsPerTick?: number;
   retryBackoffSec?: number;
@@ -261,7 +264,14 @@ export async function runSpecConformanceSweep(
   const now = deps.now ?? (() => Date.now());
   const planIntervalSec = opts.planIntervalSec ?? SPEC_CONFORMANCE_PLAN_INTERVAL_SEC;
   const maxRunsPerTick = opts.maxRunsPerTick ?? SPEC_CONFORMANCE_MAX_RUNS_PER_TICK;
-  const plans = await deps.listPlans();
+  const target = opts.target;
+  if (target && (!target.harnessSlug.trim() || !target.planSlug.trim() || ['*', 'all'].includes(target.harnessSlug))) {
+    throw new Error('A targeted conformance run requires a concrete harness and plan slug');
+  }
+  const listed = await deps.listPlans();
+  const plans = target
+    ? listed.filter((plan) => plan.harnessSlug === target.harnessSlug && plan.planSlug === target.planSlug)
+    : listed;
   const outcome: SpecConformanceSweepOutcome = {
     scanned: plans.length,
     candidates: 0,
@@ -271,6 +281,10 @@ export async function runSpecConformanceSweep(
     idle: 0,
     footprintProbeErrors: [],
   };
+  if (target && plans.length === 0) {
+    outcome.skipped.push({ key: sweepPlanKey(target.harnessSlug, target.planSlug), reason: 'plan-not-found' });
+    return outcome;
+  }
 
   const live: Array<{ plan: SweepPlan; key: string; globs: string[] }> = [];
   for (const plan of plans) {
@@ -309,7 +323,11 @@ export async function runSpecConformanceSweep(
     candidates.push({ key: entry.key, watermark, footprintChanged, lastTransitionAt: transitions.get(entry.key) ?? null });
   }
 
-  const selection = selectSweepRuns(candidates, {
+  const selection: SweepSelection = target ? {
+    selected: live.map(({ key }) => ({ key, triggers: ['requested'] })),
+    deferred: [],
+    idle: [],
+  } : selectSweepRuns(candidates, {
     nowMs: now(),
     planIntervalSec,
     maxRunsPerTick,

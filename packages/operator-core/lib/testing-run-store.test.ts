@@ -204,6 +204,23 @@ describe('startRun', () => {
     );
   });
 
+  it.each([true, false])('stamps verifier ownership from task enrollment=%s instead of an inherited task', (enrolled) => {
+    const enrolment = {
+      taskId: 'task-current-test-run', confined: false, scopeUnit: null, enrolled,
+      registrationReady: null, releaseEnvironmentTransport: vi.fn(),
+      wrap: vi.fn((binary: string, argv: string[], _env: NodeJS.ProcessEnv, _cwd: string) => ({ binary, argv })),
+    };
+    taskManagerMocks.begin.mockReturnValueOnce(enrolment);
+    store.startRun(req({ env: { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'parent-or-forged-task' } }));
+
+    // Compare only provenance: an environment-object diff can expose inherited credentials.
+    const expected = enrolled ? enrolment.taskId : '';
+    const wrappedEnv = (enrolment.wrap.mock.calls[0] as unknown as [string, string[], NodeJS.ProcessEnv])[2];
+    const spawnedOptions = (spawnMock.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2];
+    expect(wrappedEnv.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID).toBe(expected);
+    expect(spawnedOptions.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID).toBe(expected);
+  });
+
   it('preserves an explicit local provenance for detached recovery reporters', () => {
     const snap = store.startRun(req({
       testRunSource: 'local',

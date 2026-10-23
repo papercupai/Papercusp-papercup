@@ -229,7 +229,6 @@ const BASELINE: ReadonlyMap<string, number> = new Map<string, number>([
   ['lib/agent-tools/plans/audit.ts', 1], // git rev-parse HEAD
   ['lib/agent-tools/plans/git-history.ts', 1], // git rev-parse --show-toplevel
   ['lib/agent-tools/work_items/fabricated-paths.ts', 1], // git log -1 -- <path>, once per cited path
-  ['lib/release/admission-fix-precheck.ts', 1], // git rev-parse --git-common-dir
   ['lib/release/checkpoint-required-ancestor.ts', 2], // git probes via spawnSync(cmd, argv)
   ['lib/release/gate-fire-drill-deps.ts', 2], // systemctl is-active; systemctl stop (timeout 60s)
   ['lib/release/in-flight-retriage.ts', 1], // git probe

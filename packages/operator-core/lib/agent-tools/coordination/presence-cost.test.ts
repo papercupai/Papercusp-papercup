@@ -140,7 +140,7 @@ describe('hive-scale snapshot cost (P-012 inline-glance budget)', () => {
       as_of: '2026-06-18T08:43:00.000Z',
       scope: 'hive',
       hive: 'papercup-hive',
-      summary: { active: rows.length, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0 }, byContextPressure: { high: 0, critical: 0 } },
+      summary: { active: rows.length, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0, unknown: 0 }, byContextPressure: { high: 0, critical: 0 } },
       active: rows.map(toStableRosterRow),
       etag: 'test-etag',
     };

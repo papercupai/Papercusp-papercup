@@ -3,6 +3,8 @@ import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { ticketFilingIntegrationInstrument } from './capability-verbs/ticket-filing-instrument';
 import { liveForkserverInstrument } from './fleet/forkserver/live-instrument';
+import { CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY } from './cold-boot-drill';
+import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY } from './dream/dream-control-live-instrument';
 /**
  * Rubric instrument registry (test-rubric-unification-2026-10-12 P-005 / R-5, plan D-006).
  *
@@ -764,6 +766,8 @@ const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
  */
 export function platformComputedInstrumentKeys(): string[] {
   return [
+    CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY,
+    DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
     ...TOOL_DELIVERY_INSTRUMENTS,
     'woe.goal-mode-base-scorecard',
     ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),

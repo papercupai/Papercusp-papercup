@@ -168,6 +168,36 @@ describe.skipIf(!linux)('detached census walk (real du, real processes)', () => 
     expect((await readWalkState(dir))?.adoptions).toBe(1);
   });
 
+  it('adopts a managed usage scan after more than 10s without metadata and keeps its heartbeat', async () => {
+    const dir = join(base, 'usage-quiet-adopt'), first = countingLauncher();
+    const ctl = new AbortController();
+    const command = () => ['sh', ['-c', 'sleep 12; printf "7\\t%s\\0" "$1"', 'quiet-du', tree]] as [string, string[]];
+    await expect(runDetachedDuUsage([tree], {
+      dir, launch: async (...args) => {
+        const result = await first.launch(...args); ctl.abort(); return result;
+      }, command, pollMs: 25, timeoutMs: 30_000, signal: ctl.signal,
+    })).rejects.toBeInstanceOf(DetachedWalkAbandoned);
+    const state = (await readWalkState(dir))!;
+    expect(walkProcessAlive(state)).toBe(true);
+
+    const second = countingLauncher();
+    const adopted = runDetachedDuUsage([tree], { dir, launch: second.launch, command, pollMs: 25, timeoutMs: 30_000 });
+    await new Promise(resolve => setTimeout(resolve, 10_500));
+    const progress = JSON.parse(readFileSync(join(dir, 'usage-progress.json'), 'utf8'));
+    expect(progress.heartbeatAt - progress.startedAt).toBeGreaterThanOrEqual(10_000);
+    expect(progress.metadataRecords).toBe(0);
+    expect(progress.lastMetadataAt).toBeNull();
+    expect(progress.error).toBeNull();
+    expect(walkProcessAlive(state)).toBe(true);
+
+    const run = await adopted;
+    expect(run.complete).toBe(true);
+    expect(run.bytes).toEqual(new Map([[tree, 7]]));
+    expect(first.launches).toEqual([1]);
+    expect(second.launches).toEqual([]);
+    expect((await readWalkState(dir))?.adoptions).toBe(1);
+  }, 25_000);
+
   it('keeps cap bytes unknown after failed, partial, duplicate or malformed output', async () => {
     const cases = [
       ['partial', 'printf "1\\t%s/child\\0" "$1"'],

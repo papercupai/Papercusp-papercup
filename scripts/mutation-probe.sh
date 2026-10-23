@@ -70,8 +70,9 @@
 # dir and each root's .papercusp/scratch stay real, so receipts and evidence
 # logs written there persist. A subtree with a mount point under it uses a
 # private shallow copy for its own entries, with child directories rebound
-# separately. Child subtrees added after planning and external aliases can
-# still be uncovered; outside changes are named without attributing a writer.
+# separately. Each leg overlays child directories added after planning too;
+# external aliases can still be uncovered. Outside changes are named without
+# attributing a writer.
 # status line reads MUTATION_PROBE_CONTAINMENT status=contained|partial|
 # uncontained|disabled|sandbox-root|n/a. MUTATION_PROBE_CONTAIN_WRITES=0 turns
 # containment off (leaks are still reported).
@@ -999,7 +1000,11 @@ finish() {
   if [ "$measurement_failed" -eq 1 ]; then
     RESTORE_STATUS="integrity-unverified"
     log "source integrity UNVERIFIED: the digest command or scratch write failed; no source change has been measured."
-    log "Preserving recovery snapshots at $SCRATCH; no restore was attempted."
+    if [ -d "$SCRATCH" ]; then
+      log "Preserving recovery snapshots at $SCRATCH; no restore was attempted."
+    else
+      log "Recovery scratch is unavailable at $SCRATCH; snapshot custody is unverified and no restore was attempted."
+    fi
     printf 'MUTATION_PROBE_TREE_RESULT status=integrity-unverified target=%s source_sha=%s current_sha=unknown\n' \
       "${TARGET_MODE:-unknown}" "$ORIG_SUM"
     printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s phase=integrity reason=digest-unavailable\n' \
@@ -1774,7 +1779,7 @@ NODE
 }
 
 mutation_descriptor_reader_ready() {
-  local url sha repo link parser_entry
+  local url sha repo link parser_entry reader_http reader_curl_exit=0
   case "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" in
     always) MUTATION_DESCRIPTOR_GATE="forced on (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=always)"; return 0 ;;
     never) MUTATION_DESCRIPTOR_GATE="forced off (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never)"; return 1 ;;
@@ -1782,7 +1787,29 @@ mutation_descriptor_reader_ready() {
     *) die "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT must be auto, always or never (got: '${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT}')" ;;
   esac
   url="$MUTATION_DESCRIPTOR_READER_HEALTH_URL"
-  sha="$(curl -s -m 3 "$url" 2>/dev/null | tr -d '\n' | sed -n 's/.*"sha":"\([0-9a-f]\{7,40\}\)".*/\1/p')"
+  reader_http="$(curl -sS -m 3 --max-filesize 65536 -o "$SCRATCH/reader-health.body" \
+    -w '%{http_code}\t%{time_total}' "$url" 2>"$SCRATCH/reader-health.err")" || reader_curl_exit=$?
+  sha="$(MPD_READER_BODY="$SCRATCH/reader-health.body" MPD_READER_HTTP="$reader_http" \
+    MPD_READER_CURL_EXIT="$reader_curl_exit" node --input-type=module - <<'NODE'
+import { readFileSync } from 'node:fs';
+const [httpStatus, elapsedSeconds] = (process.env.MPD_READER_HTTP ?? '').split('\t');
+const curlExit = Number(process.env.MPD_READER_CURL_EXIT);
+let reason = curlExit === 0 ? null : 'curl-error';
+let sha = null;
+if (!reason && !/^2\d\d$/.test(httpStatus ?? '')) reason = 'http-error';
+if (!reason) {
+  try {
+    const health = JSON.parse(readFileSync(process.env.MPD_READER_BODY, 'utf8'));
+    if (typeof health.sha === 'string' && /^[0-9a-f]{7,64}$/.test(health.sha)) sha = health.sha;
+    else reason = 'invalid-sha';
+  } catch { reason = 'invalid-json'; }
+}
+console.error('MUTATION_PROBE_READER_HTTP_JSON=' + JSON.stringify({
+  curlExit, httpStatus: httpStatus || null, elapsedSeconds: elapsedSeconds || null, reason, sha,
+}));
+if (sha) process.stdout.write(sha);
+NODE
+  )"
   if [ -z "$sha" ]; then
     MUTATION_DESCRIPTOR_GATE="withheld: the deployed reader's build sha is unreadable at $url"
     return 1
@@ -1931,7 +1958,7 @@ mutation_descriptor_subject_path() {
 # production command shape; it is also useful to test that the baseline and
 # mutant really went through the same invocation path.
 run_guard() {
-  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper guard_cwd guard_repo_root
+  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper guard_cwd guard_repo_root guard_output custody_reason
   guard_cwd="$(pwd -P)" || die "could not resolve the guard working directory"
   guard_repo_root="$(git -C "$guard_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
   guard_repo_root="${guard_repo_root:-$RUNNER_ROOT}"
@@ -1949,6 +1976,9 @@ run_guard() {
       contain_stamp="$SCRATCH/contain-stamp.$phase"
       : > "$contain_stamp"
     fi
+    # Hold the actual output inode across the child lifetime. A pathname that
+    # vanished or was replaced cannot certify the guard's result, even exit 0.
+    exec {guard_output}>"$output" || die "could not open the $label output"
     (
       export PAPERCUSP_MUTATION_PHASE="$phase"
       export PAPERCUSP_TEST_RUN_RECEIPT_FILE="$(test_run_receipt_file "$phase")"
@@ -2084,13 +2114,25 @@ run_guard() {
         exec "${guard_prefix[@]}" bash -c "$cmd"
       fi
       eval "$cmd"
-    ) >"$output" 2>&1 &
+    ) >&"$guard_output" 2>&1 &
     CHILD=$!
     guard_started="$SECONDS"
     wait "$CHILD"
     rc=$?
     CHILD=""
     guard_elapsed=$(( SECONDS - guard_started ))
+    custody_reason=""
+    if [ ! -d "$SCRATCH" ]; then
+      custody_reason="scratch-unavailable"
+    elif [ ! -r "$output" ] || [ ! "$output" -ef "/dev/fd/$guard_output" ]; then
+      custody_reason="output-unavailable"
+    fi
+    exec {guard_output}>&-
+    if [ -n "$custody_reason" ]; then
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s guard_exit=%d phase=%s reason=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase" "$custody_reason"
+      die "the $label run lost its scratch or captured output identity; its exit status cannot establish a guard verdict. The deletion or replacement origin is unverified."
+    fi
     # WI-6554700010018048: the containment setup never reached the guard, so rc
     # is the setup's failure, not a measurement. Refuse before it can score.
     if [ -e "$SCRATCH/contain-abort" ]; then
@@ -2828,6 +2870,9 @@ contain_path_under() {
 # individual file binds would break atomic replacement with EBUSY.
 contain_plan_dir() {
   local d="$1" mp e has_sub=0
+  for e in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
+    [ "$d" != "$e" ] || return 0
+  done
   for mp in ${CONTAIN_MOUNTS[@]+"${CONTAIN_MOUNTS[@]}"}; do
     case "$mp" in
       "$d"/*) has_sub=1; break ;;
@@ -2871,14 +2916,33 @@ contain_write_setup() {
     for p in ${CONTAIN_LEVELS[@]+"${CONTAIN_LEVELS[@]}"}; do
       printf ' %q' "$p"
     done
+    printf ' )\nplanned=('
+    for p in ${CONTAIN_LEVELS[@]+"${CONTAIN_LEVELS[@]}"} ${CONTAIN_OVERLAYS[@]+"${CONTAIN_OVERLAYS[@]}"} ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
+      printf ' %q' "$p"
+    done
+    printf ' )\npassthroughs=('
+    for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
+      printf ' %q' "$p"
+    done
     printf ' )\n'
     cat <<'SHALLOW'
 # Snapshot only each split directory's own entries. Hold every child directory
 # BEFORE covering any ancestor, including children created by the baseline.
 # Rebinding these holds preserves dependency mounts without copying the tree.
 contain_abort() { printf '%s\n' "$*" > "$abort"; exit 97; }
+passthrough_paths=()
+passthrough_holds=()
+for p in "${passthroughs[@]}"; do
+  [ -d "$p" ] && [ ! -L "$p" ] || continue
+  h="$work/p${#passthrough_paths[@]}"
+  mkdir -p "$h" && mount --rbind "$p" "$h" \
+    || contain_abort "could not hold passthrough directory $p"
+  passthrough_paths+=("$p")
+  passthrough_holds+=("$h")
+done
 children=()
 holds=()
+unplanned=()
 for i in "${!levels[@]}"; do
   p="${levels[i]}"
   s="$work/s$i"
@@ -2888,10 +2952,17 @@ for i in "${!levels[@]}"; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     if [ -d "$e" ] && [ ! -L "$e" ]; then
       h="$work/c$i.$k"
-      mkdir -p "$h" "$s/${e##*/}" && mount --bind "$e" "$h" \
+      # Inherited submounts can be locked in a user namespace. A nonrecursive
+      # bind drops those mounts and is refused; retain the whole mount tree.
+      mkdir -p "$h" "$s/${e##*/}" && mount --rbind "$e" "$h" \
         || contain_abort "could not hold child directory $e"
       children+=("$e")
       holds+=("$h")
+      known=0
+      for planned_path in "${planned[@]}"; do
+        [ "$e" != "$planned_path" ] || { known=1; break; }
+      done
+      [ "$known" -eq 1 ] || unplanned+=("$e")
       k=$((k + 1))
     elif [ -f "$e" ] || [ -L "$e" ]; then
       cp -Pp -- "$e" "$s/" || contain_abort "could not copy split-directory entry $e"
@@ -2907,28 +2978,36 @@ for i in "${!levels[@]}"; do
   mount --bind "$work/s$i" "$p" || contain_abort "could not isolate split directory $p"
   for j in "${!children[@]}"; do
     [ "${children[j]%/*}" = "$p" ] || continue
-    mount --bind "${holds[j]}" "${children[j]}" \
+    mount --rbind "${holds[j]}" "${children[j]}" \
       || contain_abort "could not restore child directory ${children[j]}"
   done
 done
 SHALLOW
-    i=0
-    for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
-      printf 'h%d=0; mkdir -p "$work/h%d" && mount --bind %q "$work/h%d" && h%d=1\n' "$i" "$i" "$p" "$i" "$i"
-      i=$((i + 1))
-    done
     i=0
     for p in ${CONTAIN_OVERLAYS[@]+"${CONTAIN_OVERLAYS[@]}"}; do
       printf 'mkdir -p "$work/u%d" "$work/w%d" && mount -t overlay overlay -o %q %q 2>/dev/null || printf "%%s\\n" %q >> "$fail"\n' \
         "$i" "$i" "lowerdir=$p,upperdir=$CONTAIN_WORK/u$i,workdir=$CONTAIN_WORK/w$i" "$p" "$p"
       i=$((i + 1))
     done
-    i=0
-    for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
-      printf '{ [ "$h%d" = 1 ] && mount --bind "$work/h%d" %q; } || printf "%%s\\n" %q >> "$fail"\n' \
-        "$i" "$i" "$p" "passthrough:$p"
-      i=$((i + 1))
-    done
+    cat <<'LATE_CHILDREN'
+# Baseline/peer-created children were absent from the initial mount plan. A
+# bare rebind would expose their real contents to the mutant. Isolate each one
+# or abort setup; inability to mount is never evidence that the guard caught it.
+for i in "${!unplanned[@]}"; do
+  p="${unplanned[i]}"
+  case "$p" in
+    *,*|*:*|*\\*) contain_abort "unrepresentable new child directory $p" ;;
+  esac
+  mkdir -p "$work/late-u$i" "$work/late-w$i" &&
+    mount -t overlay overlay -o "lowerdir=$p,upperdir=$work/late-u$i,workdir=$work/late-w$i" "$p" \
+    || contain_abort "could not isolate new child directory $p"
+done
+for i in "${!passthrough_paths[@]}"; do
+  p="${passthrough_paths[i]}"
+  mount --rbind "${passthrough_holds[i]}" "$p" \
+    || contain_abort "could not restore passthrough directory $p"
+done
+LATE_CHILDREN
     printf 'exec bwrap --unshare-user --uid %q --gid %q --dev-bind / / "$@"\n' "$(id -u)" "$(id -g)"
   } > "$f" || return 1
   CONTAIN_SETUP="$f"
@@ -2992,19 +3071,13 @@ contain_preflight() {
   while read -r _ _ _ _ p _; do
     CONTAIN_MOUNTS+=("$(printf '%b' "$p")")
   done < /proc/self/mountinfo
+  # Hold evidence directories before any ancestor is covered, including ones
+  # first created by the baseline. Never plan inside this explicit exception.
+  for r in "${CONTAIN_ROOTS[@]}"; do
+    CONTAIN_PASSTHROUGH+=("$r/.papercusp/scratch")
+  done
   for r in "${CONTAIN_ROOTS[@]}"; do
     contain_plan_dir "$r"
-  done
-  # Evidence written to a root's .papercusp/scratch outlives the leg.
-  for r in "${CONTAIN_ROOTS[@]}"; do
-    p="$r/.papercusp/scratch"
-    [ -d "$p" ] && [ ! -L "$p" ] || continue
-    for o in ${CONTAIN_OVERLAYS[@]+"${CONTAIN_OVERLAYS[@]}"}; do
-      if contain_path_under "$p" "$o"; then
-        CONTAIN_PASSTHROUGH+=("$p")
-        break
-      fi
-    done
   done
   if [ "${#CONTAIN_OVERLAYS[@]}" -eq 0 ]; then
     CONTAIN_REASON="no directory of the checkout can be overlaid"
@@ -3097,7 +3170,7 @@ case "$CONTAIN_STATUS" in
   contained)
     log "write containment: CONTAINED — post-baseline guard runs see $(IFS=' '; printf '%s' "${CONTAIN_ROOTS[*]}") copy-on-write; their writes are discarded at exit (the probe scratch and each .papercusp/scratch stay real)" ;;
   partial)
-    log "write containment: PARTIAL — ${#CONTAIN_OVERLAYS[@]} overlay(s) cover planned subtrees; ${#CONTAIN_LEVELS[@]} split director$( [ "${#CONTAIN_LEVELS[@]}" -eq 1 ] && echo y || echo ies) use private shallow copies for their own entries. Child subtrees added after planning and external aliases may remain real; each leg reports outside entry changes without attributing their writer"
+    log "write containment: PARTIAL — ${#CONTAIN_OVERLAYS[@]} overlay(s) cover planned subtrees; ${#CONTAIN_LEVELS[@]} split director$( [ "${#CONTAIN_LEVELS[@]}" -eq 1 ] && echo y || echo ies) use private shallow copies for their own entries. Each leg isolates newly discovered child directories or aborts setup; external aliases may remain real. Outside entry changes are reported without attributing their writer"
     for line in ${CONTAIN_FAILED[@]+"${CONTAIN_FAILED[@]}"}; do
       log "⚠️  write containment could not cover: $line"
     done ;;

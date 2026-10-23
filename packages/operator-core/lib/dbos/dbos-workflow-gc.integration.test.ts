@@ -48,7 +48,7 @@ if (isWorker) {
       runAdminServer: false, listenQueues: ['gc-runtime-test'] });
     await import('./periodic-workflows');
     const registered = DBOS.getAssociatedInfo('dbos.scheduler');
-    registeredCron = registered.find(r => r.methodReg.name === 'dbosWorkflowGc')!.methodConfig.crontab;
+    registeredCron = (registered.find(r => r.methodReg.name === 'dbosWorkflowGc')!.methodConfig as { crontab: string }).crontab;
     for (const r of registered) {
       const config = r.methodConfig as { crontab: string };
       schedules.push({ config, original: config.crontab });

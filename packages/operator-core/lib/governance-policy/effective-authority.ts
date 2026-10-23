@@ -82,7 +82,10 @@ const unique = (values: readonly string[]) => new Set(values).size === values.le
 
 /** An unambiguous resource selector using the same policy pattern engine. */
 export function resourcePermissionValue(resource: ScopedResource): string {
-  return `${resource.kind}:${encodeURIComponent(resource.operation)}:${encodeURIComponent(resource.target)}`;
+  // encodeURIComponent leaves '*' intact, but the policy matcher treats it as
+  // a wildcard. Literal resource names must never create a broader grant.
+  const literal = (value: string) => encodeURIComponent(value).replace(/\*/g, '%2A');
+  return `${resource.kind}:${literal(resource.operation)}:${literal(resource.target)}`;
 }
 
 function policyLayer(policy: AuthorityPolicy): PolicyLayer {
@@ -233,7 +236,7 @@ export function comparePermissionPopulations(
   const unknown = (reason: string): PermissionChangeComparison => ({ kind: 'unknown', added: [], removed: [], reason });
   for (const proof of [before, after]) {
     if (!proof || !Array.isArray(proof.population) || !Array.isArray(proof.allowed) ||
-        !proof.complete || !validText(proof.populationRevision) || proof.population.length === 0 ||
+        proof.complete !== true || !validText(proof.populationRevision) || proof.population.length === 0 ||
         proof.population.some(atom => !validText(atom)) || !unique(proof.population) || !unique(proof.allowed) ||
         proof.allowed.some(atom => !proof.population.includes(atom))) return unknown('incomplete or invalid authority population');
   }

@@ -518,6 +518,18 @@ describe('hosted lifecycle policy', () => {
     expect(evaluateHostedIdleStop({ ...active, observedState: 'stopped' }, now)).toEqual({ due: false, idleForMs: 0 });
   });
 
+  it.each([NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, null, undefined])(
+    'does not stop a workspace with an unverified lifecycle-job count (%s)', activeLifecycleJobs => {
+      const idle = {
+        state: 'active', observedState: 'running', lastActivityAt: '2026-08-28T00:00:00Z',
+        idleStopAfterMinutes: 60, activeLifecycleJobs: activeLifecycleJobs as number,
+      };
+      const now = Date.parse('2026-08-28T02:00:00Z');
+      expect(evaluateHostedIdleStop(idle, now)).toEqual({ due: false, idleForMs: 0 });
+      expect(evaluateHostedIdleStop({ ...idle, activeLifecycleJobs: 0 }, now)).toMatchObject({ due: true });
+    },
+  );
+
   describe('desktop viewers hold the idle stop off (P-014)', () => {
     const now = Date.parse('2026-08-28T02:00:00Z');
     const idleWorkspace = {

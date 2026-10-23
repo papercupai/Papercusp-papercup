@@ -2988,6 +2988,39 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it.each(['idle', 'hard'] as const)('restores the parent timeout phase after a lock refresh finishes (%s)', async (kind) => {
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', kind === 'idle' ? '25' : '1000');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', kind === 'hard' ? '25' : '1000');
+    vi.useFakeTimers();
+    const repo = join(tmpRoot, `completed-refresh-${kind}`);
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    registryProjects = [{ slug: 'papercup', path: repo }];
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      await (opts.refreshLiveLockHoldings as () => Promise<unknown>)();
+      start();
+      await pending;
+      return syncedOutcome;
+    });
+    const running = fireGitSyncNow('papercup', 'ws-42', repo).then(() => null, (error: unknown) => error);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(50);
+      const error = await running;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('during run-git-sync');
+      expect((error as Error).message).not.toContain('translate-refreshed-live-file-locks');
+    } finally {
+      finish();
+      await running;
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('P-009 / WI-10002596: a NESTED install maps parent-root lock paths into its own repo root (initial read and refresh)', async () => {
     const parentRepo = join(tmpRoot, 'parent-repo');
     const childRepo = join(parentRepo, 'libs', 'child');
@@ -3706,7 +3739,20 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         active: true,
         phase: 'error',
         completed_at: null,
+        git_commands: {
+          scope: 'local-sync-runner',
+          active_count: 1,
+          omitted_count: 0,
+          active: [{ id: 1, subcommand: 'commit', cwd: repoDir, started_at: expect.any(Number) }],
+        },
+        timeout: {
+          kind: 'idle',
+          phase: 'run-git-sync',
+          at: expect.any(Number),
+          git_commands: { active_count: 1 },
+        },
       });
+      const timeoutSnapshot = structuredClone(gitSyncActivityPatches().at(-1)?.timeout);
       const renewals = tryHeartbeatResourceMock.mock.calls.length;
       heartbeat();
       await Promise.resolve();
@@ -3718,10 +3764,102 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(heartbeatStopped).toBe(true);
       expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'error' });
       expect(gitSyncActivityPatches().at(-1)?.completed_at).toBeTypeOf('number');
+      expect(gitSyncActivityPatches().at(-1)?.git_commands).toMatchObject({ active_count: 0, active: [] });
+      expect(gitSyncActivityPatches().at(-1)?.timeout).toEqual(timeoutSnapshot);
     } finally {
       finishChild?.();
       await running;
       resetScheduledRegistry();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(['idle', 'hard'] as const)('captures command custody before a cooperative child settles on abort (%s)', async (kind) => {
+    vi.useFakeTimers();
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', kind === 'idle' ? '25' : '60000');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', kind === 'hard' ? '25' : '100');
+    let childStarted!: () => void;
+    const started = new Promise<void>((resolve) => { childStarted = resolve; });
+    runGitBoundedMock.mockImplementationOnce(async (...args) => {
+      const signal = (args[3] as { signal: AbortSignal }).signal;
+      childStarted();
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      return { code: -1, stdout: '', stderr: 'aborted' };
+    });
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      await (raw as unknown as RunGitSyncOpts).runGit!(['status', '--porcelain'], repoDir);
+      return syncedOutcome;
+    });
+    const running = action(ctx).catch((error: unknown) => error);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(101);
+      expect(await running).toMatchObject({ timeoutKind: kind });
+      const terminal = gitSyncActivityPatches().at(-1)!;
+      expect(terminal).toMatchObject({ active: false, git_commands: { active_count: 0, active: [] } });
+      expect(terminal.timeout).toMatchObject({
+        kind,
+        phase: 'run-git-sync',
+        git_commands: {
+          active_count: 1,
+          active: [{ id: 1, subcommand: 'status', cwd: repoDir, started_at: expect.any(Number) }],
+        },
+      });
+    } finally {
+      await vi.advanceTimersByTimeAsync(101);
+      await running;
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('bounds concurrent command diagnostics, omits private argv, and clears settled commands', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '100');
+    let allStarted!: () => void;
+    const started = new Promise<void>((resolve) => { allStarted = resolve; });
+    const finishers: Array<() => void> = [];
+    runGitBoundedMock.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        finishers.push(resolve);
+        if (finishers.length === 18) allStarted();
+      });
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      await Promise.all(Array.from({ length: 18 }, (_, index) => opts.runGit!(
+        ['-c', 'http.extraHeader=PRIVATE_HEADER', 'fetch', 'https://PRIVATE_TOKEN@example.test/repo', String(index)],
+        repoDir,
+        { env: { PRIVATE_ENV: 'PRIVATE_VALUE' } },
+      )));
+      return syncedOutcome;
+    });
+    const running = action(ctx).catch((error: unknown) => error);
+    try {
+      await started;
+      // One child settles before the deadline; it must not occupy the bounded
+      // snapshot or hide a different still-active command with the same argv.
+      finishers[0]!();
+      await vi.advanceTimersByTimeAsync(101);
+      const marker = gitSyncActivityPatches().at(-1)!;
+      expect(marker.owner).toMatch(/^system:git-sync:/);
+      expect(marker.git_commands).toMatchObject({ scope: 'local-sync-runner', active_count: 17, omitted_count: 1 });
+      const commands = (marker.git_commands as { active: Array<Record<string, unknown>> }).active;
+      expect(commands).toHaveLength(16);
+      expect(commands.map((command) => command.id)).toEqual(Array.from({ length: 16 }, (_, index) => index + 2));
+      expect(commands.every((command) => command.subcommand === 'fetch' && command.cwd === repoDir)).toBe(true);
+      expect(JSON.stringify(marker)).not.toContain('PRIVATE_');
+      const timeoutSnapshot = structuredClone(marker.timeout);
+      finishers.forEach((finish) => finish());
+      expect(await running).toBeInstanceOf(GitSyncActionTimeoutError);
+      expect(gitSyncActivityPatches().at(-1)?.git_commands).toMatchObject({ active_count: 0, active: [] });
+      expect(gitSyncActivityPatches().at(-1)?.timeout).toEqual(timeoutSnapshot);
+    } finally {
+      finishers.forEach((finish) => finish());
+      await running;
       vi.useRealTimers();
       vi.unstubAllEnvs();
     }

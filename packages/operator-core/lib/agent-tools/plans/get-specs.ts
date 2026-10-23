@@ -46,7 +46,8 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:get-specs',
   description:
-    'Read canonical first-class spec clauses for one plan. Current revisions only by default; filter by stable spec id, source VAL alias, plan item, or exact revision, and opt into immutable history.',
+    'Read canonical first-class spec clauses for one plan. Current revisions only by default; filter by stable spec id, source VAL alias, plan item, or exact revision, and opt into immutable history.'
+    + ' For unchanged BAR projections, sourceBar.barSetHash/rubricRevision retain projection history. Check unchanged clause meaning and matching sourceBar.barHash against the current BAR; older aggregate stamps alone do not make a clause stale.',
   guidance: {
     when: 'Inspecting the behavioral contract a plan/item owns, resolving a VAL alias, or auditing exact historical revisions.',
     notWhen: 'Reading plan-item outcome text — plans:get-item. Reading legacy test verdicts — testing/coverage tools.',

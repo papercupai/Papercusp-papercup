@@ -19,6 +19,7 @@ import type { StableSource } from './source';
 import type { PortableTurn } from './types';
 import { verifySessionPortSeed } from './render';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from './types';
+import { createRouteDiagnostics } from '../endpoint-route/route-stack';
 
 const row: AdvSessionRow = {
   id: 41,
@@ -408,6 +409,26 @@ describe.each(['claude', 'codex', 'omp'] as const)('ended %s source acquisition'
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors).toEqual([archiveError, liveError]);
     expect(readLive).not.toHaveBeenCalled();
+  });
+});
+
+describe.each(['claude', 'codex', 'omp'] as const)('%s source acquisition diagnostics', (backend) => {
+  it('retains live lookup/read and archive fallback evidence in the same recorder', async () => {
+    const diagnostics = createRouteDiagnostics();
+    const stable = source('exact private source');
+    const missing = Object.assign(new Error('live source disappeared'), { code: 'ENOENT' });
+    const deps = {
+      rootForSource: () => '/tracked', configDirForOwner: () => '/tracked',
+      findLive: async () => '/tracked/private.jsonl',
+      readLive: async () => { throw missing; },
+      readArchive: async () => stable, archiveStore: () => ({} as never),
+    };
+    const result = backend === 'claude'
+      ? await acquireTrackedClaudeSource(row, deps, diagnostics)
+      : await acquireTrackedSessionSource({ ...row, agent: backend }, deps, diagnostics);
+    expect(result).toBe(stable);
+    expect(Object.keys(diagnostics.snapshot())).toEqual(['port.source.live-lookup', 'port.source.live-read']);
+    expect(JSON.stringify(diagnostics.snapshot())).not.toMatch(/private|tracked/);
   });
 });
 

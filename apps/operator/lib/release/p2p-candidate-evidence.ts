@@ -42,6 +42,16 @@ import {
 
 export const CANDIDATE_PROVENANCE_SCHEMA_VERSION = 1 as const;
 
+/** R-17's population includes the two already-shipped stragglers. */
+export const ENDGAME_SHIPMENT_PLANS = [
+  'p2p-coordination-public-release-2026-08-26',
+  'p2p-public-release-remaining-lanes-2026-07-16',
+  'p2p-git-live-activation-2026-07-09',
+  'p2p-work-distribution-2026-07-02',
+  'github-bridge-hive-egress-2026-07-02',
+  'fleet-reliability-verification-2026-07-10',
+] as const;
+
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 
@@ -232,6 +242,98 @@ function requireBoolean(obj: Record<string, unknown>, key: string, where: string
   const value = obj[key];
   if (typeof value !== 'boolean') throw new Error(`${where}: '${key}' must be a boolean`);
   return value;
+}
+
+export interface EndgameEvidencePins {
+  artifactDigest: string;
+  sourceSha: string;
+}
+
+function matchesEndgamePins(value: Record<string, unknown>, pins: EndgameEvidencePins): boolean {
+  return SHA256_HEX.test(pins.artifactDigest) && GIT_SHA.test(pins.sourceSha)
+    && value.artifactDigest === pins.artifactDigest && value.sourceSha === pins.sourceSha;
+}
+
+function nonempty(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * R-15 source guard for the persisted P-503 decision and its cited records.
+ * Callers must resolve/authenticate the original citations; this structural and
+ * lineage check cannot establish physical custody, a GO, or a drill by itself.
+ * There is deliberately no timed-soak condition.
+ */
+export function validateEndgameDefaultChoice(value: unknown, pins: EndgameEvidencePins): string[] {
+  if (!isRecord(value)) return ['P-503 decision is absent'];
+  const errors: string[] = [];
+  if (!matchesEndgamePins(value, pins)) errors.push('P-503 decision has different candidate pins');
+  if (!/^p2p-public-release-endgame-2026-09-01#D-\d{3,}$/.test(String(value.decisionRef ?? '')))
+    errors.push('P-503 choice needs a persisted plan decision reference');
+  if (!['legacy', 'bridged', 'p2p-only'].includes(String(value.choice ?? '')))
+    errors.push('P-503 choice is unknown');
+  if (!nonempty(value.rationale)) errors.push('P-503 choice needs its rationale');
+  const evidence = Array.isArray(value.evidence) ? value.evidence.filter(isRecord) : [];
+  const kinds = ['witness', 'independent-go', 'owner-freeze-recovery-drill'];
+  if (!Array.isArray(value.evidence) || value.evidence.length !== 3 || evidence.length !== 3
+    || kinds.some(kind => evidence.filter(row => row.kind === kind).length !== 1))
+    errors.push('P-503 requires exactly one witness, independent GO and recovery drill');
+  for (const row of evidence) {
+    if (!matchesEndgamePins(row, pins) || row.status !== 'passed' || !nonempty(row.ref)
+      || !SHA256_HEX.test(String(row.sha256 ?? '')) || !Number.isFinite(Date.parse(String(row.finishedAt ?? ''))))
+      errors.push(`P-503 ${String(row.kind)} citation is missing, unmeasured or from different bytes`);
+  }
+  const time = (kind: string) => Date.parse(String(evidence.find(row => row.kind === kind)?.finishedAt ?? ''));
+  const recordedAt = Date.parse(String(value.recordedAt ?? ''));
+  if (!(time('witness') <= time('independent-go') && time('independent-go') < time('owner-freeze-recovery-drill')
+    && time('owner-freeze-recovery-drill') <= recordedAt))
+    errors.push('P-503 choice must follow the same-candidate witness, GO and post-GO drill');
+  return errors;
+}
+
+/**
+ * R-17 source guard for the six-row shipment ledger assembled from canonical
+ * plan/audit/scorecard/lineage reads. Evidence references are mandatory, not
+ * authenticity proofs: the independent manual audit must read those originals.
+ * A pre-ship readiness result (including skipped:'already-shipped') is not a row.
+ */
+export function validateEndgameShipmentLedger(value: unknown, pins: EndgameEvidencePins): string[] {
+  if (!Array.isArray(value)) return ['six-plan shipment ledger is absent'];
+  const rows = value.filter(isRecord);
+  const errors: string[] = [];
+  if (rows.length !== ENDGAME_SHIPMENT_PLANS.length || rows.length !== value.length
+    || ENDGAME_SHIPMENT_PLANS.some(slug => rows.filter(row => row.planSlug === slug).length !== 1))
+    errors.push('shipment ledger must contain exactly the six canonical plan slugs once each');
+  for (const row of rows) {
+    const label = String(row.planSlug);
+    if (!matchesEndgamePins(row, pins) || row.status !== 'shipped' || row.forcedPast !== null)
+      errors.push(`${label}: shipment must be unforced and bound to the exact candidate`);
+    const audit = isRecord(row.codeTruthAudit) ? row.codeTruthAudit : {};
+    if (!nonempty(audit.ref) || audit.planSlug !== row.planSlug || audit.verdict !== 'implemented')
+      errors.push(`${label}: code-truth audit is absent or does not cover this plan`);
+    const grade = isRecord(row.independentGrade) ? row.independentGrade : {};
+    if (grade.rubricRef !== `acceptance-${label}` || !Number.isSafeInteger(grade.rubricRevision)
+      || Number(grade.rubricRevision) < 1 || grade.rubricRevision !== row.acceptanceRubricRevision
+      || !SHA256_HEX.test(String(row.acceptanceCriteriaHash ?? '')) || grade.criteriaHash !== row.acceptanceCriteriaHash
+      || !/^EI-\d+$/.test(String(grade.scorecardId ?? ''))
+      || !nonempty(grade.graderId) || !nonempty(grade.gradingAuditRef))
+      errors.push(`${label}: current independently audited acceptance grade is absent`);
+    const eligibility = isRecord(grade.eligibility) ? grade.eligibility : {};
+    const implementers = Array.isArray(eligibility.implementerIds) ? eligibility.implementerIds : [];
+    if (!nonempty(eligibility.ref) || eligibility.graderId !== grade.graderId
+      || !nonempty(eligibility.rubricAuthorId) || !implementers.length || !implementers.every(nonempty)
+      || grade.graderId === eligibility.rubricAuthorId || implementers.includes(grade.graderId)
+      || eligibility.liveAtGrading !== true || eligibility.outsideRubricAuthorLineage !== true
+      || eligibility.outsideImplementationLineage !== true || eligibility.soleVettingCritic !== false
+      || eligibility.launchedByImplementer !== false)
+      errors.push(`${label}: grader lineage/critic/launcher eligibility is absent or refused`);
+    const author = isRecord(row.authorVerdict) ? row.authorVerdict : {};
+    if (!nonempty(author.ref) || author.verdict !== 'accept' || author.acceptanceOf !== grade.scorecardId
+      || !nonempty(author.authorId) || author.authorId === grade.graderId
+      || !implementers.includes(author.authorId))
+      errors.push(`${label}: implementer verdict does not accept the counted independent card`);
+  }
+  return errors;
 }
 
 /** Validate one emit-build-provenance.sh record. Throws on a malformed record. */

@@ -737,8 +737,25 @@ test('connection focus stays visible when the docked rail reserves width after o
   await expect(label).toBeInViewport({ ratio: 1 });
   await page.evaluate(() => { document.body.style.removeProperty('padding-right'); });
   await expect.poll(() => label.evaluate(element => element.getBoundingClientRect().width)).toBe(360);
-  await expect(label).toBeFocused();
-  await expect(label).toBeInViewport({ ratio: 1 });
+  try {
+    await expect(label).toBeFocused();
+    await expect(label).toBeInViewport({ ratio: 1 });
+  } finally {
+    const geometry = await label.evaluate(element => {
+      const ancestors = [];
+      for (let node = element.parentElement; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        ancestors.push({ tag: node.tagName, className: node.className,
+          target: node.getAttribute('data-tutorial-target'), rect: node.getBoundingClientRect().toJSON(),
+          overflow: style.overflow, scrollTop: node.scrollTop, clientHeight: node.clientHeight, scrollHeight: node.scrollHeight });
+      }
+      return { rect: element.getBoundingClientRect().toJSON(), ancestors,
+        active: document.activeElement?.getAttribute('aria-label'),
+        highlightCount: document.querySelectorAll('[data-cloud-tutorial-highlight]').length,
+        viewport: { width: innerWidth, height: innerHeight, clientHeight: document.documentElement.clientHeight } };
+    });
+    await test.info().attach('connection-resize-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
+  }
   expect(fixture.writes).toEqual([]);
   await test.info().attach('connection-focus-after-rail-resize', {
     body: await page.screenshot(), contentType: 'image/png',

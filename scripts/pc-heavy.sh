@@ -464,13 +464,21 @@ _pc_heavy_scratch_mktemp() {
 # Fix: ONCE at first entry, snapshot this file to a private temp path and exec
 # it; `_PC_HEAVY_SELF_COPIED` makes every later invocation of the COPY skip the
 # block, so internal `bash "$0"` re-invocations reuse the SAME byte-stable
-# snapshot for the whole lifetime of the logical run. Escape hatch:
+# snapshot for the whole lifetime of the logical run. On Linux the supervising
+# process retains an open descriptor: its /proc/<pid>/fd path survives an
+# unlink of the scratch name, including a delayed child launch after queueing.
+# Children may close their inherited descriptors without invalidating the
+# supervisor's handle. Other platforms retain the existing pathname route.
+# Escape hatch:
 # PC_HEAVY_NO_SELF_COPY=1. Temp copies are left for /tmp's reaper (the script
 # manages its own traps later; an EXIT rm here would be clobbered).
 if [ -z "${_PC_HEAVY_SELF_COPIED:-}" ] && [ "${PC_HEAVY_NO_SELF_COPY:-}" != "1" ] && [ -f "$0" ]; then
   _pc_heavy_self_copy="$(_pc_heavy_scratch_mktemp self .sh)" && {
     if cp "$0" "$_pc_heavy_self_copy" 2>/dev/null; then
       export _PC_HEAVY_SELF_COPIED=1
+      if [ -d "/proc/$$/fd" ] && { exec {_pc_heavy_self_fd}<"$_pc_heavy_self_copy"; } 2>/dev/null; then
+        exec bash "/proc/$$/fd/$_pc_heavy_self_fd" "$@"
+      fi
       exec bash "$_pc_heavy_self_copy" "$@"
     fi
   }

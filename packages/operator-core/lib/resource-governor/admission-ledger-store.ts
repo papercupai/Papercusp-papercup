@@ -25,6 +25,8 @@ import {
   EndedLeaseOwnerScanCoalescer,
   selectEndedLeaseOwners,
   readGovernorQueuePopulation,
+  mapQueueLeaseOwnerRows,
+  readResumeStartupLaunchers,
 } from './queue';
 
 const RECONCILE_LOCK_PREFIX = 'resource-governor-reconcile:';
@@ -379,10 +381,12 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   async readActiveLeaseOwners(namespace: string | null = null): Promise<QueueLeaseOwnerObservation[]> {
     const namespacePredicate = namespace === null ? this.sql`` : this.sql`AND namespace = ${namespace}`;
     const rows = await withDbCallDeadline(
-      this.sql<Array<{ receipt_id: string | null; lease_id: string | null; owner: string | null }>>`
+      this.sql<Array<{ receipt_id: string | null; lease_id: string | null; owner: string | null; resume_metadata?: unknown }>>`
         SELECT receipt_id,
                record->'lease'->>'leaseId' AS lease_id,
-               lease_owner AS owner
+               lease_owner AS owner,
+               CASE WHEN namespace = 'agent-process' AND admission_class = 'agent'
+                    THEN record->'metadata' END AS resume_metadata
           FROM harness_shared.resource_governor_admissions
          WHERE workspace_id = ${this.workspaceId}
            ${namespacePredicate}
@@ -392,12 +396,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
          ORDER BY receipt_id ASC`,
       { ms: RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS, label: 'resource-governor.ledger-liveness-read' },
     );
-    return rows.flatMap((row) => {
-      const receiptId = row.receipt_id?.trim();
-      const leaseId = row.lease_id?.trim();
-      const owner = row.owner?.trim();
-      return receiptId && leaseId && owner ? [{ receiptId, leaseId, owner }] : [];
-    });
+    return mapQueueLeaseOwnerRows(rows);
   }
 
   /** Lease hot path: concurrent callers share one scan (WI-10004631). */
@@ -420,13 +419,14 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
     const resolve =
       this.resolveSessionStatesFn ?? (await import('../agent-tools/coordination/liveness-oracle')).resolveSessionStates;
     try {
+      const resumeLaunchers = await readResumeStartupLaunchers(this.sql, this.workspaceId, active, nowMs);
       const verdicts = await resolve(
-        owners.map((ownerId) => ({ ownerId })),
+        [...new Set([...owners, ...resumeLaunchers.values()])].map((ownerId) => ({ ownerId })),
         // One owner-filtered presence read for the whole roster (WI-10004631);
         // per-id hydration issued one point read per active lease owner.
         { hydrateBatch: true, nowMs },
       );
-      return selectEndedLeaseOwners(active, verdicts);
+      return selectEndedLeaseOwners(active, verdicts, resumeLaunchers);
     } catch (error) {
       console.warn(
         `[resource-governor] ledger active lease liveness resolution failed: ${error instanceof Error ? error.message : error}`,

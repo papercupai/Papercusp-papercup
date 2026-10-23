@@ -1,9 +1,11 @@
 /** Shared receipts: status polls may land on any operator worker. */
 import { hostname } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { TERMINAL_TASK_STATES } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 export type AmendReceiptState = 'running' | 'committed' | 'previewed' | 'failed';
 
@@ -138,7 +140,7 @@ function reviewLaunchFailure(result: Record<string, unknown>): string | undefine
 export async function trackAmendRun(
   idempotencyKey: string,
   rubricRef: string,
-  run: () => Promise<Record<string, unknown>>,
+  run: (onPhase: (phase: string) => void) => Promise<Record<string, unknown>>,
   options: { onRegistered?: () => void; omittedReviewRecovery?: OmittedReviewRecovery } = {},
 ): Promise<Record<string, unknown>> {
   const { sql } = getOrgPg();
@@ -224,14 +226,36 @@ export async function trackAmendRun(
     return { ok: true, pending: true, idempotencyKey, receipt: { rubricRef, idempotencyKey } };
   }
   options.onRegistered?.();
+  // Keep phase changes in memory: writing progress through a second pool while
+  // the amendment holds plan locks can itself stall the transaction being traced.
+  const startedAt = Date.now();
+  const correlationId = randomUUID();
+  let phase = 'execute';
+  let phaseStartedAt = startedAt;
+  const onPhase = (next: string) => {
+    phase = next.slice(0, 200);
+    phaseStartedAt = Date.now();
+  };
+  const failureDetails = () => ({
+    correlationId, rubricRef, idempotencyKey,
+    phase, elapsedMs: Date.now() - startedAt, phaseElapsedMs: Date.now() - phaseStartedAt,
+    executorHost: executor.host, executorPid: executor.pid, executorProcessId: executor.processId,
+  });
+  const observeTerminal = (failed: boolean) => observeFallback('bounded-operation', {
+    eligible: 1, applied: failed ? 0 : 1, reason: failed ? 'error' : 'applied',
+    scope: 'rubrics:amend:execute',
+  }, { sql, workspaceId, correlationId, processTag: `rubrics-amend:p${executor.pid}` });
   let result: Record<string, unknown>;
   try {
-    result = await run();
+    result = await run(onPhase);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const failedResult = { ok: false, error: message, failure: failureDetails() };
+    observeTerminal(true);
     await sql`
       UPDATE harness_shared.rubric_amend_receipts
-         SET state = 'failed', error = ${message}, finished_at = now()
+         SET state = 'failed', error = ${message},
+             result_json = ${JSON.stringify(failedResult)}::text::jsonb, finished_at = now()
        WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
          AND idempotency_key = ${idempotencyKey} AND state = 'running'
     `;
@@ -244,7 +268,8 @@ export async function trackAmendRun(
     ? (result.dryRun === true ? 'previewed' : 'committed') : 'failed';
   const error = state === 'failed'
     ? (launchFailure ?? (typeof result.error === 'string' ? result.error : 'amend returned ok:false')) : null;
-  let persistedResult = result;
+  observeTerminal(state === 'failed');
+  let persistedResult = state === 'failed' ? { ...result, failure: failureDetails() } : result;
   if (options.omittedReviewRecovery && state === 'previewed'
     && (result.review as { state?: string } | undefined)?.state === 'not-requested') {
     const subjectPlan = (result.preview as { approval?: { subjectPlan?: string } } | undefined)?.approval?.subjectPlan;

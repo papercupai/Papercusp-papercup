@@ -221,6 +221,255 @@ async function lineage() {
 
 type Lineage = Awaited<ReturnType<typeof lineage>>;
 
+// The child program lives in the frozen test itself: its checksum covers every recovery effect.
+const RESTART_WORKER_SOURCE = `/** Test-only process adapter for the public D-010 checkpoint dependency seam. */
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { beginCheckpointPreflight, realCheckpointDeps, runCmd, runGreenCheckpoint } from "__CHECKPOINT_MODULE_URL__";
+import { releaseConfig } from "__CONFIG_MODULE_URL__";
+import { advanceReady } from "__GIT_MODULE_URL__";
+const input = JSON.parse(process.argv[2]);
+const authority = join(input.root, "restart-authority.json");
+const read = () => JSON.parse(readFileSync(authority, "utf8"));
+// The fixture models an atomic durable authority write, not a selection algorithm.
+function persist(state) {
+    const temporary = \`\${authority}.\${process.pid}\`;
+    const fd = openSync(temporary, "w");
+    try {
+        writeFileSync(fd, JSON.stringify(state));
+        fsyncSync(fd);
+    }
+    finally {
+        closeSync(fd);
+    }
+    renameSync(temporary, authority);
+    const directory = openSync(input.root, "r");
+    try {
+        fsyncSync(directory);
+    }
+    finally {
+        closeSync(directory);
+    }
+}
+function count(key) {
+    const state = read();
+    state[key] += 1;
+    persist(state);
+}
+const cfg = releaseConfig({ integrationRoot: join(input.root, "integration"),
+    checkpointRoot: join(input.root, "checkpoint"), releaseRoot: join(input.root, "release"),
+    checkpointLogDir: join(input.root, "logs"), integrationBranch: "staging", releaseRef: "main" });
+const exec = (cmd, args, options) => runCmd(cmd, args, {
+    ...options, timeoutMs: 60_000, hardTimeoutMs: 60_000, killProcessGroupOnTimeout: true,
+});
+const deps = {
+    runId: input.attemptId, qualificationAttemptId: input.attemptId,
+    setupTree: async () => { throw new Error("preflight may not materialize"); },
+    runGreen: async () => { throw new Error("preflight may not run a suite"); },
+    advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, "main"),
+    push: async () => { }, broadcast: async () => { },
+    escalate: async () => { }, clearEscalation: async () => { }, emitEvent: async () => { }, log: () => { },
+    readFrozenRepairQueue: async () => null,
+    readFrozenRepairPendingCarry: async () => {
+        const state = read();
+        if (state.casLosses > 0) throw new Error("injected authority unavailable after atomic CAS loss");
+        return state.pending;
+    },
+    consumeFrozenRepairCarry: async () => { throw new Error("durable selection must commit atomically with carry"); },
+    resolveKnownGoodRecutTarget: async () => {
+        count("selections");
+        if (read().committed)
+            throw new Error("restart may not select known-good again");
+        return input.knownGood;
+    },
+    readPreparedCheckpointSelection: async (requested) => {
+        count("reads");
+        if (input.mode === "unreadable")
+            throw new Error("injected unreadable committed authority");
+        const record = read().committed;
+        if (!record)
+            return null;
+        if (record.schemaVersion !== 1 || record.attemptId !== requested.attemptId ||
+            record.integrationRoot !== requested.integrationRoot || record.checkpointRoot !== requested.checkpointRoot)
+            throw new Error("malformed or mismatched committed authority");
+        // Round-trip JSON: this process has no objects/closures from the writer.
+        return record;
+    },
+    commitPreparedCheckpointSelection: async (record, expected) => {
+        const state = read();
+        if (input.mode === "cas-loss") {
+            state.casLosses += 1;
+            persist(state);
+            return false;
+        }
+        if (expected.queue !== null || JSON.stringify(expected.pendingCarry) !== JSON.stringify(state.pending))
+            return false;
+        if (state.committed)
+            throw new Error("restart may not commit or consume again");
+        state.committed = record;
+        state.commits += 1;
+        if (state.pending)
+            state.consumeCount += 1;
+        state.pending = null;
+        persist(state);
+        // Abrupt process death leaves the real serializer behind. Rejoin must recover it.
+        if (input.mode === "commit-crash")
+            process.kill(process.pid, "SIGKILL");
+        return true;
+    },
+};
+let prepared;
+try {
+    const options = { target: null, checkpointSelection: { deps, opts: { noPush: true } } };
+    prepared = await beginCheckpointPreflight(cfg, input.tip, exec, options);
+    if (prepared.kind !== "ready")
+        throw new Error("fixture integration candidate disappeared");
+    if (input.mode === "resume") {
+        const real = realCheckpointDeps(cfg, exec, input.attemptId, undefined, undefined, undefined, prepared.prewarmedDependencyGeneration);
+        await runGreenCheckpoint(cfg, { ...deps, prepareSource: real.prepareSource,
+            setupTree: async (...args) => { count("materialized"); return real.setupTree(...args); },
+            runGreen: async () => { count("suites"); throw new Error("injected stop after real materialization"); },
+        }, { noPush: true, preparedSelection: Reflect.get(prepared, "preparedSelection") });
+    }
+    console.log("PREPARED_RESTART_RESULT " + JSON.stringify({ kind: "ready", pid: process.pid,
+        candidate: prepared.candidate, generation: prepared.prewarmedDependencyGeneration, state: read() }));
+}
+catch (error) {
+    console.log("PREPARED_RESTART_RESULT " + JSON.stringify({ kind: "refused", pid: process.pid,
+        error: String(error), state: read() }));
+}
+finally {
+    if (prepared?.kind === "ready" && prepared.lock.acquired)
+        prepared.lock.release();
+}
+`;
+
+function restartWorker(f: Lineage, mode: string, attemptId = "independent-durable-restart") {
+  const worker = "independent-prepared-selection-restart";
+  const workerProgram = RESTART_WORKER_SOURCE
+    .replaceAll("__CHECKPOINT_MODULE_URL__", new URL("./green-checkpoint.ts", import.meta.url).href)
+    .replaceAll("__CONFIG_MODULE_URL__", new URL("./release-config.ts", import.meta.url).href)
+    .replaceAll("__GIT_MODULE_URL__", new URL("./git-ops.ts", import.meta.url).href);
+  // Preserve the maintained committed-source loader while allowing native ESM TS.
+  // This is the same child-loader boundary used by cut-seed-cli.test.ts.
+  const resolver = `export async function resolve(specifier, context, nextResolve) {
+    const result = await nextResolve(specifier, context);
+    if (result.url.startsWith("file:") && /\\.tsx?$/.test(new URL(result.url).pathname) &&
+        !result.url.includes("/node_modules/")) return { ...result, format: "module-typescript" };
+    return result;
+  }
+  export async function load(url, context, nextLoad) {
+    const result = await nextLoad(url, context);
+    // Vitest supplies the CommonJS path globals in these existing modules.
+    // Supply their native ESM equivalent after the inherited source guard reads
+    // the original bytes; neither source selection nor the guard is replaced.
+    if (context.format === "module-typescript" && result.source &&
+        (url.endsWith("/release-config.ts") || url.endsWith("/green-checkpoint.ts")))
+      return { ...result, source:
+        "import { createRequire as __fixtureCreateRequire } from 'node:module';\\n" +
+        "const require = __fixtureCreateRequire(import.meta.url); const module = { exports: {} };\\n" +
+        "const __dirname = import.meta.dirname;\\n" + result.source.toString() };
+    return result;
+  }`;
+  const input = { root: f.root, tip: f.tip, knownGood: f.knownGood, attemptId, mode };
+  const bootstrap = `import { register } from "node:module";
+    register("data:text/javascript," + encodeURIComponent(${JSON.stringify(resolver)}), import.meta.url);
+    process.argv = [process.execPath, ${JSON.stringify(worker)}, ${JSON.stringify(JSON.stringify(input))}];
+    await import("data:text/javascript," + encodeURIComponent(${JSON.stringify(workerProgram)}));`;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", bootstrap], {
+    encoding: "utf8", env: { ...process.env }, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+  });
+  expect(result.error, result.stderr).toBeUndefined();
+  const line = result.stdout.split("\n").find(text => text.startsWith("PREPARED_RESTART_RESULT "));
+  if (!line && result.signal !== "SIGKILL") throw new Error(`restart worker did not report: ${result.stderr}\n${result.stdout}`);
+  return { ...result, report: line ? JSON.parse(line.slice("PREPARED_RESTART_RESULT ".length)) : null };
+}
+
+function durableRestartState(f: Lineage) {
+  return JSON.parse(readFileSync(join(f.root, "restart-authority.json"), "utf8"));
+}
+
+function initializeRestart(f: Lineage) {
+  writeFileSync(join(f.root, "restart-authority.json"), JSON.stringify({
+    pending: f.carry(), committed: null, consumeCount: 0, commits: 0, reads: 0,
+    selections: 0, materialized: 0, suites: 0, casLosses: 0,
+  }));
+}
+
+describe("D-010 durable selection recovery across actual process death", () => {
+  it("reconstructs committed selection and carry in a fresh process without a second selection or consumption", async () => {
+    const f = await lineage();
+    initializeRestart(f);
+    const writer = restartWorker(f, "commit-crash");
+    expect(writer.signal, writer.stdout + writer.stderr).toBe("SIGKILL");
+    const committed = durableRestartState(f);
+    expect(committed).toMatchObject({ pending: null, consumeCount: 1, commits: 1, materialized: 0, suites: 0 });
+    expect(committed.committed).toMatchObject({ schemaVersion: 1, attemptId: "independent-durable-restart",
+      integrationRoot: f.integration, checkpointRoot: f.cfg.checkpointRoot, candidate: f.tip, tip: f.tip,
+      base: f.ready, candidateSource: expect.any(String), quietCutApplied: false, freezeCut: null,
+      generation: { candidate: f.tip, identity: f.tipGeneration.identity, token: f.tipGeneration.token,
+        inputFingerprint: f.tipGeneration.inputFingerprint },
+      carry: { judgedCandidate: f.tip, fromCandidate: f.knownGood, fromRepairHead: f.tip },
+    });
+    expect(existsSync(committed.committed.generation.root)).toBe(true);
+    const restarted = restartWorker(f, "resume");
+    expect(restarted.status, restarted.stderr).toBe(0);
+    expect(restarted.report.pid).not.toBe(process.pid);
+    expect(restarted.report.pid).not.toBe(writer.pid);
+    const recovered = durableRestartState(f);
+    expect(recovered.committed).toEqual(committed.committed);
+    expect(recovered.reads).toBeGreaterThan(committed.reads);
+    expect(recovered.selections).toBe(committed.selections);
+    expect(recovered).toMatchObject({ pending: null, consumeCount: 1, commits: 1, materialized: 1, suites: 1 });
+    expect(existsSync(f.lockDir)).toBe(false);
+
+    // A new process must forward a malformed durable-authority refusal before
+    // another materialization, even though the real candidate still exists.
+    recovered.committed.schemaVersion = 2;
+    writeFileSync(join(f.root, "restart-authority.json"), JSON.stringify(recovered));
+    const malformed = restartWorker(f, "resume");
+    expect(malformed.report.kind).toBe("refused");
+    expect(malformed.report.error).toMatch(/malformed|authority|mismatch/i);
+    expect(durableRestartState(f)).toMatchObject({ consumeCount: 1, commits: 1, materialized: 1, suites: 1 });
+    expect(existsSync(f.lockDir)).toBe(false);
+
+    // Exercise the actual atomic companion's false result, independently of
+    // the legacy consumeFrozenRepairCarry CAS assertions retained below.
+    initializeRestart(f);
+    const lost = restartWorker(f, "cas-loss", "independent-atomic-cas-loss");
+    expect(lost.report.kind).toBe("refused");
+    expect(lost.report.error).toMatch(/CAS|authority|invalid/i);
+    expect(durableRestartState(f)).toMatchObject({ pending: f.carry(), committed: null,
+      casLosses: 1, consumeCount: 0, commits: 0, materialized: 0, suites: 0 });
+    expect(existsSync(f.lockDir)).toBe(false);
+  }, 360_000);
+
+  it.each(["token", "attempt", "checkpoint root", "unreadable"] as const)(
+    "refuses %s authority on fresh-process recovery before materialization", async (corruption) => {
+      const f = await lineage();
+      initializeRestart(f);
+      const writer = restartWorker(f, "commit-crash");
+      expect(writer.signal, writer.stdout + writer.stderr).toBe("SIGKILL");
+      const before = durableRestartState(f);
+      if (corruption === "token") {
+        const marker = join(f.root, "generations", before.committed.generation.identity, ".papercusp-dependency-generation");
+        chmodSync(marker, 0o600);
+        writeFileSync(marker, readFileSync(marker, "utf8").replace(/^publication_token=.*$/m, `publication_token=v3:${"0".repeat(64)}`));
+      } else if (corruption === "attempt") before.committed.attemptId = "unrelated-attempt";
+      else if (corruption === "checkpoint root") before.committed.checkpointRoot = join(f.root, "unrelated-checkpoint");
+      writeFileSync(join(f.root, "restart-authority.json"), JSON.stringify(before));
+      const restarted = restartWorker(f, corruption === "unreadable" ? "unreadable" : "resume");
+      expect(restarted.status, restarted.stderr).toBe(0);
+      expect(restarted.report.kind).toBe("refused");
+      expect(restarted.report.error).toMatch(/authority|generation|token|identity|invalid|mismatch|unreadable/i);
+      const after = durableRestartState(f);
+      expect(after).toMatchObject({ pending: null, consumeCount: 1, commits: 1, materialized: 0, suites: 0 });
+      expect(after.selections).toBe(before.selections);
+      expect(existsSync(f.lockDir)).toBe(false);
+    }, 360_000,
+  );
+});
+
 function liveQueue(f: Lineage): FrozenCandidateRepairQueue {
   return {
     schemaVersion: 4,

@@ -87,6 +87,7 @@ import type { DependencyBottleneckResult } from '../../dependency-traversal';
 import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
 import type { AgentObligationAgenda } from '../../agent-obligations';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import * as fallbackObservations from '../../degradation/fallback-observations';
 import type { FleetLaneHealth } from '../../fleet/lane-health';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { shapeLeaderBrief } from './leader-brief-shape';
@@ -602,6 +603,32 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('correlates a timed-out campaign leg with its diagnostic read', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const observe = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    const correlationId = '8dd90cee-69ac-4fd3-b747-00f8fc7f3b3b';
+    const fallback = { campaign: null as string | null };
+    const read = vi.fn((_correlationId: string) => new Promise<typeof fallback>(() => {}));
+    try {
+      const pending = boundedLeaderBriefFleetCampaignRead(read, fallback, correlationId);
+      await vi.advanceTimersByTimeAsync(LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS);
+      await expect(pending).resolves.toBe(fallback);
+      expect(read).toHaveBeenCalledWith(correlationId, expect.any(AbortSignal));
+      expect(observe).toHaveBeenCalledWith(
+        'bounded-operation',
+        { eligible: 1, applied: 0, reason: 'timeout', scope: 'leader-brief:fleet-campaign' },
+        expect.objectContaining({ correlationId }),
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('leader-brief:fleet-campaign exceeded 5000ms'));
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      observe.mockRestore();
       warn.mockRestore();
     }
   });
@@ -1496,9 +1523,10 @@ describe('fleet:leader-brief — profile-derived zero-awaiters advisory (P-015)'
     'fleet:context-critical:alpha',
     'fleet:claim-released:alpha',
     'fleet:admission-blocked:alpha',
+    'fleet:launch-failed:alpha',
   ];
 
-  it('reads the exact six standard profile keys and stays absent when every key has a live awaiter', async () => {
+  it('reads the exact seven standard profile keys and stays absent when every key has a live awaiter', async () => {
     const seen: string[] = [];
     const advisory = await readLeaderMonitoringBlindAdvisory('alpha', async (eventKey) => {
       seen.push(eventKey);
@@ -1515,7 +1543,7 @@ describe('fleet:leader-brief — profile-derived zero-awaiters advisory (P-015)'
     );
 
     expect(advisory).toMatchObject({
-      line: expect.stringMatching(/monitoring blind.*1\/6.*live_awaiters:0/i),
+      line: expect.stringMatching(/monitoring blind.*1\/7.*live_awaiters:0/i),
       missingEventKeys: ['fleet:drained:alpha'],
       arm: {
         tool: 'events:await',

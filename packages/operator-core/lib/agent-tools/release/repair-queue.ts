@@ -1778,9 +1778,9 @@ export default defineTool({
       const provedCommit = outcome.ok ? outcome.commit : null;
       const dependencyGeneration: DependencyGenerationPrediction | null =
         provedCommit !== null && dependencyPaths.length > 0
-          ? await step('dependency-prediction', () =>
+          ? await step('dependency-prediction', async () =>
               predictDependencyGeneration({
-                integrationRoot: resolveCanonicalIntegrationRoot(root),
+                integrationRoot: await resolveCanonicalIntegrationRoot(root),
                 ...(toolingRoot !== root ? { toolingRoot } : {}),
                 ref: provedCommit,
                 paths: dependencyPaths,
@@ -1840,7 +1840,7 @@ export default defineTool({
         const builtCommit = outcome.commit;
         // The serving host's root may be a LINKED worktree (`:3170` runs from papercusp-staging);
         // the checkpoint tree, its run-lock and setup-release-checkout all key off the MAIN one.
-        const precheckRoot = resolveCanonicalIntegrationRoot(root);
+        const precheckRoot = await resolveCanonicalIntegrationRoot(root);
         const matchingPrecheck = sameAdmissionPrecheck(queue.admissionPrecheck, {
           root,
           candidate: queue.candidate,

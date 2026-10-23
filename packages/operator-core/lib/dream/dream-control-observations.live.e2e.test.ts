@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
+import { dreamControlEditionDigest } from './dream-control-live-instrument';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const enabled = process.env.PAPERCUSP_DREAM_CONTROL_OBSERVATIONS_LIVE === '1';
@@ -120,6 +121,8 @@ describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
         return { exitCode: 0,
           summary: 'Fresh read-only Dream observation METHOD passed; product health and acceptance remain separate.',
           assertions: [
+            { id: `method:edition-sha256:${dreamControlEditionDigest({ consumedAt, observation })}`, passed: true,
+              evidence: 'Native digest of the exact original consumer timestamp and raw observation edition.' },
             { id: 'method:wrong-runtime-refuses', passed: true,
               evidence: 'Both selected hosts refused the unproven runtime before observations were exposed.' },
             { id: 'method:containing-source', passed: true, evidence: JSON.stringify(sourcePaths) },

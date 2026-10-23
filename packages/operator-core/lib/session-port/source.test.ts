@@ -6,7 +6,8 @@ import { appendFileSync, constants as fsConstants, mkdirSync, mkdtempSync, readF
 import * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readCanonicalNativeArchive, readStableLiveJsonl } from './source';
+import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readCanonicalClaudeArchive, readCanonicalNativeArchive, readStableLiveJsonl } from './source';
+import { createRouteDiagnostics } from '../endpoint-route/route-stack';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -123,6 +124,28 @@ describe('findCanonicalClaudeLiveJsonl', () => {
 });
 
 describe('exact native session-port sources', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('retains %s archive I/O phase evidence on success and failure without source content', async (backend) => {
+    const bytes = Buffer.from('{"private-source":"must-not-enter-phases"}\n');
+    const relpath = backend === 'claude' ? 'projects/cwd/native-id.jsonl'
+      : backend === 'codex' ? 'sessions/2026/10/03/rollout-date-native-id.jsonl' : 'cwd/date_native-id.jsonl';
+    const manifest = { relpath, sha256: createHash('sha256').update(bytes).digest('hex'), bytes_raw: bytes.length };
+    const readFiles = vi.fn(async () => [{ ...manifest, codec: 'zstd', blob: zstdCompressSync(bytes) }]);
+    const store = { readStamp: async () => ({ manifest: [manifest] }), readFiles } as unknown as SessionArchiveStore;
+    const acquire = (diagnostics: ReturnType<typeof createRouteDiagnostics>) => backend === 'claude'
+      ? readCanonicalClaudeArchive({ sessionId: 'native-id' }, store, undefined, diagnostics)
+      : readCanonicalNativeArchive({ backend, sessionId: 'native-id' }, store, undefined, diagnostics);
+    const success = createRouteDiagnostics();
+    expect((await acquire(success)).bytes).toEqual(bytes);
+    expect(Object.keys(success.snapshot())).toEqual([
+      'port.source.archive-stamp', 'port.source.archive-files', 'port.source.archive-decompress', 'port.source.archive-hash',
+    ]);
+    readFiles.mockRejectedValueOnce(new Error('archive payload unavailable'));
+    const failure = createRouteDiagnostics();
+    await expect(acquire(failure)).rejects.toThrow('archive payload unavailable');
+    expect(Object.keys(failure.snapshot())).toEqual(['port.source.archive-stamp', 'port.source.archive-files']);
+    expect(JSON.stringify(success.snapshot()) + JSON.stringify(failure.snapshot())).not.toMatch(/private-source|native-id/);
+  });
+
   it.each(['codex', 'omp'] as const)('validates the %s archive manifest and exact bytes before returning evidence', async (backend) => {
     const bytes = Buffer.from('{"native":"evidence"}\n');
     const sha256 = createHash('sha256').update(bytes).digest('hex');

@@ -2162,6 +2162,20 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
 });
 
 describe('owner directives in the brief (EI-11484)', () => {
+  it('preserves exact own totals across both carry render paths', async () => {
+    const own = { ...directive(99, 'finish this session request'), recordedBy: 'su-abc' };
+    const brief = await buildCarryBrief('su-abc', fullOpts({
+      listOpenDirectivesFn: async () => ({ rows: [own], totalOpen: 20, totalOwnOpen: 17 }),
+    }));
+    expect(brief.directivesOwnTotalOpen).toBe(17);
+    for (const out of [renderCarryBriefText(brief), renderCarryBriefColdExtras(brief)]) {
+      expect(out).toContain('#99 [FOR THIS SESSION]');
+      expect(out).toContain(own.verbatimText);
+      expect(out).toContain('+16 more open for this session');
+      expect(out).toContain('Other sessions: 3 open directives');
+    }
+  });
+
   it('builds the directives section from the injected reader', async () => {
     const brief = await buildCarryBrief(
       'su-abc',
@@ -2191,7 +2205,7 @@ describe('owner directives in the brief (EI-11484)', () => {
     expect(out.match(/OPEN OWNER DIRECTIVES/g)!.length).toBe(1);
   });
 
-  it('renders another session\'s directive as FYI in both carry surfaces', async () => {
+  it('summarizes other sessions by count in both carry surfaces', async () => {
     const ownText = 'carry out my own open directive';
     const peerText = 'take over the peer session project';
     const brief = await buildCarryBrief(
@@ -2210,11 +2224,10 @@ describe('owner directives in the brief (EI-11484)', () => {
     for (const out of [renderCarryBriefText(brief), renderCarryBriefColdExtras(brief)]) {
       expect(out).toContain('[FOR THIS SESSION]');
       expect(out).toContain(ownText);
-      expect(out).toContain('[FYI');
-      // P-006 (WI-6554700010009314): FYI ids are grouped under their recording
-      // session beneath one legend that carries the lookup pointer.
-      expect(out).toContain('• su-peer-sess: #21');
-      expect(out).toContain('orders:get #<id>');
+      expect(out).toContain('Other sessions: 1 open directive — awareness only');
+      expect(out).toContain('orders:list { open: true, mine: false, limit: 200 }');
+      expect(out).not.toContain('#21');
+      expect(out).not.toContain('su-peer-session');
       expect(out).not.toContain(peerText);
     }
   });

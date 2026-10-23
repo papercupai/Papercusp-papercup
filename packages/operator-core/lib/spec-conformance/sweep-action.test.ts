@@ -237,6 +237,48 @@ function fakeDeps(over: Partial<SpecConformanceSweepDeps> & { plans: SweepPlan[]
 }
 
 describe('sweep orchestration (R-23)', () => {
+  it('runs only the requested harness/plan even when idle and the tick cap is zero', async () => {
+    const target = { planSlug: 'requested', harnessSlug: 'h', content: planContent(['src/feature/**']) };
+    const others = [
+      { planSlug: 'other', harnessSlug: 'h', content: planContent(['src/feature/**']) },
+      { planSlug: 'requested', harnessSlug: 'another-harness', content: planContent(['src/feature/**']) },
+    ];
+    const watermarks = new Map([
+      ['h/requested', wm()], ['h/other', wm()], ['another-harness/requested', wm()],
+    ]);
+    const before = new Map(watermarks);
+    const lastTransitions = vi.fn(async (_plans: ReadonlyArray<SweepPlan>) => new Map<string, string | null>());
+    const { deps, writes } = fakeDeps({
+      plans: [...others, target], watermarks, lastTransitions,
+      footprintWindow: vi.fn(async () => ({ headSha: 'sha-new', commits: [] })),
+      writeWatermark: async (row) => {
+        writes.push(row as unknown as Record<string, unknown>);
+        watermarks.set(`${row.harnessSlug}/${row.planSlug}`, row);
+      },
+    });
+    const out = await runSpecConformanceSweep({ target, maxRunsPerTick: 0 }, deps);
+    expect(out.ran).toEqual([expect.objectContaining({ key: 'h/requested', triggers: ['requested'], ok: true })]);
+    expect(out.scanned).toBe(1);
+    expect(out.deferred).toEqual([]);
+    expect(deps.runConformance).toHaveBeenCalledExactlyOnceWith(target);
+    expect(deps.reconcileFootprint).toHaveBeenCalledExactlyOnceWith(target, 'sha-old', { headSha: 'sha-new', commits: [] });
+    expect(deps.footprintWindow).toHaveBeenCalledExactlyOnceWith(target, 'sha-old');
+    expect(lastTransitions.mock.calls.every(([plans]) => plans.length === 1 && plans[0] === target)).toBe(true);
+    expect(writes).toHaveLength(1);
+    expect(watermarks.get('h/other')).toEqual(before.get('h/other'));
+    expect(watermarks.get('another-harness/requested')).toEqual(before.get('another-harness/requested'));
+    expect(watermarks.get('h/requested')?.lastRunAt).toBe(iso(NOW));
+  });
+
+  it('reports a missing target without running or watermarking another plan', async () => {
+    const { deps, writes } = fakeDeps({ plans: [{ planSlug: 'other', harnessSlug: 'h', content: planContent() }] });
+    const out = await runSpecConformanceSweep({ target: { harnessSlug: 'h', planSlug: 'missing' } }, deps);
+    expect(out.skipped).toEqual([{ key: 'h/missing', reason: 'plan-not-found' }]);
+    expect(out.ran).toEqual([]);
+    expect(deps.runConformance).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+  });
+
   it('runs a plan whose footprint changed, reconciles the footprint, and advances the watermark', async () => {
     const { deps, writes } = fakeDeps({
       plans: [

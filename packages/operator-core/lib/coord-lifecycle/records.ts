@@ -846,6 +846,8 @@ export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
   /** Requirement declarations retained on the existing completion evidence. */
   discharges?: string[];
   contributesTo?: string[];
+  /** Server-derived item-close receipt; never credits final plan BAR proof. */
+  deferredContributions?: import('../agent-tools/work_items/item-close-contributions').DeferredContribution[];
   /**
    * WI-41769 — the arm-B self-review verdict, SERVER-computed rather than caller-supplied.
    *

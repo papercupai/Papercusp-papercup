@@ -275,11 +275,12 @@ export async function refreshResolvedSessionBeforeRead(
   owner: string,
   deps: Pick<TargetRefreshDeps, 'ingest'> = {},
   label = 'sessions:live refresh',
+  timeoutMs = SESSION_READ_REFRESH_TIMEOUT_MS,
 ): Promise<SessionRefreshReceipt> {
-  const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
   const refresh = await withBoundedTimeout(
     async () => {
       try {
+        const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
         return await ingest(target.filePath, { owner, sessionId: target.sessionId });
       } catch (error) {
         const subtype = classifySessionIngestError(error);
@@ -293,7 +294,7 @@ export async function refreshResolvedSessionBeforeRead(
     },
     {
       fallback: undefined,
-      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      timeoutMs,
       label,
     },
   );
@@ -413,6 +414,8 @@ export async function refreshLiveSessionsBeforeRead(
   const requestedOwners = owners == null ? null : [...new Set(owners.filter(Boolean))];
   const hasExplicitOwnerScope = requestedOwners !== null;
   if (hasExplicitOwnerScope && requestedOwners.length === 0) return { attempted: 0, refreshed: 0 };
+  const deadlineAtMs = Date.now() + SESSION_READ_REFRESH_TIMEOUT_MS;
+  const remainingBudgetMs = () => Math.max(0, deadlineAtMs - Date.now());
 
   const ownerRead = await withBoundedTimeout<Array<{ owner: string }>>(
     () => hasExplicitOwnerScope
@@ -432,7 +435,7 @@ export async function refreshLiveSessionsBeforeRead(
         ORDER BY coord_owner_id`,
     {
       fallback: [],
-      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      timeoutMs: Math.max(1, remainingBudgetMs()),
       label: hasExplicitOwnerScope ? 'sessions:live owner scope lookup' : 'sessions:live owner lookup',
     },
   );
@@ -443,17 +446,28 @@ export async function refreshLiveSessionsBeforeRead(
   const candidateOwners = [...new Set(ownerRead.value.map((row) => row.owner).filter(Boolean))];
   if (candidateOwners.length === 0) return { attempted: 0, refreshed: 0 };
 
-  const resolveStates = deps.resolveStates ??
-    (await import('../coordination/liveness-oracle')).resolveSessionStates;
   const livenessOptions = {
     hydrateBatch: true as const,
     ...(deps.onLivenessTiming ? { onTiming: deps.onLivenessTiming } : {}),
   };
+  const livenessTimeoutMs = remainingBudgetMs();
+  if (livenessTimeoutMs <= 0) {
+    return {
+      attempted: 0,
+      refreshed: 0,
+      unconfirmed: candidateOwners.length,
+      failureReasons: { liveness_lookup_timeout: 1 },
+    };
+  }
   const liveness = await withBoundedTimeout(
-    () => resolveStates(candidateOwners.map((ownerId) => ({ ownerId })), livenessOptions),
+    async () => {
+      const resolveStates = deps.resolveStates ??
+        (await import('../coordination/liveness-oracle')).resolveSessionStates;
+      return resolveStates(candidateOwners.map((ownerId) => ({ ownerId })), livenessOptions);
+    },
     {
       fallback: new Map<string, { sessionState: SessionState | null }>(),
-      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      timeoutMs: livenessTimeoutMs,
       label: 'sessions:live liveness lookup',
     },
   );
@@ -488,23 +502,30 @@ export async function refreshLiveSessionsBeforeRead(
   };
   if (ownerIds.length === 0) return { attempted: 0, refreshed: 0, ...coverage };
 
-  const resolve = deps.resolve ?? (await import('../../search/self-session')).resolveSelfSession;
   const results = await Promise.all(ownerIds.map(async (owner): Promise<SessionRefreshReceipt> => {
+    const resolveTimeoutMs = remainingBudgetMs();
+    if (resolveTimeoutMs <= 0) return failedSessionRefresh('resolve_timeout');
     const resolved = await withBoundedTimeout(
-      () => resolve(owner),
+      async () => {
+        const resolveSession = deps.resolve ?? (await import('../../search/self-session')).resolveSelfSession;
+        return resolveSession(owner);
+      },
       {
         fallback: null,
-        timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+        timeoutMs: resolveTimeoutMs,
         label: 'sessions:live resolve',
       },
     );
     if (resolved.degraded) return failedSessionRefresh(boundedFailureReason('resolve', resolved.reason));
     if (!resolved.value) return failedSessionRefresh('transcript_unavailable');
+    const ingestTimeoutMs = remainingBudgetMs();
+    if (ingestTimeoutMs <= 0) return failedSessionRefresh('ingest_timeout');
     return refreshResolvedSessionBeforeRead(
       resolved.value,
       owner,
       { ingest: deps.ingest },
       'sessions:live refresh',
+      ingestTimeoutMs,
     );
   }));
   const failureReasons: NonNullable<SessionRefreshReceipt['failureReasons']> = {};

@@ -39,12 +39,13 @@ vi.mock('../../model-context-budget.mjs', () => ({
 vi.mock('../../session-port/store', () => ({ assertSessionPortStorageReady: async () => {} }));
 vi.mock('../../session-port/service', async (importOriginal) => ({
   resolveSessionPortTargetOwner: (await importOriginal<typeof import('../../session-port/service')>()).resolveSessionPortTargetOwner,
-  acquireTrackedSessionSource: async (row: unknown) => {
+  acquireTrackedSessionSource: async (row: unknown, _deps: unknown, diagnostics?: { measure<T>(phase: string, work: () => T): Promise<T> }) => {
     state.acquiredRow = row;
-    return {
+    const stable = {
       bytes: Buffer.from('fixture'), sha256: 'a'.repeat(64), highWaterBytes: 7,
       completeBytes: 7, source: 'archive-manifest', relpath: 'projects/source.jsonl',
     };
+    return diagnostics ? diagnostics.measure('port.source.archive-stamp', () => stable) : stable;
   },
   // This is synchronous in production. Keeping the fake synchronous is load-bearing:
   // the inspect route immediately reads the returned inspection's source identity.
@@ -177,7 +178,7 @@ describe('session-port evidence-span route (P-007)', () => {
     expect(response.status).toBe(200);
     const phases = diagnostics.snapshot();
     for (const phase of ['port.imports', 'port.storage-ready', 'port.tracked-source', 'port.evidence-turns',
-      'port.launch-spec', 'port.context-budget', 'port.acquire-source', 'port.transform', 'port.telemetry']) {
+      'port.launch-spec', 'port.context-budget', 'port.acquire-source', 'port.source.archive-stamp', 'port.transform', 'port.telemetry']) {
       expect(phases[phase]).toEqual(expect.any(Number));
     }
     expect(JSON.stringify(phases)).not.toContain('first evidence');

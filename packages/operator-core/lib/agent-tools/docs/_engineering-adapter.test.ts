@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DocPage, DocSource } from '@papercusp/docs-engine';
+import type { DocListPagesTimingEvent, DocPage, DocSource } from '@papercusp/docs-engine';
 import { overlayCanonicalDocs, overlayRequestedCanonicalDocs } from './_engineering-adapter';
 
 const releasePage: DocPage = {
@@ -18,6 +18,12 @@ function releaseSource(): DocSource & { invalidate: () => void } {
     getContent: vi.fn(async () => 'release checkout body'),
     invalidate: vi.fn(),
   };
+}
+
+function signal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 describe('overlayCanonicalDocs', () => {
@@ -115,6 +121,73 @@ describe('overlayCanonicalDocs', () => {
     expect(page).toMatchObject({ slug: docId, title: 'Canonical Claude guide' });
     expect(await source.getContent(page!)).toContain('Canonical body');
     expect(readCanonical).toHaveBeenCalledWith('papercusp', [docId, `${docId}.mdx`, `${docId}.md`]);
+  });
+
+  it('reports query-free base, canonical-read, and overlay timings', async () => {
+    const base = releaseSource();
+    const readCanonical = vi.fn(async () => new Map([
+      ['agent-insights/new-page.mdx', '---\ntitle: New page\n---\n# Heading\n\nprivate body'],
+    ]));
+    const source = overlayCanonicalDocs(base, readCanonical, 'papercusp');
+    const events: DocListPagesTimingEvent[] = [];
+
+    await source.listPages({ onTiming: (event) => events.push(event) });
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: 'canonical-overlay', phase: 'base-list-pages', state: 'completed', count: 1 }),
+      expect.objectContaining({ component: 'canonical-overlay', phase: 'canonical-read', state: 'started' }),
+      expect.objectContaining({ component: 'canonical-overlay', phase: 'canonical-read', state: 'completed', count: 1 }),
+      expect.objectContaining({ component: 'canonical-overlay', phase: 'overlay', state: 'completed', count: 2 }),
+    ]));
+    expect(JSON.stringify(events)).not.toContain('private body');
+  });
+
+  it('does not let an invalidated in-flight read mark the replacement cache ready', async () => {
+    const base = releaseSource();
+    const firstRead = signal();
+    const secondRead = signal();
+    let resolveFirst!: (contents: Map<string, string>) => void;
+    let resolveSecond!: (contents: Map<string, string>) => void;
+    const first = new Promise<Map<string, string>>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<Map<string, string>>((resolve) => { resolveSecond = resolve; });
+    let readCount = 0;
+    const readCanonical = vi.fn(() => {
+      readCount += 1;
+      if (readCount === 1) {
+        firstRead.resolve();
+        return first;
+      }
+      secondRead.resolve();
+      return second;
+    });
+    const source = overlayCanonicalDocs(base, readCanonical, 'papercusp');
+
+    const firstList = source.listPages();
+    await firstRead.promise;
+    source.invalidate?.();
+
+    const secondList = source.listPages();
+    await secondRead.promise;
+    resolveFirst(new Map());
+    await firstList;
+
+    const sharedEvents: DocListPagesTimingEvent[] = [];
+    const sawShared = signal();
+    const thirdList = source.listPages({
+      onTiming: (event) => {
+        sharedEvents.push(event);
+        if (event.phase === 'canonical-read' && event.state === 'shared') sawShared.resolve();
+      },
+    });
+    await sawShared.promise;
+    expect(sharedEvents).toContainEqual(expect.objectContaining({ phase: 'canonical-read', state: 'shared' }));
+
+    resolveSecond(new Map());
+    await Promise.all([secondList, thirdList]);
+    const cachedEvents: DocListPagesTimingEvent[] = [];
+    await source.listPages({ onTiming: (event) => cachedEvents.push(event) });
+    expect(cachedEvents).toContainEqual(expect.objectContaining({ phase: 'canonical-read', state: 'cached' }));
+    expect(readCanonical).toHaveBeenCalledTimes(2);
   });
 });
 

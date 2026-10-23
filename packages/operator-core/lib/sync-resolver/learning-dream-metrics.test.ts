@@ -25,6 +25,7 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     mocks.history.mockReset().mockResolvedValue({ runs: [], nextCursor: null });
     mocks.detail.mockReset().mockResolvedValue(null);
     mocks.observations.mockReset().mockResolvedValue({ status: 'unknown', reason: 'wrong-or-unproven-serving-runtime' });
+    mocks.journal.mockReset();
   });
   it('preserves the default control read and resolves explicit metrics with the requested window', async () => {
     await expect(resolveNamedQueryV2('learning.dream', { potSlug: 'pot' })).resolves.toEqual([
@@ -108,13 +109,50 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     expect(await supplied[2].journal({ grep: 'GYM_ADMISSION_DECISION ' })).toMatchObject({ units: ['gym.service'] });
   });
 
-  it.each(['pending', 'rejected'] as const)('preserves an unavailable %s journal without losing the other source or timing out the query', async failure => {
+  it('shares a same-unit scan while preserving each decision source and its row cap', async () => {
+    const runtime = { host: 'read', processId: 'p', buildSha: 'current' };
+    const dream = Array.from({ length: 21 }, (_, n) => ({ message: `${DREAM_ACTION_DECISION_PREFIX}${n}`, repeat: 1 }));
+    const gym = { message: `${GYM_ADMISSION_DECISION_PREFIX}gym`, repeat: 2 };
+    mocks.journal.mockResolvedValue({ journalAvailable: true, journalError: null, truncated: false,
+      matched: 23, collapsed: 1, entries: [...dream, gym], units: ['bg.service'] });
+    await resolveNamedQueryV2('learning.dream', { potSlug: 'pot', view: 'observations',
+      since: '2026-10-16T12:00:00Z', until: '2026-10-17T12:00:00Z', expectedRuntime: runtime,
+      actionJournalUnit: 'bg.service', expectedActionRuntime: runtime,
+      gymJournalUnit: 'bg.service', expectedGymRuntime: runtime });
+    expect(mocks.journal).toHaveBeenCalledTimes(1);
+    expect(mocks.journal).toHaveBeenCalledWith(expect.objectContaining({ units: ['bg.service'], limit: 1000,
+      grep: `(?:${DREAM_ACTION_DECISION_PREFIX}|${GYM_ADMISSION_DECISION_PREFIX})` }));
+    const supplied = mocks.observations.mock.calls[0][2];
+    await expect(supplied.journal({ grep: DREAM_ACTION_DECISION_PREFIX })).resolves.toMatchObject({
+      entries: dream.slice(1), matched: 21, collapsed: 0, truncated: true, journalError: null });
+    await expect(supplied.journal({ grep: GYM_ADMISSION_DECISION_PREFIX })).resolves.toMatchObject({
+      entries: [gym], matched: 2, collapsed: 1, truncated: false, journalError: null });
+  });
+
+  it.each(['truncated', 'clipped', 'failed'] as const)('keeps both shared sources incomplete when the physical journal is %s', async failure => {
+    const runtime = { host: 'read', processId: 'p', buildSha: 'current' };
+    const entry = { message: `${DREAM_ACTION_DECISION_PREFIX}record`, repeat: 1, clipped: failure === 'clipped' };
+    mocks.journal.mockResolvedValue({ journalAvailable: true, journalError: failure === 'failed' ? 'read failed' : null,
+      truncated: failure === 'truncated', matched: failure === 'failed' ? null : 1, collapsed: 0, entries: [entry] });
+    await resolveNamedQueryV2('learning.dream', { potSlug: 'pot', view: 'observations',
+      since: '2026-10-16T12:00:00Z', until: '2026-10-17T12:00:00Z', expectedRuntime: runtime,
+      actionJournalUnit: 'bg.service', expectedActionRuntime: runtime,
+      gymJournalUnit: 'bg.service', expectedGymRuntime: runtime });
+    const supplied = mocks.observations.mock.calls[0][2];
+    for (const prefix of [DREAM_ACTION_DECISION_PREFIX, GYM_ADMISSION_DECISION_PREFIX]) {
+      const value = await supplied.journal({ grep: prefix });
+      expect(value.truncated || value.journalError !== null).toBe(true);
+      if (failure === 'failed') expect(value.matched).toBeNull();
+    }
+  });
+
+  it.each(['pending', 'rejected'] as const)('preserves an unavailable %s distinct-unit journal without losing the other source or timing out the query', async failure => {
     vi.useFakeTimers();
     const began = Date.now();
     const runtime = { host: 'read', processId: 'p', buildSha: 'current' };
     const args = { potSlug: 'pot', view: 'observations', since: '2026-10-16T12:00:00Z', until: '2026-10-17T12:00:00Z',
       expectedRuntime: runtime, actionJournalUnit: 'bg.service', expectedActionRuntime: runtime,
-      gymJournalUnit: 'bg.service', expectedGymRuntime: runtime };
+      gymJournalUnit: 'gym.service', expectedGymRuntime: runtime };
     const retained = { journalAvailable: true, entries: [{ message: 'retained-actual-dream-record' }] };
     mocks.journal.mockReset().mockImplementation(({ grep }) => grep === DREAM_ACTION_DECISION_PREFIX
       ? Promise.resolve(retained)

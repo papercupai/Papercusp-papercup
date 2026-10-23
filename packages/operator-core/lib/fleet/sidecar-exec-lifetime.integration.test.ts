@@ -7,7 +7,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { captureSidecarContainment, observeSidecarExit, reapDeadSidecar, sidecarContainmentCurrent } from './sidecar-exec-lifetime';
 import { runCommandViaSpawnerSidecar, isSidecarInfrastructureFault } from './git-via-sidecar';
 import { SpawnerIpcClient } from './spawner-ipc-client';
@@ -15,6 +14,7 @@ import { newTaskId, scopeUnitForTask } from '../task-manager/types';
 import { createTextCollector } from '../child-output';
 import type { SidecarContainment } from './sidecar-exec-lifetime';
 import { SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
+import { linuxProcStateFromStat } from '../process-identity';
 
 // The subject here is real kernel containment, not the task ledger/flag store.
 vi.mock('../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
@@ -29,6 +29,11 @@ const exec = promisify(execFile);
 const scopes: { unit: string; child: ChildProcess }[] = [];
 const dirs: string[] = [];
 const helperSource = "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);";
+// This marker executes after Node/tsx preload but before the tracked fixture's
+// imports. It remains useful when the committed-source loader substitutes an
+// older fixture during a local diagnostic run.
+const lifetimeFixtureArgv = ['--import', 'tsx', '--input-type=module', '--eval',
+  `process.stderr.write('SIDECAR_FIXTURE_PHASE ' + JSON.stringify({ event: 'node-entry', pid: process.pid, uptimeMs: process.uptime() * 1000 }) + '\\n'); await import(${JSON.stringify(new URL('./fixtures/sidecar-lifetime-server.ts', import.meta.url).href)});`];
 const serverSource = `
   const helper = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(helperSource)}], { stdio: ['ignore', 'pipe', 'inherit'] });
   helper.stdout.once('data', () => process.stdout.write(JSON.stringify({ pid: process.pid, helper: helper.pid }) + '\\n'));
@@ -96,7 +101,7 @@ it.runIf(process.platform === 'linux')(
     const marker = join(dir, 'mutation');
     const helperPath = join(dir, 'detached-helper');
     const taskId = newTaskId();
-    const argv = ['--import', 'tsx', fileURLToPath(new URL('./fixtures/sidecar-lifetime-server.ts', import.meta.url))];
+    const argv = lifetimeFixtureArgv;
     const task = await managedSpawn(process.execPath, argv, {
       class: 'sidecar', title: 'real IPC lifetime fixture', launchedBy: 'test:sidecar-exec-lifetime', argv: [process.execPath, ...argv],
     }, { taskId, scopeAvailable: true, spawnOptions: {
@@ -113,7 +118,10 @@ it.runIf(process.platform === 'linux')(
     output.attach(task.child.stderr);
     await vi.waitFor(() => {
       if (task.child.exitCode !== null || task.child.signalCode !== null) throw new Error(output.peek());
-      expect(output.peek()).toContain('PAPERCUSP_SPAWNER_READY');
+      let state = 'unknown';
+      try { state = linuxProcStateFromStat(readFileSync(`/proc/${task.child.pid}/stat`, 'utf8')) ?? 'unknown'; }
+      catch (error) { state = (error as NodeJS.ErrnoException).code ?? 'unknown'; }
+      expect(output.peek(), `fixture launcherPid=${task.child.pid} launcherKernelState=${state}; scope=${task.scopeUnit}; phases=${output.peek()}`).toContain('PAPERCUSP_SPAWNER_READY');
     }, { timeout: 30_000 });
     const control = new SpawnerIpcClient(socketPath);
     const capabilities = await control.call<{ processExecContainment: SidecarContainment }>('spawn:cancel', {});
@@ -135,6 +143,7 @@ it.runIf(process.platform === 'linux')(
     // This deliberate server death emits correlated transport diagnostics. Assert
     // the entire chain so unrelated warnings still fail this real IPC fixture.
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const leaseWarning = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const run = runCommandViaSpawnerSidecar(process.execPath, ['-e', script], {
         timeoutMs: 5000, signal: new AbortController().signal,
@@ -168,7 +177,7 @@ it.runIf(process.platform === 'linux')(
         connectionId: expect.any(String), requestId: expect.any(Number),
       });
       expect(execution.requestId).toBeGreaterThan(0);
-      expect(warning.mock.calls).toEqual([
+      expect(warning.mock.calls.slice(0, 2)).toEqual([
         ['[spawner-ipc-client-fault]', {
           event: 'peer-eof', clientConnectionId: execution.clientConnectionId,
           serverGeneration: execution.serverGeneration, serverConnectionId: execution.connectionId,
@@ -186,15 +195,36 @@ it.runIf(process.platform === 'linux')(
           elapsedMs: expect.any(Number),
           childTimeoutMs: 5000, childIdleTimeoutMs: null, rpcTimeoutMs: 40000,
         }],
-        ['[spawner-ipc-client-fault]', {
+      ]);
+      // Kernel scope teardown may require several recovery attempts. Every
+      // attempt must be a new, empty connection to this dead server; the
+      // verified exit and no-replay assertions above still own settlement.
+      const recoveryWarnings = warning.mock.calls.slice(2);
+      expect(recoveryWarnings.length).toBeGreaterThan(0);
+      const recoveryConnections = new Set<string>();
+      for (const call of recoveryWarnings) {
+        expect(call).toEqual(['[spawner-ipc-client-fault]', {
           event: 'socket-error', clientConnectionId: expect.any(String),
           serverGeneration: null, serverConnectionId: null, requestId: null, method: null,
           relatedRequestId: null, errorCode: 'ECONNREFUSED', errorName: 'Error', activeRequests: [],
-        }],
-      ]);
-      expect(warning.mock.calls[2]?.[1].clientConnectionId).not.toBe(execution.clientConnectionId);
+        }]);
+        const connectionId = call[1].clientConnectionId as string;
+        expect(connectionId).not.toBe(execution.clientConnectionId);
+        expect(recoveryConnections.has(connectionId)).toBe(false);
+        recoveryConnections.add(connectionId);
+      }
+      for (const call of leaseWarning.mock.calls) {
+        expect(call).toEqual([
+          '[spawner-sidecar] process exit remains unverified; retaining caller lease',
+          { requestId: execution.requestId, fence: {
+            serverGeneration: execution.serverGeneration, connectionId: execution.connectionId,
+            forkserverIdentity: expect.any(String),
+          } },
+        ]);
+      }
     } finally {
       warning.mockRestore();
+      leaseWarning.mockRestore();
     }
   }, 60_000,
 );
@@ -214,7 +244,7 @@ it.runIf(process.platform === 'linux')('a real server refuses a live path: exits
   }).listen(socketPath);
   await once(live, 'listening');
   try {
-    const argv = ['--import', 'tsx', fileURLToPath(new URL('./fixtures/sidecar-lifetime-server.ts', import.meta.url))];
+    const argv = lifetimeFixtureArgv;
     const outcome = await exec(process.execPath, argv, {
       env: { ...process.env, PAPERCUSP_SPAWNER_IPC_SOCKET: socketPath }, timeout: 30_000,
     }).then(() => ({ code: 0, stderr: '' }), (e: { code?: number; stderr?: string }) => ({ code: e.code, stderr: e.stderr ?? '' }));

@@ -21,6 +21,7 @@ import {
   TSC_SERVICE_UNIT_TEMPLATE_ENV,
   baselineWithinScope,
   checkedSetFor,
+  checkedSetForCooperatively,
   formatTscServiceBanner,
   lineAndCharacter,
   lineStarts,
@@ -598,6 +599,44 @@ describe('checkedSetFor', () => {
     expect(limited.files.every((file) => complete.files.includes(file))).toBe(true);
     expect(dependencyCache.size).toBe(1);
   });
+
+  it('yields during reverse-importer census so a client disconnect can cancel the walk', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-service-cancel-scope-'));
+    const abs = (name: string) => join(dir, name);
+    writeFileSync(abs('changed.ts'), 'export const value = 1;\n');
+    writeFileSync(
+      abs('caller.ts'),
+      `${Array.from({ length: 512 }, () => "import { value } from './changed.js';").join('\n')}\nexport const caller = value;\n`,
+    );
+
+    let cancelled = false;
+    let reads = 0;
+    // This stands in for the socket's `close` callback. It can only run if the census yields to
+    // Node; the synchronous walker should finish before it is observed.
+    setImmediate(() => { cancelled = true; });
+    const syncScope = checkedSetFor({
+      root: dir,
+      named: ['changed.ts'],
+      programFiles: [abs('caller.ts'), abs('changed.ts')],
+      readText: readTextOrNull,
+    });
+    expect(syncScope.files.sort()).toEqual([abs('caller.ts'), abs('changed.ts')].sort());
+    expect(cancelled).toBe(false);
+
+    const dependencyCache = new Map<string, Map<string, Set<string>>>();
+    const scope = await checkedSetForCooperatively({
+      root: dir,
+      named: ['changed.ts'],
+      programFiles: [abs('caller.ts'), abs('changed.ts')],
+      dependencyCache,
+      readText: (file: string) => { reads += 1; return readTextOrNull(file); },
+    }, { isCancelled: () => cancelled });
+
+    expect(scope).toBeNull();
+    expect(cancelled).toBe(true);
+    expect(reads).toBe(1);
+    expect(dependencyCache.size).toBe(0);
+  }, 5_000);
 });
 
 // WI-10007624: on a mixed --files run, operator-core's leg printed "2 named file(s) are not in this

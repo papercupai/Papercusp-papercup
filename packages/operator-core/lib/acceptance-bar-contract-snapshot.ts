@@ -32,7 +32,7 @@ import {
 import { listSpecEvidence, readSpecEvidencePlane, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { activeSpecEvidence, evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { evaluateMechanicalTestAdequacy } from './agent-tools/plans/mechanical-test-adequacy';
-import { listScorecardPage, type ScorecardRow } from './scorecards';
+import { listScorecardPage, settledGradingAuditIsCurrent, type ScorecardRow } from './scorecards';
 import { activeWorkspaceId } from './workspace-registry';
 import { lineagePartyKeys } from './acceptance-author-identity';
 import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from './acceptance-grading-authority';
@@ -1619,6 +1619,7 @@ export function projectAcceptanceBarContractSnapshot(
     .filter(
       (card) =>
         completeScorecard(card) &&
+        settledGradingAuditIsCurrent(card) &&
         Boolean(card.vetting?.consultId || card.vetting?.workItemId) &&
         classifyRubricEvidenceCurrentness(
           {

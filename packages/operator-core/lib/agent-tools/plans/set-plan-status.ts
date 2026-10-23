@@ -74,7 +74,6 @@ import { domainFailureMessage } from './plan-activation-gate';
 import { PLAN_STATUSES } from './parser';
 import { propagatePlanScopeWrite, type PlanScopeCascadeResult } from './plan-scope-cascade';
 import { defaultPlanScopeCascadeDeps } from './plan-scope-cascade-deps';
-import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import {
   recoverHarnessFromSlugs,
   slugScopeErrorResult,
@@ -87,6 +86,10 @@ const SETTABLE = ['draft', 'ready', 'shipped', 'superseded'] as const;
  * `active`. Keeping this sourced from PLAN_STATUSES prevents a new lifecycle
  * state from being writable but impossible to guard against. */
 const GUARDABLE = PLAN_STATUSES;
+/** Recruitment can include reviewer recovery and native first-turn verification.
+ * Declare the full execution budget so the MCP transport preserves the result,
+ * using the same durable dispatch/replay path as scorecards:repair. */
+export const PLAN_STATUS_TIMEOUT_SEC = 15 * 60;
 /** Caller-DX (watchdog P-006): aliases agents reach for, mapped to the
  *  canonical settable status instead of being zod-rejected. `active` is the
  *  legacy synonym for `ready` (bucketOf treats it as approved). `done` is the
@@ -726,13 +729,14 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
-  // A shipped-gate refusal can synchronously recruit a fresh headless judge.
-  // Keep this write's dispatcher deadline below the MCP transport cap. A larger
-  // declaration lets the transport close first, returning opaque request_timeout
-  // while the handler is still recruiting the judge; the shared foreground ceiling
-  // leaves room for abort cleanup and response delivery so the caller gets the
-  // dispatcher's structured timeout/idempotent-completion result instead.
-  timeoutSec: Math.floor(FOREGROUND_TIMEOUT_CEILING_MS / 1000),
+  // Reads and withPlanLock manage their own database transactions. Recruitment
+  // must not retain an ambient transaction across reviewer startup: its idle
+  // timeout would otherwise discard the caller's result after side effects land.
+  skipWorkspaceTx: true,
+  // effectiveMcpDeadlineMs extends both direct and nested MCP calls to this
+  // declared budget. The foreground clamp instead abandoned live recruitment
+  // at 55s, before its receipt could enter the existing idempotent replay store.
+  timeoutSec: PLAN_STATUS_TIMEOUT_SEC,
   args: argsSchema,
   async handler(args, ctx) {
     // Caller-DX (P-006): map caller aliases to canonical plan lifecycle statuses.

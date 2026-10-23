@@ -251,7 +251,7 @@ export function refreshProjectRootFiles({ api, snapshot, projects }: {
  * }} opts
  * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
  */
-export function checkedSetFor({ root, named, programFiles, readText, configFile, dependencyCache, maxFiles }: {
+export function checkedSetFor(opts: {
     root: string;
     named: Iterable<string>;
     programFiles: readonly string[];
@@ -266,6 +266,17 @@ export function checkedSetFor({ root, named, programFiles, readText, configFile,
     importers: number;
     namedNotInProgram: string[];
 };
+/**
+ * Cancellable checked-set census for the long-lived service. It yields to the event loop while
+ * walking the project graph and returns null when the client disconnects.
+ *
+ * @param {Parameters<typeof checkedSetFor>[0]} opts
+ * @param {{ isCancelled?: () => boolean }} [controls]
+ * @returns {Promise<ReturnType<typeof checkedSetFor> | null>}
+ */
+export function checkedSetForCooperatively(opts: Parameters<typeof checkedSetFor>[0], { isCancelled }?: {
+    isCancelled?: () => boolean;
+}): Promise<ReturnType<typeof checkedSetFor> | null>;
 /**
  * The exact named-file scope used by cross-leg consumers. Consumers only need diagnostics for the
  * requested files; reverse importers are the owning scoped verdict's responsibility. Keeping this
@@ -293,20 +304,10 @@ export function namedSetFor({ root, named, programFiles }: {
  * unrelated local declarations cannot invent it. No second compiler program is created.
  * Companion declarations and their executable source share a module identity.
  *
- * @param {{ root: string, named: Iterable<string>, candidates: Iterable<string>,
- *   readText?: (absFile: string) => string | null, configFile?: string,
- *   dependencyCache?: Map<string, Map<string, Set<string>>>, stopAfter?: number }} opts
+ * @param {Parameters<typeof filesDependingOnChangedModulesSteps>[0]} opts
  * @returns {Set<string>} Absolute candidate paths depending on a named module.
  */
-export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile, dependencyCache, stopAfter }: {
-    root: string;
-    named: Iterable<string>;
-    candidates: Iterable<string>;
-    readText?: (absFile: string) => string | null;
-    configFile?: string;
-    dependencyCache?: Map<string, Map<string, Set<string>>>;
-    stopAfter?: number;
-}): Set<string>;
+export function filesDependingOnChangedModules(opts: Parameters<typeof filesDependingOnChangedModulesSteps>[0]): Set<string>;
 /**
  * A dependency is check scope, not diagnostic causality. Attribute only a diagnostic whose
  * actual or contextual type resolves to a type exported by a changed module. Binding symbols
@@ -457,3 +458,25 @@ export type TscServiceResponse = {
     reason: string;
     detail?: string;
 };
+/**
+ * Shared CLI/service attribution (EI-25720784739215773). Resolve actual import/export edges
+ * with TypeScript, then walk reverse edges from the changed modules. Aliases, namespace
+ * imports, inferred callbacks, barrels and cycles retain provenance; comments, strings and
+ * unrelated local declarations cannot invent it. No second compiler program is created.
+ * Companion declarations and their executable source share a module identity.
+ *
+ * @param {{ root: string, named: Iterable<string>, candidates: Iterable<string>,
+ *   readText?: (absFile: string) => string | null, configFile?: string,
+ *   dependencyCache?: Map<string, Map<string, Set<string>>>, stopAfter?: number }} opts
+ * @returns {Generator<null, Set<string>, unknown>}
+ */
+declare function filesDependingOnChangedModulesSteps(opts: {
+    root: string;
+    named: Iterable<string>;
+    candidates: Iterable<string>;
+    readText?: (absFile: string) => string | null;
+    configFile?: string;
+    dependencyCache?: Map<string, Map<string, Set<string>>>;
+    stopAfter?: number;
+}): Generator<null, Set<string>, unknown>;
+export {};

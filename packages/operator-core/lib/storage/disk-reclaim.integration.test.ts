@@ -21,6 +21,7 @@ import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
 import { scanProcHolders } from '../release-cut-reclaim';
 import { readOpenWorkItemEvidenceReferences, readRetentionPins, renewWorkItemEvidencePins } from './retention-pins';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 
 const inspectionProbe = vi.hoisted(() => ({ before: undefined as ((path: string) => (() => void) | undefined) | undefined }));
 vi.mock('node:fs/promises', async (original) => {
@@ -695,7 +696,8 @@ describe('retention on a real fixture tree', () => {
   it('reaps an elevated census worker at its native deadline when ordinary-user signalling would fail', async () => {
     const { root } = await setup(); const pidFile = join(root, 'worker-pid');
     let signalAttempts = 0;
-    const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), requirePrivilege: true, sudo: '/usr/bin/sudo', timeoutMs: 1000,
+    const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), includeRecent: true,
+      requirePrivilege: true, sudo: '/usr/bin/sudo', timeoutMs: 1000, progressTimeoutMs: 500,
       spawn: (command, args) => {
         const find = args.indexOf('find'); expect(find).toBeGreaterThan(0);
         // Exercise the real sudo/timeout process chain with a deterministic
@@ -948,6 +950,9 @@ describe('retention on a real fixture tree', () => {
     managedProbe.active = true;
     try {
       phase('migrations');
+      // Terminal task events resolve work-item waiters even when this fixture
+      // creates no work items. Reuse the canonical schema those reads require.
+      await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
       await applyEventSubstrateMigrationsForTest(db.sql, {
         label: 'disk-reclaim.integration.test.ts native delegate', ...COORD_SUBSCRIPTION_SUBSTRATE,
         extra: [...COORD_SUBSCRIPTION_SUBSTRATE.extra,
@@ -1384,17 +1389,23 @@ describe('retention on a real fixture tree', () => {
     const waiting = new Promise<void>((resolve) => { queued = resolve; });
     const delegate = vi.fn(async () => ({ ok: true, detail: 'fixture owner' }));
     let clock = Date.now();
+    let peerEntered = false;
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
     const reclaim = runDiskReclaimOnce({ ...options, policy, effectBudgetMs: 100, delegates: [{ classId: 'fixture-owner', run: delegate }],
-      removeEntry: async (entry) => { entered(); await finishRemoval; await rm(entry.path); } });
+      removeEntry: async (entry) => {
+        if (entry.path === paths[1]) expect(peerEntered).toBe(true);
+        entered(); await finishRemoval; await rm(entry.path);
+      } });
     await removing;
-    let peerEntered = false;
     const peer = withFsMutex('papercusp-disk-retention', async () => { peerEntered = true; clock += 250; },
       { timeoutMs: 5_000, retryMs: 5, onWaiting: queued });
     try {
       try {
         await waiting;
         expect(peerEntered).toBe(false);
+        // FIFO tickets share a random tie-breaker within one epoch millisecond.
+        // Give reclaim's reacquisition a younger timestamp than the queued peer.
+        clock++;
       } finally { finish(); }
       const receipt = await reclaim;
       await peer;

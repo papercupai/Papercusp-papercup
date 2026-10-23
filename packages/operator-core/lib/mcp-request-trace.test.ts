@@ -11,7 +11,60 @@ import {
   recordMcpRequestTraceOperation,
   runWithMcpRequestTraceExecution,
   resolveMcpRequestTraceId,
+  withMcpToolsListPhaseTrace,
 } from './mcp-request-trace';
+
+describe('tools/list discovery phase evidence', () => {
+  it('records the outstanding server phase before the client deadline and retains the result', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let release!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const nativeSession = 'private-native-discovery-session';
+    try {
+      const request = withMcpToolsListPhaseTrace({ requestInfo: {
+        url: `http://localhost/api/mcp?native_session=${nativeSession}`,
+        headers: { [MCP_REQUEST_TRACE_HEADER]: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4' },
+      } }, async phases => {
+        await phases.track('servingGeneration', () => wait);
+        return { tools: ['unchanged-result'] };
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(info).toHaveBeenCalledTimes(1);
+      const record = JSON.parse(String(info.mock.calls[0][0]).replace('[mcp-request-trace] ', ''));
+      expect(record).toMatchObject({
+        traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
+        stage: 'tools_list_pending',
+        toolsListPhases: { pending: [{ phase: 'servingGeneration', elapsedMs: 5_000 }] },
+      });
+      expect(JSON.stringify(record)).not.toContain(nativeSession);
+      release();
+      await expect(request).resolves.toEqual({ tools: ['unchanged-result'] });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(info).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves discovery refusals and cancels their diagnostic timer', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const refusal = new Error('mcp_auth_failed');
+    try {
+      await expect(withMcpToolsListPhaseTrace({}, phases => phases.track('spawnContext', () => {
+        throw refusal;
+      }))).rejects.toBe(refusal);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('MCP request operation timing attribution', () => {
   it('keeps async operation counts and durations on the owning request context', async () => {

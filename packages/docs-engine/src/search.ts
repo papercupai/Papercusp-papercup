@@ -27,7 +27,7 @@
  *      (project-sharing 99KB, agent-e2e 98KB, lifecycle 75KB) into the same role.
  */
 
-import type { DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types.js';
+import type { DocListPagesTimingEvent, DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types.js';
 import { evaluateOkfTrust, okfTrustIsNotable } from './okf.js';
 import { raceWithAbort } from './render-mdx.js';
 
@@ -181,6 +181,7 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
   let listed = 0;
   let searchable = 0;
   let scanned = 0;
+  const listPagesPhases: DocListPagesTimingEvent[] = [];
   const publishTiming = () => ctx.metadata?.({
     docsLexicalTiming: {
       version: 1,
@@ -190,6 +191,7 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
       completedMs: { ...completedMs },
       active: active ? { phase: active.phase, elapsedMs: Math.max(0, Date.now() - active.startedAtMs) } : null,
       pages: { listed, searchable, loaded: scanned },
+      ...(listPagesPhases.length > 0 ? { listPagesPhases: [...listPagesPhases] } : {}),
     },
   });
   const finishPhase = () => {
@@ -204,7 +206,13 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
 
   try {
     startPhase('listPages');
-    const allPages = await raceWithAbort(source.listPages(), ctx.signal);
+    const allPages = await raceWithAbort(source.listPages({
+      onTiming: (event) => {
+        if (listPagesPhases.length >= 12) listPagesPhases.shift();
+        listPagesPhases.push(event);
+        if (outcome === 'running') publishTiming();
+      },
+    }), ctx.signal);
     // EI-10937 guard 1: generated navigation aggregators opt out via
     // `searchable: false` frontmatter. They stay fully reachable through
     // docs:get and the outline — they are simply not ANSWERS to a query.

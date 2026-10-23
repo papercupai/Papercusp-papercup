@@ -95,10 +95,23 @@ import {
 } from '../../agent-launch-core';
 import { declareCoupling } from '../../coord/couplings';
 import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
+import {
+  inspectBlindReviewResumeTarget,
+  INTERNAL_BLIND_REVIEW_RESUME,
+  verifyBlindReviewSessionBinding,
+  type BlindReviewResumePermit,
+} from '../../blind-review-session-bindings';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
 import { BACKEND_AGENTS, backendBinOverrideEnvKey, preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
 import { NATIVE_CONTAINER_EXEC_ENV, type NativeContainerExecBinding } from '@papercusp/orchestrator/fleet-srt-spawn';
-import { describeSessionEndTime, hasAdvSessionTerminalEvidence, markAdvSessionEnded } from '../../adv-sessions';
+import {
+  acquireAdvSessionResume,
+  describeSessionEndTime,
+  hasAdvSessionTerminalEvidence,
+  markAdvSessionEnded,
+  releaseAdvSessionResume,
+  RESUME_RESERVATION_MAX_LEASE_SEC,
+} from '../../adv-sessions';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 import type { ColorScheme } from '../../console-color-schemes';
 import { findLiveHostAsync, shutdownViaPty } from '../../events/await/psu-pty-discovery';
@@ -111,7 +124,8 @@ import {
   PSU_LAUNCH_LOG_TAIL_CHARS,
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
-import { assertOriginalCodexRouting, codexThreadWriterHolder, ORIGINAL_CODEX_ROUTING_ENV, supportsTrackedFork } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
+import { assertOriginalCodexRouting, codexThreadWriterHolder, GOVERNED_RESUME_RESERVATION_ENV,
+  ORIGINAL_CODEX_ROUTING_ENV, supportsTrackedFork } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
 import { LaunchModelAliasError, resolveCodexModelSelection, resolveLaunchModelAlias } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
@@ -1147,6 +1161,7 @@ export default defineTool({
     let resumeFeature: string | null = null;
     let resumeHarnessSlug: string | null = null;
     let resumeSourceAdvSessionId: number | null = null;
+    let resumeSourceEnded = false;
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
     let resumeAccount: string | null = null;
@@ -1156,6 +1171,7 @@ export default defineTool({
     let recheckInPlaceResume: (() => Promise<void>) | null = null;
     let fork = !!args.fork;
     let sourceStillLive = false;
+    let blindReviewResumeAuthorized = false;
     const notes: string[] = [];
     if (sourceAction) {
       const source = isSuccessor ? args.successor : args.resume;
@@ -1164,6 +1180,39 @@ export default defineTool({
         sessionId: source?.sessionId ?? null,
       });
       if (!target.ok) return err(`Cannot ${isSuccessor ? 'start successor' : 'resume'}: ${target.detail}`);
+      if (target.advSessionId && target.ownerId && workspaceId) {
+        let blindSource: Awaited<ReturnType<typeof inspectBlindReviewResumeTarget>>;
+        try {
+          blindSource = await inspectBlindReviewResumeTarget({
+            workspaceId, reviewerOwnerId: target.ownerId, advSessionId: target.advSessionId,
+          });
+        } catch (error) {
+          return err(`blind_review_binding_unreadable: could not classify this exact source session (${error instanceof Error ? error.message : String(error)}). No process was opened.`);
+        }
+        const permit = (ctx as unknown as Record<PropertyKey, unknown>)[INTERNAL_BLIND_REVIEW_RESUME] as BlindReviewResumePermit | undefined;
+        if (blindSource.binding || blindSource.recruiterLaunch || permit) {
+          const binding = blindSource.binding;
+          const exactRecruiterResume = !!binding && isResume && !isSuccessor && args.fork === false &&
+            args.resume?.agentId === undefined && args.resume?.sessionId === binding.nativeSessionId &&
+            target.sessionId === binding.nativeSessionId && binding.status === 'resuming' &&
+            target.live === false && target.ownerId === binding.reviewerOwnerId &&
+            target.advSessionId === binding.advSessionId && target.binding?.coordOwnerId === binding.reviewerOwnerId &&
+            target.binding?.sessionId === binding.nativeSessionId && !!target.binding?.startedAt &&
+            target.agent === 'codex' && target.account === binding.accountRoute && target.headless === true &&
+            slug === binding.harnessSlug && args.headless === true && args.agent === undefined &&
+            args.account === undefined && args.model === undefined && args.originalRouting === undefined &&
+            !!permit && permit.bindingId === binding.id && permit.leaseId === binding.resumeLeaseId &&
+            permit.workspaceId === binding.workspaceId && permit.planSlug === binding.planSlug &&
+            permit.activationAuditSeq === binding.activationAuditSeq && permit.reviewerOwnerId === binding.reviewerOwnerId &&
+            permit.advSessionId === binding.advSessionId && permit.nativeSessionId === binding.nativeSessionId;
+          if (!exactRecruiterResume) {
+            return err('blind_review_recovery_recruiter_only: a bound blind reviewer may be recovered only by the recruiter using its exact native sessionId with fork:false. No process was opened.');
+          }
+          const verified = await verifyBlindReviewSessionBinding(binding);
+          if (!verified.ok) return err(`blind_review_session_binding_invalid: ${verified.code}: ${verified.message}. No process was opened.`);
+          blindReviewResumeAuthorized = true;
+        }
+      }
       if (expectedSuccessorBinding) {
         const expected = expectedSuccessorBinding;
         if (!expected.ownerId || !expected.workspaceId || !expected.harnessSlug || !expected.binding?.startedAt ||
@@ -1191,6 +1240,7 @@ export default defineTool({
       resumeFeature = target.feature;
       resumeHarnessSlug = target.harnessSlug ?? null;
       resumeSourceAdvSessionId = target.advSessionId;
+      resumeSourceEnded = hasAdvSessionTerminalEvidence(target);
       resumeModel = target.model;
       resumeAccount = target.account;
       if (args.originalRouting) {
@@ -1297,6 +1347,7 @@ export default defineTool({
             );
           }
           validate(current);
+          resumeSourceEnded = hasAdvSessionTerminalEvidence(current);
         };
       }
       // A legacy Codex launch may have recorded a model without the newer
@@ -1578,6 +1629,7 @@ export default defineTool({
             if (target.agent === 'codex' && (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason))) {
               throw new Error(refusal + 'the Codex writer is live or unknown; no replacement was launched.');
             }
+            resumeSourceEnded = hasAdvSessionTerminalEvidence(current);
           };
           try { await recheckInPlaceResume(); } catch (error) {
             return err(error instanceof Error ? error.message : String(error));
@@ -1966,7 +2018,7 @@ export default defineTool({
         );
       }
       if (refusal) return err(guard.renderLineageNeutralSuccessorRefusal(refusal));
-    } else if (reviewerSourceOwnerId && callerOwnerId) {
+    } else if (!blindReviewResumeAuthorized && reviewerSourceOwnerId && callerOwnerId) {
       const guard = await import('../../acceptance-reviewer-relaunch-guard');
       let conflict: Awaited<ReturnType<typeof guard.findReviewerRelaunchConflict>>;
       try {
@@ -2542,10 +2594,29 @@ export default defineTool({
         // proof are surfaced in the recoverable partial result below rather
         // than being mistaken for a clean launch.
         const requireKickoffProof = kickoffProofRequired[i];
+        let startupReservation: { advSessionId: number; ownerId: string; claimKey: string; expiresAtMs: number } | null = null;
+        const releaseStartup = async () => {
+          if (!startupReservation) return;
+          try {
+            await releaseAdvSessionResume(startupReservation.advSessionId, startupReservation.claimKey);
+          } catch (error) {
+            notes.push(`Resume startup reservation cleanup is unconfirmed (${String(error)}); its bounded expiry remains in force.`);
+          }
+        };
         try {
           if (recheckInPlaceResume) await recheckInPlaceResume();
           if (reconcileOriginalRouting) await reconcileOriginalRouting();
-          return await spawnGovernedAgentProcess(
+          if (isResume && !fork && resumeSourceEnded) {
+            if (!resumeSourceAdvSessionId || !targetOwnerId || !callerOwnerId)
+              throw new Error('Ended-source resume requires exact source and launcher identities before admission.');
+            const claimKey = `governed-resume:${randomUUID()}`;
+            const reservation = await acquireAdvSessionResume(resumeSourceAdvSessionId, claimKey,
+              RESUME_RESERVATION_MAX_LEASE_SEC, undefined, undefined, true);
+            if (!reservation.acquired) throw new Error(`Ended-source resume reservation refused: ${reservation.status}`);
+            startupReservation = { advSessionId: resumeSourceAdvSessionId, ownerId: targetOwnerId,
+              claimKey, expiresAtMs: new Date(reservation.leaseExpiresAt).getTime() };
+          }
+          const result = await spawnGovernedAgentProcess(
           {
             workspaceId,
             idempotencyKey: `agent-spawn:${callerOwnerId ?? 'operator'}:${spawnStartedAt}:${spawnAdmissionNonce}:${i}`,
@@ -2556,15 +2627,23 @@ export default defineTool({
               targetOwnerId,
               fleetSlug,
               headless: !!foldedConfigs[i].headless,
+              ...(startupReservation ? {
+                resumeAdvSessionId: startupReservation.advSessionId,
+                resumeClaimKey: startupReservation.claimKey,
+                resumeStartupExpiresAtMs: startupReservation.expiresAtMs,
+              } : {}),
               ...(respawnReplacesOwnerId ? { replacesOwnerId: respawnReplacesOwnerId } : {}),
             },
           },
           async (admissionContext) => {
             if (recheckInPlaceResume) await recheckInPlaceResume();
             if (reconcileOriginalRouting) await reconcileOriginalRouting();
+            if (startupReservation && startupReservation.expiresAtMs <= Date.now())
+              throw new Error('Ended-source resume startup reservation expired before process start.');
             const governedEnv = {
               ...env,
               PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext),
+              ...(startupReservation ? { [GOVERNED_RESUME_RESERVATION_ENV]: JSON.stringify(startupReservation) } : {}),
             };
             if (foldedConfigs[i].headless) {
               const result = await spawnHeadless({
@@ -2638,7 +2717,10 @@ export default defineTool({
             });
           },
           );
+          if (result.status === 'error') await releaseStartup();
+          return result;
         } catch (error) {
+          await releaseStartup();
           // Admission can reject before the console spawner runs (for example when
           // its durable receipt cannot be persisted). Keep the attempt in its member
           // slot so a partial batch still reports the right member labels, while
@@ -3140,6 +3222,7 @@ export default defineTool({
               sessions: freshVerdict.sessions.map((session) => ({
                 ownerId: session.ownerId,
                 sessionId: session.sessionId,
+               advSessionId: session.advSessionId,
               })),
             },
           }

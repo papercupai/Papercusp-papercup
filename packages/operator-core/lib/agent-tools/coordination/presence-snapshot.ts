@@ -129,7 +129,7 @@ export interface PresenceSnapshot {
   scope_note?: string;
   /** `wakeable` (P-001) is the count a coordinator should read INSTEAD of
    *  `active` — agents an events:emit / coord:dispatch will actually reach.
-   *  `byState` breaks the roster down live | parked | draining | suspect | ended. */
+   *  `byState` breaks the roster down live | parked | draining | suspect | ended | recorded | unknown. */
   summary: {
     active: number;
     stale: number;
@@ -148,6 +148,8 @@ export interface PresenceSnapshot {
       suspect?: number;
       ended: number;
       recorded: number;
+      /** Rows whose session liveness verdict is unavailable in this snapshot. */
+      unknown: number;
     };
     /** P-007: agents whose context-pressure bucket is 'high' or 'critical' right
      *  now — the fleet-health headline (silent by design: 'ok'/unknown agents are
@@ -458,6 +460,8 @@ export async function assemblePresenceSnapshot(
     includeDesktopEnrichment?: boolean;
     /** Evidence-only readers must not run presence retention maintenance. */
     includeMaintenance?: boolean;
+    /** Rebootstrap-only projection: skip host lookups and expose host-dependent session verdicts as unknown. */
+    rebootstrapProjection?: boolean;
     onDiagnostic?: (diagnostic: PresenceSnapshotDiagnostic) => void;
   } = {},
 ): Promise<PresenceSnapshot> {
@@ -842,29 +846,40 @@ export async function assemblePresenceSnapshot(
     .filter((r) => !isFederated(r) && wakeability.has(r.ownerId))
     .map((r) => r.ownerId))];
   const liveHostsByOwner = new Map<string, unknown | null>();
-  await boundedLeg('enrichment', 'findLiveHostsAsync', async () => {
-    // A synchronous `existsSync` in this same psu-pty directory was measured
-    // holding the staging API's event loop in D state for 24 seconds (the
-    // accept-loop wedge). Keep these per-owner lookups off-loop and bounded.
-    for (let i = 0; i < hostOwnerIds.length; i += 16) {
-      await Promise.all(hostOwnerIds.slice(i, i + 16).map(async (ownerId) => {
-        const startedAt = performance.now();
-        hostLookupTiming.calls += 1;
-        try {
-          const host = await findLiveHostAsync(ownerId);
-          liveHostsByOwner.set(ownerId, host);
-          if (host === null) hostLookupTiming.nullResults += 1;
-        } catch {
-          hostLookupTiming.errors += 1;
-          liveHostsByOwner.set(ownerId, null);
-        } finally {
-          const elapsedMs = Math.max(0, performance.now() - startedAt);
-          hostLookupTiming.totalMs += elapsedMs;
-          hostLookupTiming.maxMs = Math.max(hostLookupTiming.maxMs, elapsedMs);
-        }
-      }));
-    }
-  }, undefined, PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
+  const rebootstrapUnknownOwners = new Set(
+    opts.rebootstrapProjection
+      ? hostLookupRows
+          .filter((r) => r.agentRole != null && r.agentRole !== 'cup' && wakeability.has(r.ownerId))
+          .map((r) => r.ownerId)
+      : [],
+  );
+  if (!opts.rebootstrapProjection) {
+    await boundedLeg('enrichment', 'findLiveHostsAsync', async () => {
+      // A synchronous `existsSync` in this same psu-pty directory was measured
+      // holding the staging API's event loop in D state for 24 seconds (the
+      // accept-loop wedge). Keep these per-owner lookups off-loop and bounded.
+      for (let i = 0; i < hostOwnerIds.length; i += 16) {
+        await Promise.all(
+          hostOwnerIds.slice(i, i + 16).map(async (ownerId) => {
+            const startedAt = performance.now();
+            hostLookupTiming.calls += 1;
+            try {
+              const host = await findLiveHostAsync(ownerId);
+              liveHostsByOwner.set(ownerId, host);
+              if (host === null) hostLookupTiming.nullResults += 1;
+            } catch {
+              hostLookupTiming.errors += 1;
+              liveHostsByOwner.set(ownerId, null);
+            } finally {
+              const elapsedMs = Math.max(0, performance.now() - startedAt);
+              hostLookupTiming.totalMs += elapsedMs;
+              hostLookupTiming.maxMs = Math.max(hostLookupTiming.maxMs, elapsedMs);
+            }
+          }),
+        );
+      }
+    }, undefined, PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
+  }
   const findHostForVerdict = (ownerId: string) => liveHostsByOwner.get(ownerId) ?? null;
   // P-011(a) / D-011: every verdict this surface derives, kept so the shared
   // host-condition leg (applyHostConditionLeg) can judge it after the synchronous
@@ -905,11 +920,15 @@ export async function assemblePresenceSnapshot(
     return {
       ...r,
       wakeable: v.wakeable,
-      sessionState: v.sessionState,
+      // Rebootstrap deliberately avoids the psu-host lookup and its dependent
+      // condition read. Those rows stay present, but their verdict is unknown;
+      // using the no-host derivation here would turn missing evidence into an
+      // `ended` result and could remove a live peer from the restored baseline.
+      sessionState: rebootstrapUnknownOwners.has(r.ownerId) ? null : v.sessionState,
       // WI-4400: a draining/suspect row is not safe to classify from one stale
       // read. Expose the confirmation nudge on the shared snapshot so
       // coord:presence and coord:inbox re-bootstrap agree.
-      confirmLiveness: v.confirmLiveness,
+      confirmLiveness: rebootstrapUnknownOwners.has(r.ownerId) ? true : v.confirmLiveness,
       // EI-19407725333778711: carry the independently derived forward-looking
       // axis onto the row. Preserve absence when the enrichment degraded so
       // toStableRosterRow emits UNKNOWN (null), never a fabricated `none`.
@@ -919,7 +938,10 @@ export async function assemblePresenceSnapshot(
       // the instant it does, the declared intent must read as unreliable too, so
       // a reader never sees a fresh-looking "still working on X" for an agent
       // that has already stopped taking turns.
-      intentStale: overrideIntentStaleForSessionState(r.intentStale ?? null, v.sessionState),
+      intentStale: overrideIntentStaleForSessionState(
+        r.intentStale ?? null,
+        rebootstrapUnknownOwners.has(r.ownerId) ? null : v.sessionState,
+      ),
     };
   };
 
@@ -1035,17 +1057,19 @@ export async function assemblePresenceSnapshot(
   // take a turn: a dead-auth / quota-walled / unbound / stuck-pending host makes
   // the row `suspect` and names the condition in `wedged`. Hosts were already
   // looked up above, so there is no fallback lookup; fail-soft like every join.
-  await boundedLeg('enrichment', 'hostConditionLeg', async () => {
-    try {
-      await applyHostConditionLeg(derivedVerdicts, derivedSubjects, {
-        nowMs,
-        findHostFn: findHostForVerdict,
-        findHostAsyncFn: null,
-      });
-    } catch {
-      /* fail-soft: an unjudged row keeps its plain derivation */
-    }
-  }, undefined, PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
+  if (!opts.rebootstrapProjection) {
+    await boundedLeg('enrichment', 'hostConditionLeg', async () => {
+      try {
+        await applyHostConditionLeg(derivedVerdicts, derivedSubjects, {
+          nowMs,
+          findHostFn: findHostForVerdict,
+          findHostAsyncFn: null,
+        });
+      } catch {
+        /* fail-soft: an unjudged row keeps its plain derivation */
+      }
+    }, undefined, PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
+  }
   const withHostCondition = (r: RosterRow): RosterRow => {
     const v = derivedVerdicts.get(r.ownerId);
     if (v?.wedged == null) return r;
@@ -1057,8 +1081,10 @@ export async function assemblePresenceSnapshot(
       intentStale: overrideIntentStaleForSessionState(r.intentStale ?? null, v.sessionState),
     };
   };
-  activeEnriched = activeEnriched.map(withHostCondition);
-  staleEnriched = staleEnriched.map(withHostCondition);
+  if (!opts.rebootstrapProjection) {
+    activeEnriched = activeEnriched.map(withHostCondition);
+    staleEnriched = staleEnriched.map(withHostCondition);
+  }
 
   // The FULL enriched roster (fresh-heartbeat + stale), each carrying its derived
   // sessionState. What we RETURN is a filtered view of it:
@@ -1108,9 +1134,9 @@ export async function assemblePresenceSnapshot(
 
   // P-001 summary: count wakeable agents + the live/parked/ended breakdown across
   // the WHOLE roster (active + stale) — `wakeable` is the headline a coordinator
-  // reads instead of `active`, and `byState` separates the dispatchable (parked)
-  // from the busy (live) and the dead (ended).
-  const byState = { live: 0, parked: 0, draining: 0, suspect: 0, ended: 0, recorded: 0 };
+  // reads instead of `active`, and `byState` separates dispatchable, busy, dead,
+  // recorded and unknown session-state verdicts.
+  const byState = { live: 0, parked: 0, draining: 0, suspect: 0, ended: 0, recorded: 0, unknown: 0 };
   const byContextPressure = { high: 0, critical: 0 };
   let wakeable = 0;
   let onDesktop = 0;
@@ -1124,6 +1150,8 @@ export async function assemblePresenceSnapshot(
     const state = r.sessionState;
     if (state === 'live' || state === 'parked' || state === 'draining' || state === 'suspect' || state === 'ended' || state === 'recorded') {
       byState[state] += 1;
+    } else {
+      byState.unknown += 1;
     }
   }
 
@@ -1342,7 +1370,7 @@ export function renderPresenceRebootstrapBlock(snap: PresenceSnapshot): string {
     `baseline restored, tail [coord+N] deltas from here (as_of ${snap.as_of})`;
 
   if (total >= REBOOTSTRAP_INLINE_MAX_ROWS) {
-    const { live, parked, draining, suspect, ended, recorded } = snap.summary.byState;
+    const { live, parked, draining, suspect, ended, recorded, unknown } = snap.summary.byState;
     const stateBits = [
       live ? `${live} live` : null,
       parked ? `${parked} parked` : null,
@@ -1350,6 +1378,7 @@ export function renderPresenceRebootstrapBlock(snap: PresenceSnapshot): string {
       suspect ? `${suspect} suspect` : null,
       ended ? `${ended} ended` : null,
       recorded ? `${recorded} recorded` : null,
+      unknown ? `${unknown} unknown liveness` : null,
     ].filter((b): b is string => b !== null);
     const stateNote = stateBits.length ? ` (${stateBits.join(', ')})` : '';
     return (
@@ -1364,7 +1393,8 @@ export function renderPresenceRebootstrapBlock(snap: PresenceSnapshot): string {
     const role = r.agentRole ? `[${String(r.agentRole)}]` : '[—]';
     const intent = r.intent ? String(r.intent) : '';
     const plan = r.currentPlanSlug ? ` (${String(r.currentPlanSlug)})` : '';
-    return `${label} ${role} ${intent}${plan}`.trimEnd();
+    const line = `${label} ${role} ${intent}${plan}`.trimEnd();
+    return r.sessionState == null ? `${line} [liveness unknown]` : line;
   });
   return [header, ...lines].join('\n');
 }

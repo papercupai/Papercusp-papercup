@@ -4084,11 +4084,14 @@ async function completeOne(
   // a report at all: a report no caller receives is indistinguishable from none.
   let specAdequacyImpactReport: string | undefined;
   let specAdequacyExempted: string[] | undefined;
+  let deferredContributions: import('./item-close-contributions').DeferredContribution[] | undefined;
   if (shouldEvaluateSpecAdequacyAtCompletion) {
     try {
       const gate = await specTestAdequacyCompletionGate({
         workItem: existing,
         attestation: it.specAdequacy,
+        workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+        completion: it.completion,
         ...(successfulTaskClose || successfulFeatureClose
           ? {
               changedPaths: [
@@ -4190,6 +4193,7 @@ async function completeOne(
         specAdequacyImpactReport = gate.impactReport;
         if (gate.applicable) specAdequacyChecked = gate.checked;
         if (gate.exempted?.length) specAdequacyExempted = gate.exempted;
+        deferredContributions = gate.deferredContributions;
         setContractRequirement('spec-test-adequacy', true);
       }
     } catch (error) {
@@ -4739,6 +4743,7 @@ async function completeOne(
   if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
   if (it.completion.discharges?.length) completionNarrative.discharges = it.completion.discharges;
   if (it.completion.contributesTo?.length) completionNarrative.contributesTo = it.completion.contributesTo;
+  if (deferredContributions?.length) completionNarrative.deferredContributions = deferredContributions;
   if (checkpointChecksCarried?.length) {
     completionNarrative.checkpointChecksCarried = checkpointChecksCarried;
   }
@@ -5299,6 +5304,23 @@ async function completeOne(
   // example, a deferred code-shaped close with no requirement disposition). Keep this
   // boundary before every persistence/finish leg, and expose the finding that explains any
   // downgrade so callers can repair the exact input before submitting the real close.
+  // Re-read exact pins, mappings, lineage and the covering proof at the common
+  // preview/write boundary. A revised contract cannot reuse a preview's deferral.
+  if (deferredContributions?.length) {
+    try {
+      const current = await specTestAdequacyCompletionGate({
+        workItem: existing, attestation: it.specAdequacy,
+        workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+        completion: it.completion,
+        changedPaths: [...(completionEvidenceForGate?.filesChanged ?? []), ...(completionEvidenceForGate?.filesDeleted ?? [])],
+      });
+      if (!current.ok || JSON.stringify(current.deferredContributions) !== JSON.stringify(deferredContributions)) {
+        return { ok: false, id: it.id, error: 'Contribution deferral changed before completion; re-read current contracts and proof. No completion was written.' };
+      }
+    } catch (error) {
+      return { ok: false, id: it.id, error: `Cannot revalidate contribution deferral: ${String(error)}. No completion was written.` };
+    }
+  }
   if (it.validateOnly) {
     // EI-26592766858681844: the content floor already lowered the authority above. Surface
     // its measured paths here too, without borrowing the real close's settlement promises.
@@ -5326,6 +5348,7 @@ async function completeOne(
       ok: !changeKindProofError,
       id: it.id,
       validationOnly: true,
+      ...(deferredContributions?.length ? { deferredContributions } : {}),
       ...(changeKindProofError ? { error: changeKindProofError, stateError: changeKindProofError } : {}),
       ...(changeKindProofError && changeKindGate.applicable && changeKindGate.outcome === 'refuse'
         ? { changeKindProof: { kinds: changeKindGate.kinds, missing: changeKindGate.missing, problems: changeKindGate.problems } }
@@ -6357,6 +6380,7 @@ async function completeOne(
     workItem: workItem && ctx.payloadTierOverride !== 'full' ? toWorkItemReceipt(workItem, COMPLETE_RECEIPT) : workItem,
     completion,
     reflect,
+    ...(deferredContributions?.length ? { deferredContributions } : {}),
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
     ...(specAdequacyChecked || specAdequacyImpactReport || specAdequacyExempted?.length
       ? {

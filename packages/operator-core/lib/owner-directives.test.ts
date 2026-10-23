@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest';
 import {
   OWNER_DIRECTIVES_BLOCK_CHAR_CAP,
   OWNER_DIRECTIVES_BLOCK_HEADER,
-  OWNER_DIRECTIVES_FYI_LEGEND,
   renderOwnerDirectiveRow,
   renderOwnerDirectivesBlock,
   type OwnerDirectiveRow,
@@ -134,24 +133,23 @@ describe('renderOwnerDirectivesBlock', () => {
     const rows = Array.from({ length: 40 }, (_, i) => row({ id: i + 1, verbatimText: long }));
     const out = renderOwnerDirectivesBlock(rows, { nowMs: NOW, viewerOwnerId: row().recordedBy })!;
     expect(out.length).toBeLessThanOrEqual(OWNER_DIRECTIVES_BLOCK_CHAR_CAP + 200); // header + "+N more" slack
-    expect(out).toMatch(/\+\d+ more open — orders:list/);
+    expect(out).toMatch(/\+\d+ more open for this session — orders:list/);
   });
 
   it('adds the "+N more" line when totalOpen exceeds the fetched rows even under the cap', () => {
     const out = renderOwnerDirectivesBlock([row({ id: 3 })], {
       nowMs: NOW,
       totalOpen: 9,
+      totalOwnOpen: 9,
       viewerOwnerId: row().recordedBy,
     })!;
-    expect(out).toContain('+8 more open — orders:list');
+    expect(out).toContain('+8 more open for this session — orders:list { open: true, mine: true, limit: 200 }');
+    expect(out).not.toContain('Other sessions:');
   });
 
   it('WI-10002888: the viewer’s own row renders first and is never the one the cap folds away', () => {
     const viewer = 'su-current-session';
-    // [FYI] rows render as bare grouped ids (~6 chars each), so it takes well over
-    // a thousand older peer rows to exhaust the char cap on their own. Then the
-    // viewer's own directive comes LAST, which is the order the oldest-first fetch
-    // supplies. Its id is outside the peer range so the control cannot hit a peer.
+    // A large foreign population cannot bury this session's actionable row.
     const peers = Array.from({ length: 1500 }, (_, i) => row({ id: i + 1, recordedBy: `su-peer-${i % 3}` }));
     const own = row({ id: 99999, recordedBy: viewer, verbatimText: 'carry the plans to shipped' });
     const out = renderOwnerDirectivesBlock([...peers, own], { nowMs: NOW, viewerOwnerId: viewer })!;
@@ -159,11 +157,12 @@ describe('renderOwnerDirectivesBlock', () => {
     expect(lines[1]).toContain('#99999');
     expect(lines[1]).toContain('[FOR THIS SESSION]');
     expect(out.length).toBeLessThanOrEqual(OWNER_DIRECTIVES_BLOCK_CHAR_CAP + 200);
-    expect(out).toMatch(/\+\d+ more open — orders:list/);
-    // Control: without a viewer the given order is kept, so the same input hides #99999.
+    expect(out).toContain('Other sessions: 1500 open directives');
+    expect(out).not.toContain('#1 ');
+    // An unattributed workspace view summarizes the whole population.
     const ledger = renderOwnerDirectivesBlock([...peers, own], { nowMs: NOW })!;
     expect(ledger).not.toContain('#99999');
-    expect(ledger).toMatch(/\+\d+ more open — orders:list/);
+    expect(ledger).toContain('Workspace: 1501 open directives');
   });
 
   it('labels mixed workspace rows by the session that can act on each one', () => {
@@ -174,42 +173,57 @@ describe('renderOwnerDirectivesBlock', () => {
     const peer = row({ id: 45, recordedBy: 'su-peer-session', verbatimText: peerText });
     const out = renderOwnerDirectivesBlock([own, peer], { nowMs: NOW, viewerOwnerId: ownerId })!;
     const ownLine = out.split('\n').find((line) => line.includes('#44'))!;
-    const peerLine = out.split('\n').find((line) => line.includes('#45'))!;
 
     expect(ownLine).toContain('[FOR THIS SESSION]');
     expect(ownLine).toContain(ownText);
-    // The peer id sits under the [FYI] legend, attributed to its recording
-    // session, and never carries the peer's words.
-    const lines = out.split('\n');
-    const legendAt = lines.indexOf(OWNER_DIRECTIVES_FYI_LEGEND);
-    expect(legendAt).toBeGreaterThan(lines.indexOf(ownLine));
-    expect(lines.indexOf(peerLine)).toBeGreaterThan(legendAt);
-    expect(OWNER_DIRECTIVES_FYI_LEGEND).toContain('[FYI]');
-    expect(OWNER_DIRECTIVES_FYI_LEGEND).toContain('not an action assignment for this session');
-    expect(OWNER_DIRECTIVES_FYI_LEGEND).toContain('orders:get #<id>');
-    expect(peerLine).toContain('su-peer-s');
-    expect(peerLine).not.toContain('[FOR THIS SESSION]');
+    expect(out.indexOf('Other sessions:')).toBeGreaterThan(out.indexOf(ownLine));
+    expect(out).toContain('Other sessions: 1 open directive — awareness only');
+    expect(out).toContain('orders:list { open: true, mine: false, limit: 200 }');
+    expect(out).not.toContain('#45');
+    expect(out).not.toContain('su-peer-session');
     expect(out).not.toContain(peerText);
   });
 
-  it('P-006: [FYI] rows collapse to one legend plus one id line per recording session', () => {
+  it('summarizes the full foreign population without exposing its individual rows', () => {
     const viewer = 'su-current-session';
     const own = row({ id: 1713, recordedBy: viewer, verbatimText: 'audit the oversized tool calls' });
     const recorders = ['su-aaaaaaaa-1', 'su-bbbbbbbb-2', 'su-cccccccc-3'];
     const peers = Array.from({ length: 11 }, (_, i) => row({ id: 400 + i, recordedBy: recorders[i % 3] }));
-    const out = renderOwnerDirectivesBlock([own, ...peers], { nowMs: NOW, viewerOwnerId: viewer })!;
+    const out = renderOwnerDirectivesBlock([own, ...peers], { nowMs: NOW, totalOpen: 189, viewerOwnerId: viewer })!;
     const lines = out.split('\n');
-    // header, own row, legend, three recorder lines — nothing per id.
-    expect(lines).toHaveLength(6);
+    expect(lines).toHaveLength(3);
     expect(lines[1]).toContain('#1713');
-    expect(lines[2]).toBe(OWNER_DIRECTIVES_FYI_LEGEND);
-    expect(lines[3]).toBe('  • su-aaaaaaaa-: #400 #403 #406 #409');
-    for (const p of peers) expect(out).toContain(`#${p.id}`);
+    expect(lines[2]).toBe('  Other sessions: 188 open directives — awareness only; orders:list { open: true, mine: false, limit: 200 }');
+    for (const p of peers) expect(out).not.toContain(`#${p.id}`);
     expect(out).not.toContain('more open');
     // The per-row form spent ~150 chars of disclaimer on each FYI id.
     const perRow = peers.map((p) => renderOwnerDirectiveRow(p, NOW, viewer)).join('\n').length;
-    const grouped = lines.slice(2).join('\n').length;
-    expect(grouped).toBeLessThan(perRow / 3);
+    expect(lines[2].length).toBeLessThan(perRow / 3);
+  });
+
+  it('separates unfetched own directives from the foreign count', () => {
+    const viewer = 'su-current-session';
+    const rows = Array.from({ length: 12 }, (_, i) => row({ id: i + 1, recordedBy: viewer }));
+    const out = renderOwnerDirectivesBlock(rows, { viewerOwnerId: viewer, totalOpen: 20, totalOwnOpen: 17 })!;
+    expect(out).toContain('+5 more open for this session');
+    expect(out).toContain('Other sessions: 3 open directives');
+    expect(out).not.toContain('Other sessions: 8');
+  });
+
+  it('does not invent a foreign count when the own-count read fails', () => {
+    const own = row();
+    const out = renderOwnerDirectivesBlock([own], { viewerOwnerId: own.recordedBy, totalOpen: 188, totalOwnOpen: null })!;
+    expect(out).toContain(own.verbatimText);
+    expect(out).toContain('Other sessions: count unavailable');
+    expect(out).not.toContain('Other sessions: 187');
+  });
+
+  it('renders a count-only block when every directive belongs to another session', () => {
+    const out = renderOwnerDirectivesBlock([row()], { viewerOwnerId: 'su-other', totalOpen: 188 })!;
+    expect(out.split('\n')).toHaveLength(2);
+    expect(out).toContain('Other sessions: 188 open directives');
+    expect(out).not.toContain('#7');
+    expect(out).not.toContain(row().verbatimText);
   });
 });
 

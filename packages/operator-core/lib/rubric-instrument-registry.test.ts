@@ -13,6 +13,7 @@ import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
 import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt-instrument';
+import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY } from './dream/dream-control-live-instrument';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
@@ -238,6 +239,8 @@ describe('the registry seed set', () => {
 
   it('registers exactly the keys scorecards resolves as platform-computed', () => {
     const expected = [
+      DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
+      'session:carry-drill-lifecycle',
       'woe.goal-mode-base-scorecard',
       ...TOOL_DELIVERY_INSTRUMENTS,
       ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),

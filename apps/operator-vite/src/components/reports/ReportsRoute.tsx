@@ -5,6 +5,8 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
 import { TextInput } from '@papercusp/ui-primitives/controls';
 import { Button } from '@/app/harness/Button';
+import { usePopupMaximize } from '@/app/_components/chat/use-popup-maximize';
+import { Maximize2, Minimize2 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 import { ComboboxMenu } from '@/app/harness/Combobox';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
@@ -191,6 +193,17 @@ export default function ReportsRoute() {
 }
 
 export function ReportsLibrary() {
+  const fullscreen = usePopupMaximize({ param: 'reportmax', open: true });
+  useEffect(() => {
+    if (!fullscreen.maximized || fullscreen.screenActive) return;
+    const restore = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      fullscreen.reset();
+    };
+    document.addEventListener('keydown', restore);
+    return () => document.removeEventListener('keydown', restore);
+  }, [fullscreen.maximized, fullscreen.screenActive, fullscreen.reset]);
   const [state, setState] = useQueryStates(parsers, { history: 'push' });
   const [moreFilters, setMoreFilters] = useState(false);
   const [readError, setReadError] = useState(false);
@@ -306,7 +319,17 @@ export function ReportsLibrary() {
           })}</section>)}
         {library.data.length === 200 && <p>Narrow the filters to find more reports.</p>}
       </section>
-      <section className="reports-reader" aria-label="Report reader">
+      <section className={`reports-reader${fullscreen.maximized ? ' reports-reader--fullscreen' : ''}`} aria-label="Report reader"
+        ref={fullscreen.popupRef}>
+        <div className="reports-reader-toolbar">
+          <span>Report reader</span>
+          <Button aria-label={fullscreen.maximized ? 'Restore report reader' : 'Fullscreen report reader'}
+            title={fullscreen.maximized ? 'Restore report reader (Esc)' : 'Fullscreen report reader'}
+            onClick={fullscreen.maximized ? fullscreen.reset : fullscreen.toggleScreen}>
+            {fullscreen.maximized ? <Minimize2 size={14} aria-hidden /> : <Maximize2 size={14} aria-hidden />}
+            {fullscreen.maximized ? 'Restore' : 'Fullscreen'}
+          </Button>
+        </div>
         {!state.sel && <p>Select a report to read it.</p>}
         {state.sel && detail.loading && <p role="status">Loading report…</p>}
         {state.sel && detail.error && <div role="alert"><p>{detail.error.message}</p><Button onClick={detail.invalidate}>Retry</Button></div>}

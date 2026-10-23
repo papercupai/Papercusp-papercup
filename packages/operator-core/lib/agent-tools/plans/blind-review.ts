@@ -25,6 +25,12 @@ import {
 } from '../../blind-review-gate';
 import { runBlindReviewMintOp } from './blind-review-mint-op';
 import { archiveBlindReviewScratchPlans } from '../../blind-review-scratch-plans';
+import { resumeBlindGapReviewer } from '../../blind-reviewer-mint';
+import {
+  findLatestBlindReviewSessionBindingByReviewer,
+  recordBlindReviewSessionPost,
+  verifyBlindReviewSessionBinding,
+} from '../../blind-review-session-bindings';
 
 const text =(payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -43,12 +49,12 @@ const dispositionSchema = z.object({
 export default defineTool({
   name: 'plans:blind-review',
   description:
-    "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision; op 'mint' launches a fresh confined reviewer. Required before a plan reaches awaiting-acceptance and at ship.",
+    "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'mint' launches a confined reviewer; op 'resume' recovers that exact reviewer in place; op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision.",
   guidance: {
     when: "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
     notWhen: 'Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.',
     chaining:
-      "author: op 'mint' { howToRun }. reviewer: op 'brief' → run the product → op 'post' { gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance.",
+      "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance.",
   },
   capability: 'plans:write',
   requirePrincipal: false,
@@ -57,7 +63,7 @@ export default defineTool({
   args: z.object({
     harness: harnessArg,
     slug: z.string().min(1).describe('The plan under review.'),
-    op: z.enum(['brief', 'post', 'dispose', 'mint']),
+    op: z.enum(['brief', 'post', 'dispose', 'mint', 'resume']),
     howToRun: z.string().max(4000).optional().describe('mint: how the reviewer runs the product.'),
     productReads: z.object({
       docsHarness: z.string().min(1).max(120).optional(),
@@ -86,6 +92,9 @@ export default defineTool({
     }
     if (args.op !== 'mint' && args.productReads !== undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['productReads'], message: "productReads is op 'mint' only" });
+    }
+    if (args.op !== 'post' && args.activationAuditSeq !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['activationAuditSeq'], message: "activationAuditSeq is op 'post' only" });
     }
   }),
   async handler(args, ctx) {
@@ -121,17 +130,72 @@ export default defineTool({
       return text(minted.payload, minted.isError);
     }
 
+    if (args.op === 'resume') {
+      let recruiterOwnerId: string;
+      try {
+        recruiterOwnerId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
+      } catch {
+        return text({ error: 'identity_unresolved', slug: args.slug, message: 'A reviewer recovery needs an attributable recruiter.' }, true);
+      }
+      const resumed = await resumeBlindGapReviewer({
+        slug: args.slug, harness: harnessSlug, recruiterOwnerId,
+        ctx: { ...(ctx as unknown as Record<string, unknown>), workspaceId },
+      });
+      if (!resumed.ok) return text({ error: resumed.code, slug: args.slug, message: resumed.message }, true);
+      return text({
+        ok: true, slug: args.slug, op: 'resume', activationAuditSeq: resumed.activationAuditSeq,
+        reviewerOwnerId: resumed.reviewerOwnerId, leaseReleased: resumed.leaseReleased, launch: resumed.launch,
+      });
+    }
+
     let createdBy: string;
     try {
       createdBy = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
     } catch {
       return text({ error: 'identity_unresolved', slug: args.slug, message: 'a blind review record needs an attributable caller' }, true);
     }
+    let reviewerBinding: Awaited<ReturnType<typeof findLatestBlindReviewSessionBindingByReviewer>> = null;
+    if (args.op === 'post') {
+      try {
+        reviewerBinding = await findLatestBlindReviewSessionBindingByReviewer({
+          workspaceId, planSlug: args.slug, reviewerOwnerId: createdBy,
+        });
+      } catch (error) {
+        return text({ error: 'session_binding_unavailable', slug: args.slug,
+          message: error instanceof Error ? error.message : String(error) }, true);
+      }
+      if (reviewerBinding) {
+        if (args.activationAuditSeq !== undefined && args.activationAuditSeq !== reviewerBinding.activationAuditSeq) {
+          return text({ error: 'stale_activation_audit', slug: args.slug,
+            message: 'This reviewer session is bound to a different activation audit.' }, true);
+        }
+        if (reviewerBinding.status === 'closed' || reviewerBinding.status === 'failed') {
+          return text({ error: 'review_session_closed', slug: args.slug,
+            message: 'This reviewer session is no longer allowed to post.' }, true);
+        }
+        const verified = await verifyBlindReviewSessionBinding(reviewerBinding);
+        if (!verified.ok) return text({ error: verified.code, slug: args.slug, message: verified.message }, true);
+      }
+    }
 
     const written = args.op === 'post'
-      ? await recordBlindReview({ ...scope, createdBy, gaps: args.gaps ?? [], activationAuditSeq: args.activationAuditSeq, summary: args.summary })
+      ? await recordBlindReview({ ...scope, createdBy, gaps: args.gaps ?? [],
+          activationAuditSeq: reviewerBinding?.activationAuditSeq ?? args.activationAuditSeq, summary: args.summary })
       : await recordBlindGapDispositions({ ...scope, createdBy, dispositions: args.dispositions ?? [], summary: args.summary });
     if (!written.ok) return text({ error: written.code, slug: args.slug, message: written.message }, true);
+    if (args.op === 'post' && reviewerBinding) {
+      let receiptRecorded = false;
+      try {
+        receiptRecorded = await recordBlindReviewSessionPost({
+          workspaceId, planSlug: args.slug, activationAuditSeq: written.activationAuditSeq,
+          reviewerOwnerId: createdBy, reviewId: written.id,
+        });
+      } catch {
+        receiptRecorded = false;
+      }
+      if (!receiptRecorded) return text({ error: 'review_session_receipt_pending', slug: args.slug, id: written.id,
+        message: 'The review is saved idempotently, but its session receipt did not persist. Retry the same post; do not mint or repost with a new session.' }, true);
+    }
 
     // D-050 (5): the reviewer's scratch plans are done with once its gaps are recorded.
     // Best-effort: a cleanup failure is reported and never voids the recorded review.

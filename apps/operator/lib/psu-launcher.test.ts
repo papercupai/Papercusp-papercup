@@ -4664,6 +4664,49 @@ describe("psu-launcher arg parsing", () => {
     expect(launchResume).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, "explicit-fork-bootstrap"])("replays tracked fork bootstrap after a lost committed response (key %s)", async (bootstrapIdempotencyKey) => {
+    const source = {
+      agent: "claude", sessionId: "native-source", coordOwnerId: "su-source",
+      id: 17, cwd: "/repo",
+    };
+    const bodies: Array<Record<string, unknown>> = [];
+    const committed = new Set<string>();
+    let responseStatus: number | undefined;
+    const postBootstrap = async (path: string, options: { body: string; retryBootstrapFailures?: boolean }) => {
+      const response = await fetchWithResilience(`http://op${path}`, { method: "POST", body: options.body }, {
+        retryBootstrapFailures: options.retryBootstrapFailures,
+        fetchImpl: async (_url: string, init: { body?: string }) => {
+          const body = JSON.parse(init.body!);
+          bodies.push(body);
+          // The server committed the session before its response was lost.
+          // A keyless replay would create a second session instead of reusing it.
+          committed.add(body.bootstrap_idempotency_key ?? `keyless-${bodies.length}`);
+          return new Response(JSON.stringify(bodies.length === 1
+            ? { error: "mcp_proxy_upstream_error", detail: "read ECONNRESET" }
+            : { status: "ok", nativeSessionId: null, envelopeEnv: {} }), {
+            status: bodies.length === 1 ? 502 : 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+        sleep: async () => {}, now: () => 0, onNotice: () => {},
+      });
+      responseStatus = response.status;
+      return response.json();
+    };
+    const launchResume = vi.fn();
+    // Stop before spawning a real CLI: a managed fork still rejects an incomplete envelope.
+    await expect(launchTrackedFork(source, { ownerId: "su-replay-fork", bootstrapIdempotencyKey },
+      { id: null, env: {}, notice: null }, null, { api: postBootstrap, launchResume }))
+      .rejects.toThrow(/pre-pinned managed identity requires a launch record/);
+    expect(responseStatus).toBe(200);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0].bootstrap_idempotency_key).toEqual(expect.any(String));
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(committed.size).toBe(1);
+    if (bootstrapIdempotencyKey) expect(bodies[0].bootstrap_idempotency_key).toBe(bootstrapIdempotencyKey);
+    expect(launchResume).not.toHaveBeenCalled();
+  });
+
   it("pre-pinned managed forks fail closed instead of launching without a record", async () => {
     const source = {
       agent: "claude",

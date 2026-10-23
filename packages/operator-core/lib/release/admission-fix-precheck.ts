@@ -27,7 +27,7 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  * the real runner (setup-release-checkout into its dedicated checkout,
  * `scripts/test-files.mjs` per file), guarded by the gate's initial run-lock probe.
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { accessSync, constants as fsConstants, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, type WriteStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -406,13 +406,18 @@ export function evaluateFixPrecheck(
 // ─── the real runner ─────────────────────────────────────────────────────────────────────────
 
 /** `git rev-parse --git-common-dir` for `root`, absolute; null when git cannot answer. */
-export const defaultGitCommonDir = (root: string): string | null => {
+export const defaultGitCommonDir = async (root: string): Promise<string | null> => {
   try {
-    const out = execFileSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 10_000,
-    }).trim();
+    const out = (
+      await new Promise<string>((resolve, reject) => {
+        execFile(
+          'git',
+          ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+          { encoding: 'utf8', timeout: 10_000 },
+          (error, stdout) => (error ? reject(error) : resolve(stdout)),
+        );
+      })
+    ).trim();
     return out || null;
   } catch {
     return null;
@@ -433,8 +438,11 @@ export const defaultGitCommonDir = (root: string): string | null => {
  * commit is reachable from the canonical root by construction. A root git cannot classify is
  * returned unchanged (the runner then reports the failure loudly rather than guessing).
  */
-export function resolveCanonicalIntegrationRoot(root: string, gitCommonDir: (root: string) => string | null = defaultGitCommonDir): string {
-  const common = gitCommonDir(root);
+export async function resolveCanonicalIntegrationRoot(
+  root: string,
+  gitCommonDir: (root: string) => string | null | Promise<string | null> = defaultGitCommonDir,
+): Promise<string> {
+  const common = await gitCommonDir(root);
   if (!common) return root;
   const abs = path.resolve(root, common);
   return path.basename(abs) === '.git' ? path.dirname(abs) : root;
@@ -876,9 +884,14 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
     // The current-build host can supply tooling from a linked worktree while
     // integrationRoot names the canonical checkout holding the built commit.
     // A different path is not a foreign app when both share the same repository.
-    const foreignTooling = toolingRoot !== opts.integrationRoot &&
-      path.resolve(resolveCanonicalIntegrationRoot(toolingRoot)) !==
-        path.resolve(resolveCanonicalIntegrationRoot(opts.integrationRoot));
+    let foreignTooling = false;
+    if (toolingRoot !== opts.integrationRoot) {
+      const [canonicalToolingRoot, canonicalIntegrationRoot] = await Promise.all([
+        resolveCanonicalIntegrationRoot(toolingRoot),
+        resolveCanonicalIntegrationRoot(opts.integrationRoot),
+      ]);
+      foreignTooling = path.resolve(canonicalToolingRoot) !== path.resolve(canonicalIntegrationRoot);
+    }
     if (foreignTooling && !opts.testCommand?.length) {
       return { ran: false, reason: 'runner-failed',
         detail: 'foreign admission pre-check has no registered test-suite command; refusing to infer one from operator tooling' };
@@ -917,8 +930,10 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       mkdirSync(path.dirname(precheckRoot), { recursive: true });
     }
     if (existsSync(precheckRoot)) {
-      const integrationGitDir = defaultGitCommonDir(opts.integrationRoot);
-      const precheckGitDir = defaultGitCommonDir(precheckRoot);
+      const [integrationGitDir, precheckGitDir] = await Promise.all([
+        defaultGitCommonDir(opts.integrationRoot),
+        defaultGitCommonDir(precheckRoot),
+      ]);
       if (!integrationGitDir || !precheckGitDir || path.resolve(integrationGitDir) !== path.resolve(precheckGitDir)) {
         return {
           ran: false,

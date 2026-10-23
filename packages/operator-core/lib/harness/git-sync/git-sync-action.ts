@@ -74,6 +74,7 @@ import { registerSystemAction, type SystemActionCtx, type SystemActionResult } f
 import { getBuildInfo } from '../../build-info';
 import { stripNulBytesDeep } from '../../coord-lifecycle/records';
 import { requestOnlyHost } from '../../background-workers';
+import { gitSubcommandOf } from '../../fleet/sidecar-read-only-git';
 import { runCheckpointedStep } from '../../dbos/checkpointed-step';
 import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
 import { getPotGitMode, type PotGitMode } from './hive-git-mode';
@@ -432,12 +433,14 @@ function createGitSyncActionLivenessGuard(opts: {
   let stopped = false;
   let timedOut = false;
   let timeoutError: GitSyncActionTimeoutError | null = null;
-  let activePhase: () => string = () => 'unidentified action phase';
+  // Nested guards finish while their parent pipeline remains active. Track only
+  // pending operations so a completed refresh cannot label a later parent timeout.
+  const activePhases = new Map<symbol, () => string>();
   let timeoutCleanup: Promise<void> | null = null;
 
   const activePhaseName = (): string => {
     try {
-      const phase = activePhase();
+      const phase = [...activePhases.values()].at(-1)?.() ?? 'unidentified action phase';
       return phase.trim() || 'unidentified action phase';
     } catch {
       return 'unidentified action phase';
@@ -496,19 +499,22 @@ function createGitSyncActionLivenessGuard(opts: {
     if (stopped) return Promise.reject(new Error(`git-sync action is already stopped before ${phaseName()}`));
     if (timedOut)
       return Promise.reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs));
-    activePhase = phaseName;
+    const phaseId = Symbol();
+    activePhases.set(phaseId, phaseName);
     touch();
 
     let work: Promise<T>;
     try {
       work = Promise.resolve(operation());
     } catch (error) {
+      activePhases.delete(phaseId);
       return Promise.reject(error);
     }
 
     return new Promise<T>((resolve, reject) => {
       let settled = false;
       const finish = (): void => {
+        activePhases.delete(phaseId);
         controller.signal.removeEventListener('abort', onAbort);
       };
       const onAbort = (): void => {
@@ -2624,6 +2630,26 @@ type GitSyncSettlementProgress = {
   total: number;
   feature_id: string;
 };
+type GitSyncCommand = {
+  id: number;
+  subcommand: string | null;
+  cwd: string;
+  cwd_truncated?: true;
+  started_at: number;
+};
+type GitSyncCommandSnapshot = {
+  /** Only the existing runGitSync runner seam, not unrelated sidecar work. */
+  scope: 'local-sync-runner';
+  active_count: number;
+  omitted_count: number;
+  active: GitSyncCommand[];
+};
+type GitSyncTimeoutSnapshot = {
+  at: number;
+  kind: 'idle' | 'hard';
+  phase: string;
+  git_commands: GitSyncCommandSnapshot;
+};
 type GitSyncActivityMarker = {
   active: boolean;
   phase: GitSyncActivityPhase;
@@ -2634,11 +2660,13 @@ type GitSyncActivityMarker = {
   /** The per-fire lock owner ties this durable marker back to the live resource lease. */
   owner: string;
   owner_pid: number;
+  git_commands: GitSyncCommandSnapshot;
+  timeout?: GitSyncTimeoutSnapshot;
   settlement_progress?: GitSyncSettlementProgress;
   /** EI-24496143892913296: the post-legs leg that just started (e.g. 'git-sync:ref-announce'). */
   leg?: string;
 };
-type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid'>;
+type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid' | 'git_commands' | 'timeout'>;
 
 /**
  * Writer-backed liveness for the whole git-sync action, not just its local commit
@@ -3675,10 +3703,27 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   });
   const acquired: GitSyncHeldLock[] = [];
   const lockOwner = newGitSyncLockOwner();
+  // The per-fire owner plus ordinal is the command identity. Never retain argv
+  // or env: Git config/remote arguments may carry credentials. Bound each durable
+  // snapshot while reporting omitted active commands explicitly.
+  const activeGitCommands = new Map<number, GitSyncCommand>();
+  let nextGitCommandId = 0;
+  let timeoutSnapshot: GitSyncTimeoutSnapshot | undefined;
+  const snapshotGitCommands = (): GitSyncCommandSnapshot => {
+    const active = [...activeGitCommands.values()].slice(0, 16).map((command) => ({ ...command }));
+    return {
+      scope: 'local-sync-runner',
+      active_count: activeGitCommands.size,
+      omitted_count: activeGitCommands.size - active.length,
+      active,
+    };
+  };
   const withActivityOwner = (activity: GitSyncActivityFields): GitSyncActivityMarker => ({
     ...activity,
     owner: lockOwner,
     owner_pid: process.pid,
+    git_commands: snapshotGitCommands(),
+    ...(timeoutSnapshot ? { timeout: timeoutSnapshot } : {}),
   });
   let activityWriteTail: Promise<void> | null = null;
   const enqueueActivityWrite = (write: () => Promise<void>): Promise<void> => {
@@ -3695,8 +3740,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     activityWriteTail = tracked;
     return pending;
   };
-  const writeActivity = (activity: GitSyncActivityFields): Promise<void> =>
-    enqueueActivityWrite(() => writeGitSyncActivity(slug, workspaceId, withActivityOwner(activity)));
+  const writeActivity = (activity: GitSyncActivityFields): Promise<void> => {
+    const marker = withActivityOwner(activity);
+    return enqueueActivityWrite(() => writeGitSyncActivity(slug, workspaceId, marker));
+  };
   // The local resource lease is released before post-legs begin, but the
   // activity marker remains active until every post-leg settles. Keep the
   // exact resource wake pending across that gap so a waiter cannot restart the
@@ -3905,20 +3952,22 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     errorAwaitingGitExit = activeGitExecutions.size > 0;
     const awaitingGitExit = errorAwaitingGitExit;
     const failedAt = Date.now();
+    timeoutSnapshot ??= { at: failedAt, kind: error.timeoutKind, phase: error.phase, git_commands: snapshotGitCommands() };
+    const marker = withActivityOwner({
+      active: awaitingGitExit,
+      phase: 'error',
+      started_at: activityStartedAt,
+      updated_at: failedAt,
+      completed_at: awaitingGitExit ? null : failedAt,
+      outcome_status: null,
+    });
     timeoutActivity = enqueueActivityWrite(() =>
       patchRoutineMetadata(slug, workspaceId, {
         last_status: 'error',
         local_sync_status: 'error',
         last_error: error.message,
         last_errors: [`git-sync action timeout (${error.timeoutKind}) during ${error.phase}`],
-        git_sync_activity: withActivityOwner({
-          active: awaitingGitExit,
-          phase: 'error',
-          started_at: activityStartedAt,
-          updated_at: failedAt,
-          completed_at: awaitingGitExit ? null : failedAt,
-          outcome_status: null,
-        }),
+        git_sync_activity: marker,
       }),
     ).then(() => {
       if (!awaitingGitExit) terminalActivityDurable = true;
@@ -3941,6 +3990,16 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       await activity;
     },
   });
+  // Abort listeners run synchronously, before a cooperative child can settle
+  // and remove its descriptor. Keep this boundary snapshot through cleanup.
+  liveness.signal.addEventListener('abort', () => {
+    const error: unknown = liveness.signal.reason;
+    if (error instanceof GitSyncActionTimeoutError) {
+      timeoutSnapshot ??= {
+        at: Date.now(), kind: error.timeoutKind, phase: error.phase, git_commands: snapshotGitCommands(),
+      };
+    }
+  }, { once: true });
   let lastActivityHeartbeatAt = activityStartedAt - GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS;
   const enqueueActivityHeartbeat = (
     guard: GitSyncActionLivenessGuard,
@@ -4246,20 +4305,33 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           // not start another Git command; another fire may own this index now.
           leaseFence?.assertHeld();
           liveness.assertActive();
-          const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
-            // WI-10006705: forward the attributed commit's private GIT_INDEX_FILE.
-            env: gitOptions?.env,
-            signal: liveness.signal,
-            onProgress: () => {
-              liveness.touch();
-              enqueueActivityHeartbeat(liveness, 'local-sync', null);
-            },
+          const commandId = ++nextGitCommandId;
+          const subcommand = gitSubcommandOf(args);
+          activeGitCommands.set(commandId, {
+            id: commandId,
+            subcommand: subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand) ? subcommand : null,
+            cwd: cwd.slice(0, 1024),
+            ...(cwd.length > 1024 ? { cwd_truncated: true as const } : {}),
+            started_at: Date.now(),
           });
-          activeGitExecutions.add(execution);
           try {
-            return await execution;
+            const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
+              // WI-10006705: forward the attributed commit's private GIT_INDEX_FILE.
+              env: gitOptions?.env,
+              signal: liveness.signal,
+              onProgress: () => {
+                liveness.touch();
+                enqueueActivityHeartbeat(liveness, 'local-sync', null);
+              },
+            });
+            activeGitExecutions.add(execution);
+            try {
+              return await execution;
+            } finally {
+              activeGitExecutions.delete(execution);
+            }
           } finally {
-            activeGitExecutions.delete(execution);
+            activeGitCommands.delete(commandId);
           }
         },
         beforePush: gate.hiveGitMode

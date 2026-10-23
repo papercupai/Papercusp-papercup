@@ -7,7 +7,7 @@
  * callers must never infer behavior classes, acceptance, or exemptions.
  */
 import { createHash } from 'node:crypto';
-import type { SpecBehaviorClass, SpecLifecycleStatus } from './spec-clauses-store';
+import type { SpecBehaviorClass, SpecClauseFalsifier, SpecLifecycleStatus } from './spec-clauses-store';
 import { extractAssertionCandidates, type PlanAssertionCandidate } from './val-assertions';
 
 export interface SpecClauseExemption {
@@ -86,6 +86,7 @@ export interface SpecSetHashClause {
   lifecycleStatus: SpecLifecycleStatus;
   exemption: SpecClauseExemption | Record<string, unknown> | null;
   acceptanceRef: string | null;
+  falsifier?: SpecClauseFalsifier | null;
 }
 
 export interface CompileSpecClausesOptions {
@@ -216,6 +217,16 @@ function canonicalCandidate(candidate: SpecSetHashClause): Record<string, unknow
     lifecycleStatus: candidate.lifecycleStatus,
     exemption: normalizeSemanticValue(candidate.exemption),
     acceptanceRef: candidate.acceptanceRef ? normalizeSpecSemanticText(candidate.acceptanceRef) : null,
+    // Omit undeclared falsifiers to preserve pre-declaration identities. A declared
+    // violation or proof requirement is part of the contract an audit certifies.
+    ...(candidate.falsifier ? { falsifier: {
+      observation: normalizeSpecSemanticText(candidate.falsifier.observation),
+      ...(candidate.falsifier.probeMethod
+        ? { probeMethod: normalizeSpecSemanticText(candidate.falsifier.probeMethod) } : {}),
+      ...(candidate.falsifier.requiredScenarios?.length
+        ? { requiredScenarios: normalizeSet(candidate.falsifier.requiredScenarios) } : {}),
+      ...(candidate.falsifier.causalPairing ? { causalPairing: candidate.falsifier.causalPairing } : {}),
+    } } : {}),
   };
 }
 

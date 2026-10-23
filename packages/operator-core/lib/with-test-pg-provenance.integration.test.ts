@@ -163,6 +163,7 @@ describe('isolated PostgreSQL mutation evidence', () => {
       PAPERCUSP_TEST_RUN_WORKSPACE: 'reporter-workspace',
     };
     const probe = {
+      PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'owned-test-task',
       PAPERCUSP_MUTATION_PROBE: '1',
       PAPERCUSP_MUTATION_PHASE: 'mutant',
       PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT: root,

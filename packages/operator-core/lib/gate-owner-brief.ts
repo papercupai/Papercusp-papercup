@@ -371,9 +371,11 @@ export interface GateOwnerBriefInput {
 /** No new reads: retain each existing instrument's units, identity and missingness. */
 function composeTestProgress(inp: GateOwnerBriefInput) {
   const files = inp.candidateFailures;
-  const filesMeasured = files != null && files.unavailable === null;
   const convergence = inp.convergence;
   const frozenCandidate = inp.repairQueue?.frozenCandidate ?? inp.repairQueue?.candidate ?? null;
+  const filesSameSubject = frozenCandidate != null && files?.candidateSha === frozenCandidate &&
+    inp.repairQueue?.repairHead != null && files.repairHeadSha === inp.repairQueue.repairHead;
+  const filesMeasured = files != null && files.unavailable === null && filesSameSubject;
   const sameSubject = frozenCandidate != null && convergence?.candidate === frozenCandidate &&
     inp.repairQueue?.repairHead != null && convergence.repairHead === inp.repairQueue.repairHead;
   const newerAbort = inp.inconclusive?.observedAtMs != null &&
@@ -388,7 +390,8 @@ function composeTestProgress(inp: GateOwnerBriefInput) {
       reason: 'The available file, signature and reuse counters do not establish a complete full-suite failing-case total.',
     },
     candidateFiles: {
-      status: filesMeasured ? 'measured-in-radius' as const : 'unavailable' as const,
+      status: filesMeasured ? 'measured-in-radius' as const
+        : files != null && files.unavailable === null ? 'incomparable' as const : 'unavailable' as const,
       value: filesMeasured ? files.failingFileCount : null,
       unit: 'test-files' as const,
       candidateSha: files?.candidateSha ?? null,
@@ -396,9 +399,12 @@ function composeTestProgress(inp: GateOwnerBriefInput) {
       filesJudged: filesMeasured ? files.filesJudged : null,
       detailsTruncated: files?.truncated ?? null,
       readAtMs: inp.nowMs,
+      observedAtMs: null,
+      observationTimeReason: 'The aggregate reader does not retain a common observation timestamp for its contributing file verdicts.',
       source: 'gate.candidateFailures',
       scope: files?.scope ?? 'Only the candidate affected-test radius; not a complete full-suite verdict.',
-      reason: files?.unavailable ?? (files == null ? 'Candidate failure evidence was not recorded.' : null),
+      reason: files?.unavailable ?? (files == null ? 'Candidate failure evidence was not recorded.'
+        : !filesSameSubject ? 'The recorded file count does not describe the current frozen candidate and repair head.' : null),
     },
     trend: {
       status: comparable ? convergence.code : 'incomparable' as const,

@@ -45,7 +45,7 @@ function processGone(pid: number): boolean {
  * Only an empty/released confined task can own this destructive cleanup. */
 export async function cleanupEndedVerifierDirectories(row: TaskRow): Promise<void> {
   const scopeUnit = row.scopeUnit;
-  if (row.class !== 'bash-job' || !row.cwd || !isAbsolute(row.cwd) || !scopeUnit) return;
+  if ((row.class !== 'bash-job' && row.class !== 'test-run') || !row.cwd || !isAbsolute(row.cwd) || !scopeUnit) return;
   // All descendants are checked: the launcher may have exited before its payload.
   async function scopeEmpty(path: string): Promise<boolean> {
     try {

@@ -29,6 +29,7 @@ import {
   readCanonicalClaudeArchive,
   readCanonicalNativeArchive,
   readStableLiveJsonl,
+  type SessionSourceDiagnostics,
   type StableSource,
 } from './source';
 import {
@@ -299,20 +300,28 @@ export interface TrackedNativeSourceDeps {
   archiveStore?: typeof pgSessionArchiveStore;
 }
 
-export async function acquireTrackedSessionSource(source: AdvSessionRow, deps: TrackedNativeSourceDeps = {}): Promise<StableSource> {
-  if (source.agent === 'claude') return acquireTrackedClaudeSource(source);
+export async function acquireTrackedSessionSource(
+  source: AdvSessionRow,
+  deps: TrackedNativeSourceDeps = {},
+  diagnostics?: SessionSourceDiagnostics,
+): Promise<StableSource> {
+  if (source.agent === 'claude') return acquireTrackedClaudeSource(source, undefined, diagnostics);
+  const measure: SessionSourceDiagnostics['measure'] = diagnostics
+    ? diagnostics.measure.bind(diagnostics) : (_phase, work) => Promise.resolve().then(work);
   if (!['codex', 'omp'].includes(source.agent ?? '') || source.role != null || !source.coordOwnerId || !source.cwd) {
     throw new Error('session ports require a tracked plain SU source');
   }
   const backend = source.agent as 'codex' | 'omp';
   const sessionId = backend === 'omp' ? source.ompThreadId ?? source.sessionId : source.sessionId;
   if (!sessionId) throw new Error('source is missing exact native session identity');
-  const readArchive = () => (deps.readArchive ?? readCanonicalNativeArchive)({ backend, sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)());
+  const readArchive = () => deps.readArchive
+    ? deps.readArchive({ backend, sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)())
+    : readCanonicalNativeArchive({ backend, sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)(), undefined, diagnostics);
   const readLive = async () => {
     const root = deps.rootForSource?.(source) ?? join(backend === 'codex'
       ? codexHomeForSessionKey(source.id) : ompAgentHomeForSessionKey(source.id), 'sessions');
-    const path = await (deps.findLive ?? findCanonicalNativeLiveJsonl)(root, backend, sessionId);
-    return await (deps.readLive ?? readStableLiveJsonl)(path);
+    const path = await measure('port.source.live-lookup', () => (deps.findLive ?? findCanonicalNativeLiveJsonl)(root, backend, sessionId));
+    return await measure('port.source.live-read', () => (deps.readLive ?? readStableLiveJsonl)(path));
   };
   if (source.endedAt) {
     try { return await readArchive(); }
@@ -342,20 +351,22 @@ function sourceAdapterVersion(backend: SessionBackend): number {
 export async function acquireTrackedClaudeSource(
   source: AdvSessionRow,
   deps: TrackedClaudeSourceDeps = {},
+  diagnostics?: SessionSourceDiagnostics,
 ): Promise<StableSource> {
+  const measure: SessionSourceDiagnostics['measure'] = diagnostics
+    ? diagnostics.measure.bind(diagnostics) : (_phase, work) => Promise.resolve().then(work);
   if (source.agent !== 'claude' || source.role != null) throw new Error('V1 ports require a tracked plain Claude SU source');
   if (!source.sessionId || !source.coordOwnerId || !source.cwd) throw new Error('source is missing tracked Claude identity/cwd');
   const { sessionId, coordOwnerId } = source;
-  const readArchive = () => (deps.readArchive ?? readCanonicalClaudeArchive)(
-    { sessionId },
-    (deps.archiveStore ?? pgSessionArchiveStore)(),
-  );
+  const readArchive = () => deps.readArchive
+    ? deps.readArchive({ sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)())
+    : readCanonicalClaudeArchive({ sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)(), undefined, diagnostics);
   const readLive = async () => {
-    const path = await (deps.findLive ?? findCanonicalClaudeLiveJsonl)(
+    const path = await measure('port.source.live-lookup', () => (deps.findLive ?? findCanonicalClaudeLiveJsonl)(
       (deps.configDirForOwner ?? sessionClaudeConfigDir)(coordOwnerId),
       sessionId,
-    );
-    return await (deps.readLive ?? readStableLiveJsonl)(path);
+    ));
+    return await measure('port.source.live-read', () => (deps.readLive ?? readStableLiveJsonl)(path));
   };
   if (source.endedAt) {
     try { return await readArchive(); }

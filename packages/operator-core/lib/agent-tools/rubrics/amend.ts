@@ -741,7 +741,7 @@ export default defineTool({
     const run = trackAmendRun(
       idempotencyKey,
       args.rubricRef,
-      () => executeAmend({ ...input, idempotencyKey }, args.rubricRef),
+      (onPhase) => executeAmend({ ...input, idempotencyKey, onPhase }, args.rubricRef),
       { onRegistered: () => { registered = true; } },
     );
     const settled = await settleWithin(run, remainingBudget(), ctx.signal);
@@ -819,6 +819,7 @@ async function auditAmendInstrumentBindings(input: AmendRubricInput): Promise<In
 async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise<Record<string, unknown>> {
   // test-rubric-unification-2026-10-12 P-005 (plan D-006): the amended criteria may not bind a
   // NEW or CHANGED unregistered instrument; a key carried unchanged is grandfathered.
+  input.onPhase?.('instrument-bindings');
   const instrumentAudit = await auditAmendInstrumentBindings(input);
   const instrumentRefusal = instrumentAudit ? unregisteredInstrumentRefusal(instrumentAudit) : null;
   if (instrumentRefusal) return instrumentRefusal;
@@ -835,6 +836,7 @@ async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise
     throw error;
   }
   if (!rubric) return { ok: false, error: `no rubric '${rubricRef}' — rubrics:list to see refs` };
+  input.onPhase?.('response-validation');
   const completeness = rubricCompleteness(rubric);
   // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
   const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);

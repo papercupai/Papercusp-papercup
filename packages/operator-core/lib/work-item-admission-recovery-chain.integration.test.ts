@@ -23,7 +23,7 @@ const h = vi.hoisted(() => ({
   denied: false, revoked: false,
   wake: vi.fn(), model: vi.fn(), claim: vi.fn(), dispatches: vi.fn(),
   denyPickupClaim: false,
-  kernelDenied: false, suToken: 'test-only-original-bearer-not-a-real-credential',
+  kernelDenied: false, kernelUnavailable: false, suToken: 'test-only-original-bearer-not-a-real-credential',
 }));
 vi.mock('./superuser-token', async (orig) => ({
   ...await orig<typeof import('./superuser-token')>(), readSuperuserToken: () => h.suToken,
@@ -61,9 +61,11 @@ vi.mock('./projected-tool-deps', () => ({
   PROJECTED_DEPS: {
     defaultDeny: true,
     onDispatchStart: ({ toolName }: { toolName: string }) => h.dispatches(toolName),
-    kernelEnforcement: async () => h.revoked || h.kernelDenied
-      ? { decision: 'deny', code: 'revoked', reason: 'target authority revoked' }
-      : { decision: 'allow' },
+    kernelEnforcement: async () => h.kernelUnavailable
+      ? { decision: 'deny', code: 'policy-unavailable', reason: 'session authority reader unavailable' }
+      : h.revoked || h.kernelDenied
+        ? { decision: 'deny', code: 'revoked', reason: 'target authority revoked' }
+        : { decision: 'allow' },
     checkCapabilityEnvelope: async ({ toolName }: { toolName: string }) =>
       h.denyPickupClaim && toolName === 'work_items:claim'
         ? { decision: 'deny', reason: 'current target claim confinement' } : null,
@@ -202,6 +204,7 @@ beforeEach(async () => {
   h.revoked = false;
   h.denyPickupClaim = false;
   h.kernelDenied = false;
+  h.kernelUnavailable = false;
   h.suToken = 'test-only-original-bearer-not-a-real-credential';
   h.dispatches.mockReset();
   h.model.mockReset().mockRejectedValue(new Error('unexpected external model call'));
@@ -403,6 +406,30 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     });
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('retries the original queued request after a temporary kernel authority-reader failure', async () => {
+    const original = await create();
+    const first = await request(original.id);
+    const before = await row(original.id);
+    h.kernelUnavailable = true;
+    await expect(tick()).rejects.toThrow('session authority reader unavailable');
+    expect(await row(original.id)).toEqual(before);
+    expect(h.model).not.toHaveBeenCalled();
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+
+    h.kernelUnavailable = false;
+    const result = await tick();
+    expect(result).toMatchObject({ promoted: 1, writerCoverageGap: [] });
+    expect(await row(original.id)).toMatchObject({
+      admission: 'admitted', taken_by: reviewerOwnerId,
+      payload: { _admissionRecovery: {
+        requestId: first.request.requestId, state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+      } },
+    });
+    expect(h.claim).toHaveBeenCalledTimes(1);
+    expect(h.wake).toHaveBeenCalledTimes(1);
   });
 
   it('holds an expired proof and a payload-spoofed role without a handler invocation', async () => {

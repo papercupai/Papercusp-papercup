@@ -1,10 +1,19 @@
 /** Separate-process fixture: real IPC, exec and kernel containment; admission
  * persistence is replaced with an explicit test barrier. Never used at runtime. */
 import { writeFile } from 'node:fs/promises';
-import { runSpawnerSidecarServer } from '../spawner-sidecar-server';
-import { execProcess } from '../sidecar-exec-process';
+// Emit before the real server's import graph, so an empty READY timeout can be
+// distinguished from an import stall or a server that has reached listen().
+const startedAt = performance.now();
+const phase = (event: string) => process.stderr.write(`SIDECAR_FIXTURE_PHASE ${JSON.stringify({
+  event, pid: process.pid, elapsedMs: performance.now() - startedAt,
+})}\n`);
+phase('entry');
+const { runSpawnerSidecarServer } = await import('../spawner-sidecar-server');
+phase('server-imported');
+const { execProcess } = await import('../sidecar-exec-process');
+phase('exec-imported');
 
-runSpawnerSidecarServer({
+const server = runSpawnerSidecarServer({
   executeProcess: (params, deps) => execProcess(params, {
     ...deps,
     lazyReceiptMs: 0, // the fixture's explicit admission barrier must gate the spawn
@@ -25,3 +34,5 @@ runSpawnerSidecarServer({
     },
   }),
 });
+phase('server-created');
+server.once('listening', () => phase('listening'));

@@ -47,6 +47,74 @@ function fixture(change: Record<string, readonly Row[]> = {}) {
 
 afterEach(() => vi.unstubAllEnvs());
 describe('mutation-free Dream/Gym/Scout control observations', () => {
+  function assertR1Representation(value: Awaited<ReturnType<typeof readDreamControlObservations>>) {
+    expect(value).toMatchObject({ schemaVersion: 'dream-control-observations-v1', status: 'observed',
+      scope, runtime, capturedAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString() });
+    expect(value.scope).toEqual(scope);
+    expect(value.runtime).toEqual(runtime);
+    const observations = value.observations;
+    if (!observations) throw new Error('R-1 observation representation is missing');
+    const references = {
+      flags: ['flags:DREAM_CYCLE', 'flags:LEARNING_GOVERNOR'],
+      dream: ['harness_shared.routines', 'dream-config:resolveDreamCycleConfig'],
+      gym: ['harness_shared.gym_autoloop_config', 'harness_shared.operator_gym_gates', 'gym/autoloop-tick:isEligibleAutoloop'],
+      governors: ['harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.pot_settings'],
+      activity: ['harness_shared.dream_runs', 'harness_shared.scout_ticks'],
+      rollingSpend: ['dream-governor:sumDreamSpendSince', 'harness_shared.learning_spend_events', 'harness_shared.dream_runs'],
+    };
+    for (const key of Object.keys(references) as Array<keyof typeof references>) {
+      expect(observations[key].status, key).toBe('observed');
+      expect(observations[key].value, key).not.toBeNull();
+      expect(observations[key].sourceRefs, key).toEqual(references[key]);
+    }
+    for (const clause of value.r2Assertions.clauses) {
+      expect(clause.scope).toEqual(scope);
+      expect(clause.source).toEqual({ path: 'packages/operator-core/lib/dream/dream-control-observations.ts', runtime });
+      expect(clause.capturedAt).toBe(value.capturedAt);
+      expect(clause.expiresAt).toBe(value.expiresAt);
+      expect(clause.sourceRefs.length).toBeGreaterThan(0);
+      expect(clause.rawRefs.length).toBeGreaterThan(0);
+      for (const ref of clause.rawRefs) {
+        expect(ref.startsWith('/')).toBe(true);
+        let retained: unknown = value;
+        for (const key of ref.slice(1).split('/')) {
+          expect(retained !== null && typeof retained === 'object' && Object.hasOwn(retained, key), ref).toBe(true);
+          retained = (retained as Row)[key];
+        }
+      }
+    }
+  }
+
+  it('R-1 retains exact scope, serving identity, timestamps and resolvable raw and source references', async () => {
+    const { sql, queries } = fixture();
+    const value = await readDreamControlObservations(sql, scope, deps);
+    assertR1Representation(value);
+    expect(queries.length).toBeGreaterThan(5);
+    // R-1's representation can be sound while production admission remains unknown.
+    expect(value.r2Assertions.healthy).toBe(false);
+  });
+
+  it.each(['workspace', 'pot', 'window', 'host', 'process', 'build', 'capture', 'expiry',
+    'source-reference', 'source-path', 'raw-reference'] as const)(
+    'R-1 representation detector rejects a perturbed %s', async fault => {
+      const original = await readDreamControlObservations(fixture().sql, scope, deps);
+      assertR1Representation(original); // the mechanism must survive every negative control
+      const changed = JSON.parse(JSON.stringify(original)) as typeof original;
+      if (fault === 'workspace') changed.scope.workspaceId = 'foreign';
+      if (fault === 'pot') changed.scope.potSlug = 'foreign';
+      if (fault === 'window') changed.scope.since = '2026-10-16T13:00:00Z';
+      if (fault === 'host') changed.runtime.host = 'foreign';
+      if (fault === 'process') changed.runtime.processId = 'foreign';
+      if (fault === 'build') changed.runtime.buildSha = 'foreign';
+      if (fault === 'capture') changed.capturedAt = new Date(now - 1).toISOString();
+      if (fault === 'expiry') changed.expiresAt = new Date(now + 60_001).toISOString();
+      if (fault === 'source-reference') changed.observations!.dream.sourceRefs = ['foreign:unresolvable'];
+      if (fault === 'source-path') changed.r2Assertions.clauses[0].source.path = 'missing-source';
+      if (fault === 'raw-reference') changed.r2Assertions.clauses[0].rawRefs = ['/observations/missing-value'];
+      expect(() => assertR1Representation(changed)).toThrow();
+    },
+  );
+
   it('retains the pending flags subread while independent SQL observations finish', async () => {
     let release!: (value: Awaited<ReturnType<typeof deps.flags>>) => void;
     const pendingFlags = new Promise<Awaited<ReturnType<typeof deps.flags>>>(resolve => { release = resolve; });

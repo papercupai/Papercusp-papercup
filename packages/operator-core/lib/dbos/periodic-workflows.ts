@@ -72,7 +72,7 @@ import { runStorageGrowthAlarmOnce, runDiskHeadroomAlarmOnce } from '../storage/
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
-import { DISK_RECLAIM_CRONTAB, DISK_RECLAIM_STEP, drainScheduledDiskReclaim, type DiskReclaimReceipt } from '../storage/disk-reclaim';
+import { DISK_RECLAIM_CRONTAB, DISK_RECLAIM_STEP, drainScheduledDiskReclaim, runScheduledDiskReclaimWithFailureReceipt, writeReclaimAudit, type ReclaimSql } from '../storage/disk-reclaim';
 import {
   defaultEvidenceRoot,
   formatForeignPruneLine,
@@ -1366,20 +1366,24 @@ async function diskRetentionReclaimTick(): Promise<void> {
     // Never cancel an in-flight safety check or removal to enforce this bound.
     if (notAfterMs !== undefined && Date.now() >= notAfterMs) return null;
     const startedAt = new Date().toISOString();
-    const { runScheduledDiskReclaim } = await import('../storage/disk-reclaim');
-    try {
-      const { reclaimRunBudgetForDrain } = await import('../storage/disk-reclaim');
+    const receipt = await runScheduledDiskReclaimWithFailureReceipt(async () => {
+      const { runScheduledDiskReclaim, reclaimRunBudgetForDrain } = await import('../storage/disk-reclaim');
       const runBudgetMs = reclaimRunBudgetForDrain(notAfterMs);
-      const receipt = await runScheduledDiskReclaim({ runBudgetMs });
-      if (!receipt.complete) console.warn(`[disk-retention] partial run: ${receipt.errors.join('; ')}`);
-      return receipt;
-    } catch (err) {
-      const error = (err as Error).message;
-      console.warn(`[disk-retention] refused: ${error}`);
-      return { schemaVersion: 1, id: crypto.randomUUID(), startedAt, dryRun: false,
-        complete: false, policyExhausted: null, devices: [], entries: [], delegates: [],
-        errors: [error], finishedAt: new Date().toISOString() } satisfies DiskReclaimReceipt;
-    }
+      return runScheduledDiskReclaim({ runBudgetMs });
+    }, startedAt, {
+      persistFailureReceipt: async (failureReceipt) => {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        await writeReclaimAudit(
+          getOrgPg().sql as unknown as ReclaimSql,
+          activeWorkspaceId(),
+          failureReceipt.id,
+          'receipt',
+          failureReceipt,
+        );
+      },
+    });
+    if (!receipt.complete) console.warn(`[disk-retention] partial run: ${receipt.errors.join('; ')}`);
+    return receipt;
   }, { name: DISK_RECLAIM_STEP }));
   console.log(`[disk-retention] ${result.batches} batch(es), stop=${result.stop}, receipt=${result.lastReceiptId ?? 'none'}`);
 }

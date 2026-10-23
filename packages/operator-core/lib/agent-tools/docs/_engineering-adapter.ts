@@ -18,6 +18,7 @@ import {
   renderMdxToMarkdown,
   starlightContentAdapter,
   throwIfAborted,
+  type DocListPagesOptions,
   type DocPage,
   type DocSource,
 } from '@papercusp/docs-engine';
@@ -180,32 +181,92 @@ export function overlayCanonicalDocs(
   readCanonical: (harnessSlug: string) => Promise<Map<string, string>>,
   harnessSlug: string,
 ): InvalidatableDocSource {
-  let canonicalCache: Promise<Map<string, CanonicalDoc>> | null = null;
+  let canonicalCache: Promise<{ pages: Map<string, CanonicalDoc>; rowCount: number }> | null = null;
+  let canonicalCacheEpoch = 0;
+  let canonicalCacheReadyEpoch: number | null = null;
 
-  async function loadCanonical(basePages?: DocPage[]): Promise<Map<string, CanonicalDoc>> {
-    if (canonicalCache) return canonicalCache;
-    const fallbackPages = new Map((basePages ?? (await base.listPages())).map((page) => [page.slug, page]));
-    canonicalCache = readCanonical(harnessSlug).then((contents) => {
+  async function loadCanonical(
+    basePages?: DocPage[],
+    onTiming?: DocListPagesOptions['onTiming'],
+  ): Promise<Map<string, CanonicalDoc>> {
+    const epoch = canonicalCacheEpoch;
+    if (canonicalCache) {
+      const cached = canonicalCache;
+      const cacheState = canonicalCacheReadyEpoch === epoch ? 'cached' : 'shared';
+      const startedAt = Date.now();
+      if (cacheState === 'shared') {
+        onTiming?.({ component: 'canonical-overlay', phase: 'canonical-read', state: 'shared' });
+      }
+      const result = await cached;
+      onTiming?.({
+        component: 'canonical-overlay',
+        phase: 'canonical-read',
+        state: cacheState === 'cached' ? 'cached' : 'completed',
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        count: result.rowCount,
+      });
+      return result.pages;
+    }
+
+    onTiming?.({ component: 'canonical-overlay', phase: 'canonical-read', state: 'started' });
+    const startedAt = Date.now();
+    const pending = Promise.resolve().then(async () => {
+      const fallbackPages = new Map((basePages ?? (await base.listPages())).map((page) => [page.slug, page]));
+      const contents = await readCanonical(harnessSlug);
       const pages = new Map<string, CanonicalDoc>();
       for (const [docId, raw] of contents) {
         const page = canonicalDoc(docId, raw, fallbackPages.get(slugFromDocId(docId)));
         if (page) pages.set(page.page.slug, page);
       }
-      return pages;
+      return { pages, rowCount: contents.size };
     });
-    return canonicalCache;
+    canonicalCache = pending;
+    try {
+      const result = await pending;
+      if (canonicalCacheEpoch === epoch && canonicalCache === pending) canonicalCacheReadyEpoch = epoch;
+      onTiming?.({
+        component: 'canonical-overlay',
+        phase: 'canonical-read',
+        state: 'completed',
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        count: result.rowCount,
+      });
+      return result.pages;
+    } catch (error) {
+      if (canonicalCacheEpoch === epoch && canonicalCache === pending) {
+        canonicalCache = null;
+        canonicalCacheReadyEpoch = null;
+      }
+      throw error;
+    }
   }
 
   return {
     name: base.name,
-    async listPages(): Promise<DocPage[]> {
-      const basePages = await base.listPages();
-      const canonical = await loadCanonical(basePages);
+    async listPages(options?: DocListPagesOptions): Promise<DocPage[]> {
+      const baseStartedAt = Date.now();
+      const basePages = await base.listPages(options);
+      options?.onTiming?.({
+        component: 'canonical-overlay',
+        phase: 'base-list-pages',
+        state: 'completed',
+        elapsedMs: Math.max(0, Date.now() - baseStartedAt),
+        count: basePages.length,
+      });
+      const canonical = await loadCanonical(basePages, options?.onTiming);
+      const overlayStartedAt = Date.now();
       const pages = basePages.map((page) => canonical.get(page.slug)?.page ?? page);
       const baseSlugs = new Set(basePages.map((page) => page.slug));
       for (const entry of canonical.values()) {
         if (!baseSlugs.has(entry.page.slug)) pages.push(entry.page);
       }
+      options?.onTiming?.({
+        component: 'canonical-overlay',
+        phase: 'overlay',
+        state: 'completed',
+        elapsedMs: Math.max(0, Date.now() - overlayStartedAt),
+        count: pages.length,
+      });
       return pages;
     },
     async getPage(slug: string): Promise<DocPage | null> {
@@ -244,7 +305,9 @@ export function overlayCanonicalDocs(
     },
     ...(base.getSectionMeta ? { getSectionMeta: (sectionSlug: string) => base.getSectionMeta!(sectionSlug) } : {}),
     invalidate(): void {
+      canonicalCacheEpoch += 1;
       canonicalCache = null;
+      canonicalCacheReadyEpoch = null;
       base.invalidate?.();
     },
   };

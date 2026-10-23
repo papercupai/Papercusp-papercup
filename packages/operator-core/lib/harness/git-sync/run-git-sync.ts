@@ -2941,26 +2941,44 @@ export const STALE_INDEX_LOCK_MS = 90_000;
  * a file, not a dir) work too. Returns true when the caller should retry.
  */
 /**
- * Does any live process on this host still hold `lockPath` open? Scans
- * `/proc/<pid>/fd/*` (Linux) for a descriptor resolving to the lock; on a host
- * without /proc (macOS) asks `lsof` instead (WI-10003529). Fails CLOSED when
+ * Does any live process on this host still hold `lockPath` open? Uses the
+ * targeted native Linux check first, falling back to `/proc` when unavailable;
+ * hosts without /proc (macOS) use `lsof` (WI-10003529). Fails CLOSED when
  * neither instrument can answer: `true` = "assume held", because
  * a wrongly-kept orphan costs one more failed tick (the next tick re-checks)
  * while a wrongly-unlinked live lock truncates the index (EI-22703121889295786).
  */
 export interface LockHolderProbe {
   held: boolean;
-  source: 'proc' | 'lsof' | 'unknown' | 'injected';
+  source: 'fuser' | 'proc' | 'lsof' | 'unknown' | 'injected';
   verdict: 'held' | 'absent' | 'unknown';
 }
 
 export async function probeLockHolder(
   lockPath: string,
   deps: {
+    platform?: NodeJS.Platform;
+    targetedHolder?: (p: string) => Promise<boolean | null | 'unavailable'>;
     procHolder?: (p: string) => Promise<boolean | null>;
     lsofHolder?: (p: string) => Promise<boolean | null>;
   } = {},
 ): Promise<LockHolderProbe> {
+  // EI-26694305758493084: reuse the native check already used by index repair.
+  // A timed-out native check is unknown, not a reason to repeat the expensive
+  // whole-host scan. Only a missing instrument uses the existing fallback.
+  // An injected procHolder retains the historical hermetic test seam unless
+  // the caller explicitly supplies a targeted check as well.
+  const targetedHolder = deps.targetedHolder ?? (deps.procHolder ? undefined : fuserSeesOpenFile);
+  if ((deps.platform ?? process.platform) === 'linux' && targetedHolder) {
+    const targeted = await targetedHolder(lockPath);
+    if (targeted !== 'unavailable') {
+      return {
+        held: targeted !== false,
+        source: 'fuser',
+        verdict: targeted === null ? 'unknown' : targeted ? 'held' : 'absent',
+      };
+    }
+  }
   const viaProc = await (deps.procHolder ?? procLockHolder)(lockPath);
   if (viaProc !== null) {
     return { held: viaProc, source: 'proc', verdict: viaProc ? 'held' : 'absent' };
@@ -2979,10 +2997,7 @@ export async function probeLockHolder(
 /** Backward-compatible boolean seam; use probeLockHolder when the journal needs the reason. */
 export async function lockHasLiveHolder(
   lockPath: string,
-  deps: {
-    procHolder?: (p: string) => Promise<boolean | null>;
-    lsofHolder?: (p: string) => Promise<boolean | null>;
-  } = {},
+  deps: Parameters<typeof probeLockHolder>[1] = {},
 ): Promise<boolean> {
   return (await probeLockHolder(lockPath, deps)).held;
 }
@@ -3120,7 +3135,7 @@ async function clearStaleGitLock(
   const holderCheck = `holder check ${(holderCheckMs / 1000).toFixed(1)}s${holderCheckMs >= SLOW_LOCK_HOLDER_CHECK_MS ? ' — SLOW (WI-10006519)' : ''}`;
   if (holderProbe.verdict === 'unknown') {
     log(
-      `[git-sync] ${repoPath}: ${lockName} is ${Math.round(ageMs / 1000)}s old; holder probe UNKNOWN — fail-closed stale-lock guard preserved the lock (proc and lsof could not answer; ${holderCheck})`,
+      `[git-sync] ${repoPath}: ${lockName} is ${Math.round(ageMs / 1000)}s old; holder probe UNKNOWN — fail-closed stale-lock guard preserved the lock (holder inspection inconclusive; ${holderCheck})`,
     );
     return false;
   }

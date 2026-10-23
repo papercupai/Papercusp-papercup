@@ -14,13 +14,17 @@ const { activeWorkspaceId } = await import('../../workspace-registry');
 const { trackAmendRun, getAmendReceipt } = await import('./amend-receipts');
 const amendStatusTool = (await import('./amend-status')).default;
 const { readProcessIdentity } = await import('../../process-identity');
+const { flushFallbackObservations } = await import('../../degradation/fallback-observations');
 let db: Awaited<ReturnType<typeof createOrgTestDb>>;
 
 beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
 }, 180_000);
-afterAll(async () => { await db?.cleanup(); });
+afterAll(async () => {
+  await flushFallbackObservations();
+  await db?.cleanup();
+});
 
 describe('rubric amend receipts in shared Postgres', () => {
   it('persists running and committed results across fresh modules, and reserves a key once', async () => {
@@ -60,9 +64,45 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(rows).toEqual([{ workspace_id: activeWorkspaceId(), state: 'committed' }]);
   });
 
-  // EI-24680663429090445: the key is deterministic per request, so a retry of the same
-  // payload after the underlying defect is fixed lands on the same row. Replaying the stored
-  // failure returned the ORIGINAL error for an hour, on the fixed build too.
+  // EI-26711589178349168: a pending foreground response cannot hide a late failure.
+  it('preserves the last phase and a durable failure signal after a pending response', async () => {
+    const key = 'late-failure-phase-evidence';
+    const rubric = 'acceptance-late-failure-evidence';
+    let rejectWork!: (error: Error) => void;
+    const work = new Promise<Record<string, unknown>>((_resolve, reject) => { rejectWork = reject; });
+    let started!: () => void;
+    const startedWork = new Promise<void>((resolve) => { started = resolve; });
+    const first = trackAmendRun(key, rubric, (onPhase) => {
+      onPhase('acceptance-contract-snapshot');
+      started();
+      return work;
+    });
+    const outcome = first.catch((error: unknown) => error);
+    await startedWork;
+    expect(await trackAmendRun(key, rubric, async () => ({ ok: true, duplicate: true })))
+      .toMatchObject({ pending: true });
+    rejectWork(new Error('write CONNECTION_CLOSED 127.0.0.1:6432'));
+    expect(await outcome).toBeInstanceOf(Error);
+
+    const receipt = await getAmendReceipt(rubric, key);
+    expect(receipt).toMatchObject({
+      state: 'failed', error: 'write CONNECTION_CLOSED 127.0.0.1:6432',
+      result: { ok: false, failure: {
+        correlationId: expect.stringMatching(/^[0-9a-f-]{36}$/), rubricRef: rubric, idempotencyKey: key,
+        phase: 'acceptance-contract-snapshot', executorPid: process.pid,
+        elapsedMs: expect.any(Number), phaseElapsedMs: expect.any(Number),
+      } },
+    });
+    const correlationId = (receipt!.result!.failure as { correlationId: string }).correlationId;
+    await flushFallbackObservations();
+    const signals = await db.adminSql<{ eligible: number; applied: number; reason: string }[]>`
+      SELECT eligible, applied, reason FROM harness_shared.fallback_observations
+       WHERE workspace_id = ${activeWorkspaceId()} AND correlation_id = ${correlationId}
+         AND scope = 'rubrics:amend:execute'`;
+    expect(signals).toEqual([{ eligible: 1, applied: 0, reason: 'error' }]);
+  });
+
+  // EI-24680663429090445: retry the failed request rather than replaying its error.
   it('re-runs a same-key retry after a failure instead of replaying the stored error', async () => {
     const key = 'failed-receipt-rerun';
     const rubric = 'acceptance-receipt-rerun';

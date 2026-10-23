@@ -5,6 +5,53 @@ import { createTracing, enableTracingContext, extractTraceContext, injectTraceCo
 
 beforeAll(enableTracingContext);
 describe('runtime OpenTelemetry correlation', () => {
+  it.each([undefined, 'malformed', '00-00000000000000000000000000000000-1234567890123456-01'])('creates a valid root for absent or invalid inbound parent %s', async parent => {
+    const exporter = new InMemorySpanExporter();
+    const runtime = createTracing({ processor: new SimpleSpanProcessor({ exporter }) });
+    try {
+      const root = runtime.begin('root', 'root', { 'papercusp.call_id': 'root' }, parent ? { traceparent: parent } : {})!;
+      runtime.finish('root', 'ok');
+      await runtime.flush();
+      expect(root.traceId).toMatch(/^[0-9a-f]{32}$/);
+      expect(root.traceId).not.toBe('00000000000000000000000000000000');
+      expect(root.spanId).toMatch(/^[0-9a-f]{16}$/);
+      expect(exporter.getFinishedSpans()[0]).toMatchObject({ parentSpanContext: undefined, attributes: { 'papercusp.call_id': 'root' } });
+    } finally { await runtime.shutdown(); }
+  });
+  it('keeps standard tracer children isolated across barrier-interleaved inbound parents', async () => {
+    const exporter = new InMemorySpanExporter();
+    const runtime = createTracing({ processor: new SimpleSpanProcessor({ exporter }) });
+    const registration = runtime.register();
+    const requests = [
+      { id: 'left', traceId: '11111111111111111111111111111111', parent: '1111111111111111' },
+      { id: 'right', traceId: '22222222222222222222222222222222', parent: '2222222222222222' },
+    ];
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    let entered = 0;
+    try {
+      expect(registration.registered).toBe(true);
+      const roots = requests.map(r => runtime.begin(r.id, r.id, { 'papercusp.call_id': r.id }, { traceparent: `00-${r.traceId}-${r.parent}-01` })!);
+      await Promise.all(requests.map(r => runtime.run(r.id, async () => {
+        if (++entered === requests.length) release();
+        await barrier;
+        await Promise.resolve();
+        trace.getTracer('application').startSpan(r.id + '.child').end();
+      })));
+      requests.forEach(r => runtime.finish(r.id, 'ok'));
+      await runtime.flush();
+      const spans = exporter.getFinishedSpans();
+      requests.forEach((r, i) => {
+        const root = spans.find(s => s.name === r.id)!;
+        const child = spans.find(s => s.name === r.id + '.child')!;
+        expect(root.spanContext().traceId).toBe(r.traceId);
+        expect(root.parentSpanContext?.spanId).toBe(r.parent);
+        expect(child.spanContext().traceId).toBe(r.traceId);
+        expect(child.parentSpanContext?.spanId).toBe(roots[i]!.spanId);
+        expect(child.attributes['papercusp.call_id']).toBe(r.id);
+      });
+    } finally { registration.disable(); trace.disable(); propagation.disable(); await runtime.shutdown(); }
+  });
   it('preserves inbound W3C parentage across concurrent nested tool work', async () => {
     const exporter = new InMemorySpanExporter();
     const runtime = createTracing({ processor: new SimpleSpanProcessor({ exporter }) });

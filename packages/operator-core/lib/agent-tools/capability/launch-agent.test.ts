@@ -15,6 +15,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dispatchProjectedTool, listMcpProjections, type ProjectedTool, type ToolResult, type UnifiedToolContext } from '@papercusp/tooldef';
 import type { KickoffProofResult, SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
+import { BLIND_GAP_REVIEW_ACTOR, INTERNAL_BLIND_REVIEW_RESUME } from '../../blind-review-session-bindings';
 import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, EARLY_EXIT_PROBE_MS, HEADLESS_BOOT_RECEIPT_MS, KICKOFF_PROOF_WINDOW_MS, RESUME_VERIFY_TIMEOUT_MS } from '../../agent-kickoff/launch-budgets.mjs';
 import { INTERNAL_EXPECTED_SUCCESSOR_BINDING } from '../../agent-launch-core';
 
@@ -76,6 +77,13 @@ const codexThreadWriterHolderMock = vi.hoisted(() =>
   })),
 );
 const originalRoutingGuardMock = vi.hoisted(() => vi.fn());
+const inspectBlindReviewResumeTargetMock = vi.hoisted(() => vi.fn());
+const verifyBlindReviewSessionBindingMock = vi.hoisted(() => vi.fn());
+vi.mock('../../blind-review-session-bindings', async (orig) => ({
+  ...(await orig<typeof import('../../blind-review-session-bindings')>()),
+  inspectBlindReviewResumeTarget: (...args: unknown[]) => inspectBlindReviewResumeTargetMock(...args),
+  verifyBlindReviewSessionBinding: (...args: unknown[]) => verifyBlindReviewSessionBindingMock(...args),
+}));
 vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   ORIGINAL_CODEX_ROUTING_ENV: 'PAPERCUSP_ORIGINAL_CODEX_ROUTING',
@@ -86,10 +94,14 @@ vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', async (orig) =>
 const shutdownViaPtyMock = vi.hoisted(() => vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'));
 const findLiveHostMock = vi.hoisted(() => vi.fn((_ownerId: string): unknown => null));
 const markAdvSessionEndedMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => true));
+const acquireAdvSessionResumeMock = vi.hoisted(() => vi.fn());
+const releaseAdvSessionResumeMock = vi.hoisted(() => vi.fn());
 const readAdvSessionLaunchRecordByOwnerMock = vi.hoisted(() => vi.fn());
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   markAdvSessionEnded: (...args: unknown[]) => markAdvSessionEndedMock(...args),
+  acquireAdvSessionResume: (...args: unknown[]) => acquireAdvSessionResumeMock(...args),
+  releaseAdvSessionResume: (...args: unknown[]) => releaseAdvSessionResumeMock(...args),
   readAdvSessionLaunchRecordByOwner: (...args: unknown[]) => readAdvSessionLaunchRecordByOwnerMock(...args),
 }));
 const resolveSessionStatesMock = vi.hoisted(() => vi.fn());
@@ -355,6 +367,8 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
 beforeEach(() => {
   originalRoutingGuardMock.mockReset();
   vi.clearAllMocks();
+  inspectBlindReviewResumeTargetMock.mockReset().mockResolvedValue({ binding: null, recruiterLaunch: false });
+  verifyBlindReviewSessionBindingMock.mockReset().mockResolvedValue({ ok: true });
   goalLaunchResolveMock.mockReset();
   declareCouplingMock.mockReset().mockResolvedValue({ agentA: 'su-caller', agentB: 'su-verifier' });
   rmSync(HEADLESS_RESUME_LOG_PATH, { force: true });
@@ -379,6 +393,11 @@ beforeEach(() => {
   releaseAgentLaunchClaimMock.mockResolvedValue(true);
   markAdvSessionEndedMock.mockReset();
   markAdvSessionEndedMock.mockResolvedValue(true);
+  acquireAdvSessionResumeMock.mockReset().mockResolvedValue({
+    acquired: true, status: 'acquired', replayed: false,
+    leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+  });
+  releaseAdvSessionResumeMock.mockReset().mockResolvedValue(true);
   readAdvSessionLaunchRecordByOwnerMock.mockReset().mockResolvedValue(null);
   resolveSessionStatesMock.mockReset();
   resolveSessionStatesMock.mockResolvedValue(new Map([['su-a1a71', { sessionState: 'ended' }]]));
@@ -1900,6 +1919,51 @@ describe('resume + fork (D-004/D-007)', () => {
       startedAt: '2026-07-11 09:00:00.123456+00',
     },
   };
+
+  it('reserves an ended source before governed admission and passes the same key to its exact child', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue exact work' }, ctx);
+    expect(isError(result), textOf(result)).toBe(false);
+    expect(acquireAdvSessionResumeMock).toHaveBeenCalledWith(11, expect.any(String), 300, undefined, undefined, true);
+    expect(acquireAdvSessionResumeMock.mock.invocationCallOrder[0])
+      .toBeLessThan(spawnGovernedAgentProcessMock.mock.invocationCallOrder[0]);
+    const reservation = JSON.parse(spawnedEnv().PAPERCUSP_GOVERNED_RESUME_RESERVATION);
+    expect(reservation).toMatchObject({ advSessionId: 11, ownerId: dead.ownerId,
+      claimKey: acquireAdvSessionResumeMock.mock.calls[0][1] });
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+      owner: dead.ownerId,
+      metadata: expect.objectContaining({ launchedBy: 'su-caller', targetOwnerId: dead.ownerId,
+        resumeAdvSessionId: 11, resumeClaimKey: reservation.claimKey,
+        resumeStartupExpiresAtMs: reservation.expiresAtMs }),
+    }), expect.any(Function));
+    expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
+    expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+  });
+
+  it('releases the exact startup reservation after a pre-child governor refusal', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    spawnGovernedAgentProcessMock.mockRejectedValueOnce(new Error('governor refused'));
+    const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue exact work' }, ctx);
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain('governor refused');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(acquireAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+    expect(releaseAdvSessionResumeMock).toHaveBeenCalledWith(11, acquireAdvSessionResumeMock.mock.calls[0][1]);
+  });
+
+  it('refuses admission and process start when a competing resume reservation wins', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    acquireAdvSessionResumeMock.mockResolvedValueOnce({ acquired: false, status: 'reserved' });
+    const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue exact work' }, ctx);
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain('reservation refused: reserved');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
+  });
 
   describe('originalRouting custody contract', () => {
     const uuid = '0123abcd-1234-5678-9abc-def012345678';
@@ -4053,5 +4117,65 @@ describe('failure reporting', () => {
         },
       ],
     });
+  });
+});
+
+describe('blind-review resume is recruiter-only', () => {
+  const binding = {
+    id: 17, workspaceId: 'ws-test', harnessSlug: 'papercusp', planSlug: 'blind-plan', activationAuditSeq: 4,
+    reviewerOwnerId: 'su-reviewer', advSessionId: 79, nativeSessionId: 'blind-native-1',
+    launchParentOwner: BLIND_GAP_REVIEW_ACTOR, accountRoute: 'auto', modelSpec: null,
+    confinementSnapshot: { denyTools: [], denyOutside: ['plans:blind-review'], denyAmbientContext: true,
+      imposedBy: BLIND_GAP_REVIEW_ACTOR, reason: 'blind review' },
+    status: 'resuming', resumeLeaseId: 'lease-1', resumeLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(), reviewId: null,
+  };
+  const source = {
+    ok: true as const, sessionId: 'blind-native-1', ownerId: 'su-reviewer', agent: 'codex',
+    cwd: '/repo', endedAt: '2026-10-22T20:00:00.000Z', endedBy: 'self' as const, live: false,
+    advSessionId: 79, account: 'auto', model: null, headless: true,
+    binding: { coordOwnerId: 'su-reviewer', sessionId: 'blind-native-1', startedAt: '2026-10-22 19:00:00+00' },
+  };
+
+  it('rejects generic exact resume even when the reviewer has ended', async () => {
+    resolveResumeTargetMock.mockResolvedValue(source);
+    inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
+    const result = await launchAgent.handler({
+      resume: { sessionId: 'blind-native-1' }, fork: false, headless: true, brief: 'continue',
+    }, ctx);
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain('blind_review_recovery_recruiter_only');
+    expect(verifyBlindReviewSessionBindingMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('allows only the exact leased recruiter resume, with the saved backend, account and placement', async () => {
+    callerIdentity.current.ownerId = BLIND_GAP_REVIEW_ACTOR;
+    spawnHeadlessMock.mockResolvedValueOnce(headlessSpawnResult());
+    resolveResumeTargetMock.mockResolvedValue(source);
+    findLiveHostMock.mockReturnValue(null);
+    inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
+    verifyBlindReviewSessionBindingMock.mockResolvedValue({ ok: true });
+    const permit = {
+      bindingId: binding.id, leaseId: 'lease-1', workspaceId: binding.workspaceId, planSlug: binding.planSlug,
+      activationAuditSeq: binding.activationAuditSeq, reviewerOwnerId: binding.reviewerOwnerId,
+      advSessionId: binding.advSessionId, nativeSessionId: binding.nativeSessionId,
+    };
+    const recruiterCtx = {
+      ...(ctx as unknown as Record<string, unknown>), ownerId: BLIND_GAP_REVIEW_ACTOR,
+      principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: 'ws-test' },
+      [INTERNAL_BLIND_REVIEW_RESUME]: permit,
+    } as never;
+    const result = await launchAgent.handler({
+      resume: { sessionId: 'blind-native-1' }, fork: false, headless: true, brief: 'continue the review',
+    }, recruiterCtx);
+    expect(isError(result), textOf(result)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({ launchedBy: BLIND_GAP_REVIEW_ACTOR });
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--resume=blind-native-1');
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--account=auto');
+    expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--fork');
+    expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--model=');
+    expect(dataOf(result)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: 'su-reviewer' });
   });
 });

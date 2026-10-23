@@ -233,6 +233,7 @@ export interface QueueLeaseOwnerDbRow {
   receipt_id: string | null;
   lease_id: string | null;
   owner: string | null;
+  resume_metadata?: unknown;
 }
 
 /** Raw row returned by the read-only queue population census. */
@@ -260,6 +261,7 @@ export interface QueueLeaseOwnerObservation {
   readonly receiptId: string;
   readonly leaseId: string;
   readonly owner: string;
+  readonly resumeMetadata?: Readonly<Record<string, unknown>>;
 }
 
 export const GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS = 60_000;
@@ -279,7 +281,9 @@ export function mapQueueLeaseOwnerRows(rows: readonly QueueLeaseOwnerDbRow[]): Q
     const receiptId = row.receipt_id?.trim();
     const leaseId = row.lease_id?.trim();
     const owner = row.owner?.trim();
-    return receiptId && leaseId && owner ? [{ receiptId, leaseId, owner }] : [];
+    const resumeMetadata = jsonObject(row.resume_metadata);
+    return receiptId && leaseId && owner
+      ? [{ receiptId, leaseId, owner, ...(resumeMetadata ? { resumeMetadata } : {}) }] : [];
   });
 }
 
@@ -398,7 +402,10 @@ export async function readActiveGovernorLeaseOwners(
     sql<QueueLeaseOwnerDbRow[]>`
       SELECT feature_id AS receipt_id,
              payload->'resource_governor'->'lease'->>'leaseId' AS lease_id,
-             payload->'resource_governor'->'lease'->>'owner' AS owner
+             payload->'resource_governor'->'lease'->>'owner' AS owner,
+             CASE WHEN payload->'resource_governor'->>'namespace' = 'agent-process'
+                    AND payload->'resource_governor'->>'admissionClass' = 'agent'
+                  THEN payload->'resource_governor'->'metadata' END AS resume_metadata
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
@@ -428,8 +435,47 @@ export const readQueuePopulation = readGovernorQueuePopulation;
 export function selectEndedLeaseOwners(
   rows: readonly QueueLeaseOwnerObservation[],
   verdicts: ReadonlyMap<string, Pick<LivenessVerdict, 'sessionState'>>,
+  resumeLaunchers: ReadonlyMap<string, string> = new Map(),
 ): QueueLeaseOwnerObservation[] {
-  return rows.filter((row) => verdicts.get(row.owner)?.sessionState === 'ended');
+  return rows.filter((row) => verdicts.get(row.owner)?.sessionState === 'ended' &&
+    verdicts.get(resumeLaunchers.get(row.receiptId) ?? '')?.sessionState !== 'live');
+}
+
+/**
+ * An ended source can own its new process lease while its exact keyed resume
+ * reservation is starting. This is bounded startup protection, not liveness:
+ * finalization/release removes the reservation, and expiry or launcher death
+ * restores ordinary owner-ended reclamation. Never protect older owner leases.
+ */
+export async function readResumeStartupLaunchers(
+  sql: SqlClient, workspaceId: string, rows: readonly QueueLeaseOwnerObservation[], nowMs: number,
+): Promise<Map<string, string>> {
+  const candidates = rows.flatMap((row) => {
+    const meta = row.resumeMetadata;
+    if (!meta || meta.targetOwnerId !== row.owner ||
+        typeof meta.launchedBy !== 'string' || !meta.launchedBy.trim() ||
+        !Number.isSafeInteger(meta.resumeAdvSessionId) || Number(meta.resumeAdvSessionId) <= 0 ||
+        typeof meta.resumeClaimKey !== 'string' || !meta.resumeClaimKey.trim() ||
+        typeof meta.resumeStartupExpiresAtMs !== 'number' ||
+        meta.resumeStartupExpiresAtMs <= nowMs || meta.resumeStartupExpiresAtMs > nowMs + 300_000) return [];
+    return [{ receipt_id: row.receiptId, owner: row.owner, launcher: meta.launchedBy,
+      session_id: meta.resumeAdvSessionId, claim_key: meta.resumeClaimKey }];
+  });
+  if (!candidates.length) return new Map();
+  const reserved = await withDbCallDeadline(sql<Array<{ receipt_id: string; launcher: string }>>`
+    SELECT candidate.receipt_id, candidate.launcher
+      FROM jsonb_to_recordset(${JSON.stringify(candidates)}::text::jsonb)
+        AS candidate(receipt_id text, owner text, launcher text, session_id bigint, claim_key text)
+      JOIN harness_shared.adv_sessions AS source ON source.id = candidate.session_id
+     WHERE source.workspace_id = ${workspaceId}
+       AND source.coord_owner_id = candidate.owner
+       AND source.resume_claim_key = candidate.claim_key
+       AND source.resume_claimed_at > to_timestamp(${nowMs - 300_000}::double precision / 1000)
+       AND NOT EXISTS (SELECT 1 FROM harness_shared.adv_sessions AS newer
+         WHERE newer.workspace_id = source.workspace_id AND newer.coord_owner_id = source.coord_owner_id
+           AND newer.id > source.id)`,
+    { ms: RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS, label: 'resource-governor.resume-startup-read' });
+  return new Map(reserved.map((row) => [row.receipt_id, row.launcher]));
 }
 
 /**
@@ -1133,13 +1179,14 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     const resolve =
       this.resolveSessionStatesFn ?? (await import('../agent-tools/coordination/liveness-oracle')).resolveSessionStates;
     try {
+      const resumeLaunchers = await readResumeStartupLaunchers(this.sql, this.workspaceId, active, nowMs);
       const verdicts = await resolve(
-        owners.map((ownerId) => ({ ownerId })),
+        [...new Set([...owners, ...resumeLaunchers.values()])].map((ownerId) => ({ ownerId })),
         // One owner-filtered presence read for the whole roster (WI-10004631);
         // per-id hydration issued one point read per active lease owner.
         { hydrateBatch: true, nowMs },
       );
-      return selectEndedLeaseOwners(active, verdicts);
+      return selectEndedLeaseOwners(active, verdicts, resumeLaunchers);
     } catch (error) {
       // Unknown liveness is never owner death. Keep the lease intact and allow
       // the independent TTL/deadline/abandonment legs to proceed.

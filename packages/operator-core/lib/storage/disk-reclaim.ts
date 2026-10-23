@@ -227,6 +227,39 @@ export async function writeReclaimAudit(sql: ReclaimSql, workspaceId: string, ru
   );
 }
 
+/** Convert an unexpected scheduled-pass failure into a durable, incomplete receipt.
+ * The scheduler must not report a successful step with a fallback receipt that
+ * exists only in DBOS operation_outputs and is absent from the audit ledger.
+ */
+export async function runScheduledDiskReclaimWithFailureReceipt(
+  run: () => Promise<DiskReclaimReceipt>,
+  startedAt: string,
+  options: {
+    persistFailureReceipt: (receipt: DiskReclaimReceipt) => Promise<void>;
+    now?: () => Date;
+  },
+): Promise<DiskReclaimReceipt> {
+  try {
+    return await run();
+  } catch (err) {
+    const receipt = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      startedAt,
+      dryRun: false,
+      complete: false,
+      policyExhausted: null,
+      devices: [],
+      entries: [],
+      delegates: [],
+      errors: [message(err)],
+      finishedAt: (options.now ?? (() => new Date()))().toISOString(),
+    } satisfies DiskReclaimReceipt;
+    await options.persistFailureReceipt(receipt);
+    return receipt;
+  }
+}
+
 const RETENTION_HOLDER_SCAN_MS = 30_000;
 const incompleteHolders = (reason: string, diagnostics: OpenWriterScan['diagnostics'] = {}): OpenWriterScan => ({
   complete: false, byPath: new Map(), diagnostics: { ...diagnostics, reason },

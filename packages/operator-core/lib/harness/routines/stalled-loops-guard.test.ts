@@ -224,9 +224,9 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       expect(loop.active).toBe(false);
       expect(armWake).not.toHaveBeenCalled();
 
-      const floor = Math.max(30 * MIN, 5 * intervalSec * 1000);
+      const floor = Math.max(30 * 60_000, 5 * intervalSec * 1000);
       const input = { loopActive: loop.active, hasPosture: true, pendingAwaits: 0,
-        heartbeatAgeMs: 1000, lastRealTurnAgeMs: 120 * MIN,
+        heartbeatAgeMs: 1000, lastRealTurnAgeMs: 120 * 60_000,
         inactiveForMs: floor, intervalSec, heldWorkItems: 1 };
       expect(evaluateSilentHalt(input)).toMatchObject({ halted: false, staleFloorMs: floor });
       expect(evaluateSilentHalt({ ...input, inactiveForMs: floor + 1 }))

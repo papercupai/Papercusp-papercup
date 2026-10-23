@@ -43,6 +43,49 @@ const mount = (searchParams = '', onUrlUpdate = vi.fn()) => {
 };
 
 describe('Reports route', () => {
+  it('fullscreens the complete reader and restores without remounting the report or resetting scroll', async () => {
+    fixture.detail = [report];
+    let active: Element | null = null;
+    const request = vi.fn(async function(this: HTMLElement) {
+      active = this;
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    const exit = vi.fn(async () => { active = null; document.dispatchEvent(new Event('fullscreenchange')); });
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => active });
+    Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: exit });
+    const onUrlUpdate = mount('?sel=edition-2&kind=audit');
+    const reader = screen.getByRole('region', { name: 'Report reader' });
+    Object.defineProperty(reader, 'requestFullscreen', { configurable: true, value: request });
+    const content = screen.getByTestId('markdown-preview');
+    const scroller = reader.querySelector('.reports-article-main')!;
+    scroller.scrollTop = 240;
+    fireEvent.click(screen.getByRole('button', { name: 'Fullscreen report reader' }));
+    await waitFor(() => expect(reader.classList.contains('reports-reader--fullscreen')).toBe(true));
+    expect(request.mock.instances[0]).toBe(reader);
+    expect(screen.getByTestId('markdown-preview')).toBe(content);
+    expect(reader.querySelector('[aria-label="On this page"]')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Restore report reader' }));
+    await waitFor(() => expect(reader.classList.contains('reports-reader--fullscreen')).toBe(false));
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(scroller.scrollTop).toBe(240);
+    expect(screen.getByTestId('markdown-preview')).toBe(content);
+    expect(onUrlUpdate.mock.calls.at(-1)?.[0].queryString).toContain('sel=edition-2');
+    expect(onUrlUpdate.mock.calls.at(-1)?.[0].queryString).toContain('kind=audit');
+    Reflect.deleteProperty(document, 'exitFullscreen');
+    Reflect.deleteProperty(document, 'fullscreenElement');
+  });
+
+  it('fills the window when display fullscreen is unavailable and restores with Escape', async () => {
+    fixture.detail = [report];
+    mount('?sel=edition-2');
+    const reader = screen.getByRole('region', { name: 'Report reader' });
+    fireEvent.click(screen.getByRole('button', { name: 'Fullscreen report reader' }));
+    await waitFor(() => expect(reader.classList.contains('reports-reader--fullscreen')).toBe(true));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(reader.classList.contains('reports-reader--fullscreen')).toBe(false));
+    expect(screen.getByTestId('markdown-preview').textContent).toBe(report.body_md);
+  });
+
   it('gates the UI and all sync subscriptions when disabled', () => {
     fixture.enabled = false;
     mount('?sel=edition-2');

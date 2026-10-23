@@ -70,6 +70,7 @@ import {
   type RequestOriginMetadata,
   type DeltaResponse,
 } from '@papercusp/agent-mcp';
+import { createPhaseTracker, type PhaseTracker } from '@papercusp/tooldef';
 import { readServingGeneration, type ServingGeneration } from '../../../serving-generation';
 import { withMcpBuildFence } from '../../../serving-build';
 import { FLAGS } from '@papercusp/flags';
@@ -105,6 +106,7 @@ import {
   mcpTraceIdFromExtra,
   runWithMcpRequestTraceExecution,
   resolveMcpRequestTraceId,
+  withMcpToolsListPhaseTrace,
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
 import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
@@ -3316,7 +3318,7 @@ function mcpInstructionsForServer(): string | undefined {
  *     allowlist — a caller naming a small working set sees ONLY those
  *     tools. Listing hint only; tools/call is unaffected. tool-allowlist.ts.
  */
-async function resolveVisibleToolListings(extra: unknown): Promise<
+async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker = createPhaseTracker()): Promise<
   | { kind: 'failed'; reason: string; nativeSessionFailure?: NativeSessionAuthFailureMetadata }
   | {
       kind: 'ok' | 'none';
@@ -3324,8 +3326,8 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       listings: ReturnType<typeof listMcpProjections>;
     }
 > {
-  await ensureOperatorToolsLoaded();
-  const spawnRes = await tryBuildSpawnContext(extra);
+  await phases.track('operatorToolsLoad', () => ensureOperatorToolsLoaded());
+  const spawnRes = await phases.track('spawnContext', () => tryBuildSpawnContext(extra));
   // WI-574 (loud auth-fail): carry the rejection reason so tools/list can fail LOUDLY instead of
   // silently advertising an empty tool list (which is indistinguishable from a healthy server).
   if (spawnRes.kind === 'failed') {
@@ -3377,10 +3379,10 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
     });
     // external-app-access P-003: an app key sees only the tools its scopes let it call —
     // the same policy the dispatch kernel seat enforces (connected-apps/enforce.ts).
-    const appFilter = await appKeyToolListFilter(
+    const appFilter = await phases.track('appKeyToolFilter', () => appKeyToolListFilter(
       principal,
       spawnRes.ctx.workspaceId,
-    );
+    ));
     if (appFilter) {
       const principalAndAppAllows = requiredToolPrincipalAndAppFilter;
       requiredToolPrincipalAndAppFilter = (name) => principalAndAppAllows(name) && appFilter(name);
@@ -3396,10 +3398,10 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // tools:invoke are themselves outside its grants) and show tools every call
   // will refuse. Ungoverned and unresolved sessions come back null: unchanged.
   const identityListings = spawnRes.kind === 'ok'
-    ? await identityAdmittedListings(spawnRes.ctx, result, extra, {
+    ? await phases.track('identitySurface', () => identityAdmittedListings(spawnRes.ctx, result, extra, {
       requiredToolListing,
       requiredToolAllowed: requiredToolPrincipalAndAppFilter,
-    })
+    }))
     : null;
   if (identityListings) result = identityListings;
   // `?tools=` is the SEED, not a hard cap (dynamic-tool-surface-2026-07-01): a
@@ -3415,11 +3417,11 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   if (!identityListings && spawnRes.kind === 'ok' && seed && sessionKey) {
     // Invocation telemetry is batched off the response path. A later list is
     // a read-after-dispatch boundary, just like the existing quota reader.
-    await flushPendingTelemetry();
-    await restoreSessionTools({ sessionKey: surfaceKey, seed,
+    await phases.track('telemetryFlush', () => flushPendingTelemetry());
+    await phases.track('restoreSessionTools', () => restoreSessionTools({ sessionKey: surfaceKey, seed,
       ownerId: resolveAgentIdentity(spawnRes.ctx).ownerId,
       workspaceId: spawnRes.ctx.workspaceId,
-    });
+    }));
   }
   const allow = identityListings ? null : getSessionSurface(surfaceKey, seed);
   // `?tools_compact=` is the SECOND axis of the same decision (deterministic-
@@ -3444,7 +3446,8 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
         principal: spawnRes.ctx.authenticatedPrincipal
           ? synthesizeTransportPrincipal(spawnRes.ctx) : undefined,
       }).ownerId;
-      const confinement = await readSessionConfinement(ownerId, spawnRes.ctx.workspaceId);
+      const confinement = await phases.track('sessionConfinement', () =>
+        readSessionConfinement(ownerId, spawnRes.ctx.workspaceId));
       if (confinement) result = result.filter(listing =>
         evaluateSessionConfinement({ toolName: listing.name, confinement, purpose: 'listing' }).allowed);
     } catch {
@@ -3946,11 +3949,12 @@ export async function dispatchNativeMcpTargetOnOwner(
 registerSuNativeToolDispatcher(dispatchNativeMcpTargetOnOwner);
 
 export function registerMcpHost(server: McpServer): void {
-  server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) => {
+  server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) =>
+    withMcpToolsListPhaseTrace(extra, async (phases) => {
     const listStartedAt = Date.now();
     // Shared visibility walk — see resolveVisibleToolListings above
     // (strict-mode + manifest + allowlist semantics documented there).
-    const vis = await resolveVisibleToolListings(extra);
+    const vis = await resolveVisibleToolListings(extra, phases);
     if (vis.kind === 'failed') {
       // WI-574 (loud auth-fail): a REJECTED auth context (expired per-spawn signed URL, invalid
       // superuser bearer, bad signature) must NOT return a silent empty tool list — that is
@@ -3976,7 +3980,8 @@ export function registerMcpHost(server: McpServer): void {
     const listedRegistryRevision =
       filtered.map(listingRegistryRevision).find((revision) => revision !== 'unknown') ??
       projectedToolRegistryRevision();
-    const servingGeneration = await readServingGeneration({ toolRegistryRevision: listedRegistryRevision });
+    const servingGeneration = await phases.track('servingGeneration', () =>
+      readServingGeneration({ toolRegistryRevision: listedRegistryRevision }));
     if (servingGeneration.state !== 'known') {
       throw new Error(`serving_generation_unknown: ${servingGeneration.reason}; tools/list cannot establish a baseline`);
     }
@@ -3984,7 +3989,7 @@ export function registerMcpHost(server: McpServer): void {
     // consumers (Ollama) can parse the surface. This is THE tools/list
     // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
     // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
-    const tools = await Promise.all(
+    const tools = await phases.track('schemaProjection', () => Promise.all(
       filtered.map(async (t) => {
         const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
         const out: Record<string, unknown> = { ...t };
@@ -4064,7 +4069,7 @@ export function registerMcpHost(server: McpServer): void {
         out._meta = { ...existingMeta, 'papercusp/servingGeneration': servingGeneration.revision };
         return out;
       }),
-    );
+    ));
     // This handler is the sole baseline writer: a list_changed notification or
     // observation from tools/call cannot prove that the client fetched this list.
     const sessionKey = mcpSessionKey(extra);
@@ -4078,10 +4083,11 @@ export function registerMcpHost(server: McpServer): void {
       sessionKey,
       sessionBaseline: sessionKey ? 'recorded' : 'unavailable',
       servingGeneration: servingGeneration.revision,
+      toolsListPhases: phases.toMetadata(),
       outcome: 'success',
     }));
     return { tools };
-  });
+  }));
 
   server.server.setRequestHandler(
     sdk.CallToolRequestSchema,

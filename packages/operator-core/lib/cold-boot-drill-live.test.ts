@@ -4,6 +4,7 @@ import * as discovery from './events/await/psu-pty-discovery';
 import { describe, expect, it, vi } from 'vitest';
 import {
   gradeColdBootDrill,
+  measureCarryDrillLifecycle,
   reportColdBootDrills,
   scanCarryDrillDrops,
   startColdBootDrill,
@@ -18,6 +19,97 @@ import type { ReplayTranscript, ReplayTurn } from './replay/types';
 import { parseTranscriptJsonl } from './replay/transcript';
 
 const NOW = Date.parse('2026-07-15T06:00:00.000Z');
+
+describe('selected carry-drill lifecycle measurement', () => {
+  const input = { ownerId: 'su-test', drillId: 'drill-test',
+    windowStart: new Date(NOW - 2000).toISOString(), windowEnd: new Date(NOW).toISOString() };
+  function evidence() {
+    const row = (kind: ColdBootDrillLedgerEvent['kind']): ColdBootDrillLedgerEvent => ({
+      kind, ownerId: input.ownerId, drillId: input.drillId, sessionClass: 'codex-interactive', ts: new Date(NOW - 1000).toISOString(),
+    });
+    const ledger = [{ ...row('carry-drill-requested'), sourceKind: 'codex' as const, bridgeTty: true }, row('carry-drill-queued'),
+      { ...row('carry-drill-graded'), lookups: [], gradedByOwnerId: input.ownerId }];
+    const host: ColdBootDrillHostEvent[] = [
+      { ...row('carry-drill-respawned'), nativeId: 'exact-native', launchContextPath: '/carry' },
+      row('carry-drill-carry-delivered'),
+    ];
+    const transcript: ReplayTranscript = { ref: '/exact-native.jsonl', backend: 'codex', turns: [
+      { index: 0, role: 'user', text: '⟦carry-drill:drill-test⟧' },
+      ...['grade', 'verify', 'report'].map((op, i): ReplayTurn => ({ index: i + 1, role: 'tool_use',
+        toolName: 'session:carry-drill', text: JSON.stringify({ op, drillId: input.drillId }) })),
+    ] };
+    const verifyReceipt = { ok: true, pass: true, drillId: input.drillId, sessionClass: 'codex-interactive',
+      assertions: ['ledger-registered', 'host-respawned', 'terminal-outcome', 'owner-socket-live'].map(name => ({ name, pass: true })) };
+    transcript.turns.splice(3, 0, { index: 3, role: 'tool_result', text: JSON.stringify(verifyReceipt) });
+    const loadTranscript = vi.fn(async () => transcript);
+    return { ledger, host, transcript, loadTranscript, verifyReceipt, deps: {
+      readLedger: async () => ledger, readHostEvents: async () => host, readCarry: async () => 'Identity ownerId: su-test',
+      socketExists: async () => true, loadTranscript,
+      findHost: async () => ({ ownerId: input.ownerId, advSessionId: null, pid: 1, ptyPid: 2,
+        sock: '/socket', command: 'codex', startedAt: NOW - 1000, bridgeTty: true, nativeSessionId: 'exact-native' }),
+    } };
+  }
+  it('reads the exact native successor and recomputes zero gaps without actuating a drill', async () => {
+    const h = evidence();
+    expect(await measureCarryDrillLifecycle(input, h.deps)).toMatchObject({ verdict: 'pass', nativeId: 'exact-native',
+      scope: 'selected-codex-interactive-drill', gaps: 0, surfacingGaps: 0 });
+    expect(h.loadTranscript).toHaveBeenCalledWith(input.ownerId, 'exact-native');
+  });
+  it.each(['drop', 'foreign-owner', 'headless', 'duplicate-grade', 'foreign-grader', 'duplicate-call', 'missing-marker', 'saved-grade-mismatch'])(
+    'contradicts a claimed pass for %s', async defect => {
+      const h = evidence();
+      if (defect === 'drop') h.host.push({ ...h.host[1], kind: 'carry-drill-carry-dropped' });
+      if (defect === 'foreign-owner') h.ledger[0].ownerId = 'foreign';
+      if (defect === 'headless') h.ledger.forEach(row => { row.sessionClass = 'codex-headless'; });
+      if (defect === 'duplicate-grade') h.ledger.push({ ...h.ledger[2] });
+      if (defect === 'foreign-grader') h.ledger[2].gradedByOwnerId = 'foreign';
+      if (defect === 'duplicate-call') h.transcript.turns.push({ ...h.transcript.turns[1], index: 4 });
+      if (defect === 'missing-marker') h.transcript.turns[0].text = 'No drill marker';
+      if (defect === 'saved-grade-mismatch') h.ledger[2].lookups = [{ kind: 'self-search', targetClass: 'identity' }];
+      expect((await measureCarryDrillLifecycle(input, h.deps)).verdict).toBe('fail');
+    });
+  it.each(['pending', 'no-delivery', 'no-report', 'no-verify', 'stale', 'unreadable', 'wrong-backend', 'missing-native', 'missing-call'])(
+    'keeps %s evidence unknown', async defect => {
+      const h = evidence();
+      if (defect === 'pending') h.ledger.pop();
+      if (defect === 'no-delivery') h.host.pop();
+      if (defect === 'no-report') h.transcript.turns.pop();
+      if (defect === 'no-verify') h.transcript.turns.splice(2, 1);
+      if (defect === 'stale') h.host[0].ts = new Date(NOW - 3000).toISOString();
+      if (defect === 'unreadable') h.deps.readLedger = async () => { throw new Error('incomplete ledger'); };
+      if (defect === 'wrong-backend') h.transcript.backend = 'claude-code';
+      if (defect === 'missing-native') h.host[0].nativeId = null;
+      if (defect === 'missing-call') h.transcript.turns[1].text = 'Uninspectable variable';
+      expect((await measureCarryDrillLifecycle(input, h.deps)).verdict).toBe('unknown');
+    });
+  it('retains native verifier evidence after supported cleanup removes the live host', async () => {
+    const h = evidence();
+    expect((await measureCarryDrillLifecycle(input, { ...h.deps, socketExists: async () => false, findHost: async () => null })).verdict).toBe('pass');
+  });
+  it.each(['headless', 'wrong-backend', 'old-host'])(
+    'measures actual %s metadata rather than trusting a caller-supplied class', async defect => {
+      const h = evidence();
+      h.ledger[0].bridgeTty = defect === 'old-host' ? undefined : defect !== 'headless';
+      if (defect === 'wrong-backend') h.ledger[0].sourceKind = 'claude';
+      expect((await measureCarryDrillLifecycle(input, h.deps)).verdict).toBe(defect === 'old-host' ? 'unknown' : 'fail');
+    });
+  it.each(['missing', 'failed'])('rejects %s native verify results', async defect => {
+    const h = evidence();
+    h.transcript.turns[3].text = defect === 'missing' ? '{}' : JSON.stringify({ ...h.verifyReceipt, pass: false });
+    expect((await measureCarryDrillLifecycle(input, h.deps)).verdict).toBe(defect === 'missing' ? 'unknown' : 'fail');
+  });
+  it.each([false, true])('detects a native recovery gap, including surfaced=%s', async surfaced => {
+    const h = evidence();
+    h.transcript.turns.splice(1, 0, { index: 1, role: 'tool_use', toolName: 'sessions:search',
+      text: JSON.stringify({ session: 'self', query: 'owner identity' }) });
+    const carry = surfaced ? 'Identity ownerId: su-test\n## Identity\nowner identity' : 'ownerId: su-test';
+    const { extractRecoveryLookups } = await import('./cold-boot-drill');
+    h.ledger[2].lookups = extractRecoveryLookups(h.transcript.turns.slice(1, 3), carry);
+    const measured = await measureCarryDrillLifecycle(input, { ...h.deps, readCarry: async () => carry });
+    expect(measured.verdict).toBe('fail');
+    expect((measured.gaps ?? 0) + (measured.surfacingGaps ?? 0)).toBeGreaterThan(0);
+  });
+});
 const HOST = {
   ownerId: 'su-1',
   advSessionId: 'adv-1',

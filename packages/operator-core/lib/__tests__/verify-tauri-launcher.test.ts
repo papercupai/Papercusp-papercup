@@ -62,17 +62,35 @@ describe('owned-origin health failure evidence', () => {
       const tool = resolve(dir, 'agent-tools');
       const liveness = resolve(dir, 'liveness.sh');
       writeFileSync(liveness, 'exit 0\n');
-      writeFileSync(tool, `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args[0] === 'eval' && args.join(' ').includes('Promise.all')) {
-  if (process.env.TEST_HEALTH_KIND === 'unmeasured') { console.error('bridge evaluation timed out'); process.exitCode = 1; }
-  else console.log(JSON.stringify({ apiHealth: process.env.TEST_HEALTH_KIND === 'healthy' ? 200 : 503, rootHtml: 200 }));
-} else console.log(JSON.stringify({ url: 'http://127.0.0.1:33700/', readyState: 'complete', native: true }));
+      // These output fixtures must not spend the one-second probe budget on
+      // starting another Node runtime (including inherited NODE_OPTIONS).
+      writeFileSync(tool, `#!/bin/sh
+if [ "$1" = eval ]; then
+  case "$*" in
+    *Promise.all*)
+      if [ "$TEST_HEALTH_KIND" = unmeasured ]; then
+        echo 'bridge evaluation timed out' >&2
+        exit 1
+      fi
+      status=503
+      [ "$TEST_HEALTH_KIND" != healthy ] || status=200
+      printf '{"apiHealth":%s,"rootHtml":200}\\n' "$status"
+      exit 0
+      ;;
+  esac
+fi
+echo '{"url":"http://127.0.0.1:33700/","readyState":"complete","native":true}'
 `, { mode: 0o755 });
-      writeFileSync(resolve(dir, 'curl'), `#!/usr/bin/env node
-const fs = require('node:fs'), args = process.argv.slice(2);
-fs.writeFileSync(args[args.indexOf('--output') + 1], 'owned HTTP control body');
-console.log('200');
+      writeFileSync(resolve(dir, 'curl'), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then
+    shift
+    printf '%s' 'owned HTTP control body' > "$1"
+    break
+  fi
+  shift
+done
+echo 200
 `, { mode: 0o755 });
       const result = spawnSync('bash', ['-c', [capture, 'log() { :; }',
         'verify_tauri_dev_url() { printf "http://127.0.0.1:%s" "$1"; }', source.slice(healthStart, healthEnd),
@@ -179,6 +197,7 @@ describe('native Playwright assertion source preflight', () => {
     ['bash', '-c', 'npx "playwright" "test" e2e/example.spec.mts'],
     ['bash', '-c', 'npx playwright test e2e/example.spec.mts # cd "$OPERATOR_SOURCE_ROOT/apps/operator"'],
     ['bash', '-c', '# cd "$OPERATOR_SOURCE_ROOT/apps/operator"\nnpx playwright test e2e/example.spec.mts'],
+    ['bash', '-c', 'printf ready # native setup\nnpx playwright test e2e/example.spec.mts'],
     ['bash', '-lc', 'npx playwright test e2e/example.spec.mts'],
     ['bash', '--noprofile', '-c', 'npx playwright test e2e/example.spec.mts'],
   ])('rejects unpinned Playwright source before native preparation: %j', (...args) => {
@@ -225,6 +244,15 @@ describe('native Playwright assertion source preflight', () => {
 
   it('keeps non-Playwright assertion commands available', () => {
     expect(preflight('bash', '-c', 'printf assertion').status).toBe(0);
+  });
+
+  it.each([
+    'capture="$VH_PHASE_DIR/native/ckdp"\nprintf "%s" "$capture"',
+    'capture="$VH_PHASE_DIR/playwright/ckdp"\nprintf "%s" "$capture"',
+    '# retained screenshot under playwright/ckdp\ncapture="$VH_PHASE_DIR/playwright/ckdp"\nprintf "%s" "$capture"',
+    'printf "%s" "playwright test is documented"\nprintf ready',
+  ])('allows multiline native assertions with runner names only in data: %s', command => {
+    expect(preflight('bash', '-c', command).status).toBe(0);
   });
 
   it.each([

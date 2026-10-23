@@ -1316,6 +1316,50 @@ describe('collection child identity evidence (WI-10007991)', () => {
 });
 
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
+  it.each([false, true])('preserves the active collection budget after scheduler suspension (record disappears: %s)', async (removeRecord) => {
+    const admissionDir = mkdtempSync(join(tmpdir(), 'router-freeze-clock-'));
+    const state = join(admissionDir, 'test.state');
+    writeFileSync(state, 'frozen_total_ms=500\n');
+    vi.useFakeTimers();
+    let wallNow = 10_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => wallNow);
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const kill = vi.fn(() => 'child');
+    const pending = runCapturedTestProcess('npx', ['vitest', 'list', 'a.test.ts'], {
+      files: ['a.test.ts'], timeoutMs: 120_000, watchdogMaxMs: 120_000,
+      watchdogStallWindowMs: 1_000, killGraceMs: 20,
+      env: { PATH: '/usr/bin', PC_HEAVY_ADMISSION_DIR: admissionDir, PC_HEAVY_ADMISSION_ID: 'test' },
+      systemdRunPath: null, setsidPath: null, spawnImpl: () => child,
+      readProcessDiagnosticImpl: null, killProcessImpl: kill, onProgress: () => {},
+      governedProcessImpl: (_opts: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    try {
+      // The event loop resumes with an overdue timer, but only 2,659 ms of
+      // actual execution have elapsed. Earlier admission freezes are excluded.
+      wallNow += 146_574;
+      writeFileSync(state, 'frozen_total_ms=144415\n');
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(kill).not.toHaveBeenCalled();
+      if (removeRecord) rmSync(state);
+      wallNow += 117_340;
+      await vi.advanceTimersByTimeAsync(117_340);
+      expect(kill).not.toHaveBeenCalled();
+      wallNow += 1;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(kill).toHaveBeenCalledExactlyOnceWith(child, 'SIGTERM', false);
+      child.emit('close', null, 'SIGTERM');
+      expect(await pending).toMatchObject({ timedOut: true, freezeMs: 143_915 });
+    } finally {
+      child.emit('close', null, 'SIGTERM');
+      await pending;
+      clock.mockRestore();
+      vi.useRealTimers();
+      rmSync(admissionDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(['stdout', 'stderr'] as const)('retains bounded complete %s lines without promoting partial output', async channel => {
     vi.useFakeTimers();
     try {
@@ -1802,7 +1846,14 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(spawnImpl).toHaveBeenCalledWith(
         '/usr/bin/setsid',
         ['--wait', 'npx', 'vitest', 'list', '--filesOnly', 'a.test.ts'],
-        expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
+        expect.objectContaining({
+          env: expect.objectContaining({
+            PATH: '/usr/bin',
+            PAPERCUSP_TEST_STARTUP_TRACE: '1',
+            NODE_OPTIONS: expect.stringContaining('/scripts/lib/vitest-startup-trace.mjs'),
+          }),
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }),
       );
       await vi.advanceTimersByTimeAsync(100);
       expect(readProcessDiagnosticImpl).toHaveBeenCalledWith(4240);

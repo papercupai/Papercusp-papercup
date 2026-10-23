@@ -3754,7 +3754,8 @@ export function sessionProcessHolder(sessionId: any, { listProcPids, readCmdline
 export function listProcPids({ readdir }?: {
     readdir?: (path: string) => string[];
 }): number[];
-/** Normalize a wire value to one canonical local-liveness witness. */
+/** Consume only an exact, bounded pre-admission reservation; never mint liveness. */
+export function consumeGovernedResumeReservation(env: any, session: any, nowMs?: number): any;
 export function normalizeResumeLocalLivenessEvidence(value: any): any;
 /**
  * Build the positive witness for an exact Codex resume only when both local
@@ -3900,6 +3901,7 @@ export function forkBootstrapBody(session: any, account?: null, launchMode?: nul
     headless?: boolean | undefined;
     launched_by?: any;
     launch_argv?: string[] | undefined;
+    bootstrap_idempotency_key?: any;
     owner_id?: undefined;
     agent: string;
     workspace: any;
@@ -5230,6 +5232,8 @@ export const NO_LIVE_OMP_PROCESS_EVIDENCE: Readonly<{
     version: 1;
     kind: "no-live-omp-process";
 }>;
+/** Normalize a wire value to one canonical local-liveness witness. */
+export const GOVERNED_RESUME_RESERVATION_ENV: "PAPERCUSP_GOVERNED_RESUME_RESERVATION";
 export const ORIGINAL_CODEX_ROUTING_ENV: "PAPERCUSP_ORIGINAL_CODEX_ROUTING";
 /**
  * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"

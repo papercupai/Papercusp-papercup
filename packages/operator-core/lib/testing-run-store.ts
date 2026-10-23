@@ -1435,7 +1435,7 @@ function prepareRun(
   const detachedReportArtifacts = detachedOutputPaths
     ? preparedDetachedReportArtifacts.map((artifact) => ({ ...artifact, ...detachedOutputPaths }))
     : preparedDetachedReportArtifacts;
-  const childEnv = {
+  const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...req.env,
     PAPERCUSP_TEST_RUN_GROUP: runId,
@@ -1472,6 +1472,9 @@ function prepareRun(
   // run from starting.
   const enrolment = beginSyncEnrolment(taskSpec);
   if (enrolment.enrolled) snapshot.taskId = enrolment.taskId;
+  // Reuse the verifier's managed-task ownership seam. Never inherit a parent or
+  // caller-supplied id: terminal cleanup must identify this exact test scope.
+  childEnv.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID = enrolment.enrolled ? enrolment.taskId : '';
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'test-run');
   const wrapped = enrolment.wrap(req.command, req.args, childEnv, cwd);
   return {

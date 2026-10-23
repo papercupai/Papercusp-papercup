@@ -1686,10 +1686,11 @@ async function runManifestOnlyInstall({
         if (!value.supported) return value;
         const { workspaceDirs } = verificationScopeForNpmArgs({ repoRoot, npmArgs });
         const ranges = await findUnsatisfiedDeclaredDepRangesWithRetry({ repoRoot, workspaceDirs });
+        const declared = await findUnextractedDepsWithRetry({ repoRoot, workspaceDirs });
         // A broken installed graph needs a writer reservation so sustained new
         // readers cannot starve its repair. Existing readers still drain under
         // the exclusive mutex; healthy installs retain the D-009 pre-drain.
-        value.repairInstalledGraph = ranges.invalid.length > 0;
+        value.repairInstalledGraph = ranges.invalid.length > 0 || declared.missing.length > 0;
         input = createManifestOnlyTree(repoRoot, value.inputPaths);
         return value;
       });

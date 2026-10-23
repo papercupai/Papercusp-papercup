@@ -411,15 +411,25 @@ function findTimestampMs(value: string): number | undefined {
 // Run beside find, inside sudo, so the progress observer can kill and reap its
 // own child. The outer native timeout also bounds the whole process group if
 // the observer itself stops responding. Reuse find's existing metadata stream;
-// partial records and noise do not renew the inactivity deadline.
+// partial records and noise do not renew the inactivity deadline. Capped walks
+// compact ordinary nested files inside this existing supervisor: Node needs
+// their allocation and newest timestamps, not one IPC record per inode. Keep
+// hardlinks, build tags and protection boundaries as original metadata records.
 const RETENTION_CENSUS_PROGRESS_WORKER = `
 import os, re, selectors, subprocess, sys, time
 idle = float(sys.argv[1]) / 1000
 prefix = os.fsencode(sys.argv[2]) + b'/'
-child = subprocess.Popen(sys.argv[3:], stdout=subprocess.PIPE)
+compact = sys.argv[3] == 'compact'
+child = subprocess.Popen(sys.argv[4:], stdout=subprocess.PIPE)
 pending = b''
 fields = []
 deadline = time.monotonic() + idle
+
+def nanos(value):
+    seconds, _, fraction = value.partition(b'.')
+    tail = int((fraction + b'000000000')[:9])
+    return int(seconds) * 1000000000 + (-tail if value.startswith(b'-') else tail)
+
 try:
     with selectors.DefaultSelector() as selector:
         selector.register(child.stdout, selectors.EVENT_READ)
@@ -432,18 +442,46 @@ try:
                 sys.exit(137)
             chunk = os.read(child.stdout.fileno(), 65536)
             if not chunk:
+                if compact and (fields or pending):
+                    sys.stdout.buffer.write(b'\\0'.join(fields) + (b'\\0' if fields else b'') + pending)
+                    sys.stdout.buffer.flush()
                 sys.exit(child.wait())
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
+            if not compact:
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
             records = (pending + chunk).split(b'\\0')
             pending = records.pop()
+            output = bytearray()
+            totals = {}
             for value in records:
                 fields.append(value)
                 if len(fields) == 9:
                     kind, dev, ino, mtime, ctime, blocks, owner, nlink, path = fields
-                    if kind in [b'f', b'd', b'l', b'b', b'c', b's', b'p'] and path.startswith(prefix) and all(v.isdigit() for v in [dev, ino, blocks, owner, nlink]) and all(re.fullmatch(rb'-?\\d+(?:\\.\\d{1,9}0*)?', v) for v in [mtime, ctime]):
+                    valid = kind in [b'f', b'd', b'l', b'b', b'c', b's', b'p'] and path.startswith(prefix) and all(v.isdigit() for v in [dev, ino, blocks, owner, nlink]) and all(re.fullmatch(rb'-?\\d+(?:\\.\\d{1,9}0*)?', v) for v in [mtime, ctime])
+                    if valid:
                         deadline = time.monotonic() + idle
+                    child_path = prefix + path[len(prefix):].split(b'/')[0]
+                    if compact and valid and kind == b'f' and nlink == b'1' and path != child_path and not path.endswith(b'/CACHEDIR.TAG'):
+                        key = (child_path, dev, owner)
+                        total = totals.get(key)
+                        if total is None:
+                            total = [b'a', dev, ino, mtime, ctime, int(blocks), owner, 0, child_path]
+                            totals[key] = total
+                        else:
+                            if nanos(mtime) > nanos(total[3]): total[3] = mtime
+                            if nanos(ctime) > nanos(total[4]): total[4] = ctime
+                            total[5] += int(blocks)
+                        total[7] += 1
+                    elif compact:
+                        output.extend(b'\\0'.join(fields) + b'\\0')
                     fields = []
+            if compact:
+                for total in totals.values():
+                    total[5] = str(total[5]).encode()
+                    total[7] = str(total[7]).encode()
+                    output.extend(b'\\0'.join(total) + b'\\0')
+                sys.stdout.buffer.write(output)
+                sys.stdout.buffer.flush()
 finally:
     if child.poll() is None:
         child.kill()
@@ -609,7 +647,8 @@ export async function inspectRetentionTrees(root: string, opts: {
   const command = sudo ?? nativeCommand;
   const argv = !sudo ? nativeArgs : progressSupervised
     ? ['-n', '--', timeout!, '--signal=KILL', '--verbose', `${Math.max(1, opts.timeoutMs ?? 15 * 60_000) / 1000}s`,
-      python!, '-I', '-c', RETENTION_CENSUS_PROGRESS_WORKER, String(Math.max(1, opts.progressTimeoutMs!)), root, nativeCommand, ...nativeArgs]
+      python!, '-I', '-c', RETENTION_CENSUS_PROGRESS_WORKER, String(Math.max(1, opts.progressTimeoutMs!)), root,
+      opts.includeRecent ? 'compact' : 'raw', nativeCommand, ...nativeArgs]
     : ['-n', '--', timeout!, '--foreground', '--signal=KILL', '--verbose',
       `${Math.max(1, opts.timeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs];
   return new Promise<RetentionTreeCensus>((done) => {
@@ -629,22 +668,26 @@ export async function inspectRetentionTrees(root: string, opts: {
     const take = (row: string[]) => {
       const [type, dev, ino, mtime, ctime, blocks, owner, nlink, path] = row;
       const modifiedMs = findTimestampMs(mtime!), changedMs = findTimestampMs(ctime!);
-      if (!path?.startsWith(root + '/') || !/^[fdlbcsp]$/.test(type!) ||
+      const aggregate = type === 'a' && progressSupervised && opts.includeRecent === true;
+      if (!path?.startsWith(root + '/') || (!/^[fdlbcsp]$/.test(type!) && !aggregate) ||
           ![dev, ino, blocks, owner, nlink].every((v) => /^\d+$/.test(v!)) || modifiedMs === undefined || changedMs === undefined) {
         malformed = true; return;
       }
-      result.inspectedNodes++;
+      if (aggregate && (!Number.isSafeInteger(Number(nlink)) || Number(nlink) < 1 || !Number.isSafeInteger(Number(blocks)))) {
+        malformed = true; return;
+      }
+      result.inspectedNodes += aggregate ? Number(nlink) : 1;
       const child = join(root, path.slice(root.length + 1).split('/')[0]!);
       lastChildPath = child;
       const direct = path === child;
       let group = groups.get(child);
       if (!group) {
-        if (!direct) { malformed = true; return; }
+        if (!direct || aggregate) { malformed = true; return; }
         group = { entry: { path: child, newestWriteMs: Number.NEGATIVE_INFINITY, bytes: 0, dev: Number(dev), ino: Number(ino) }, allocation: new RetentionAllocationCounter() };
         groups.set(child, group);
       }
       const newest = Math.max(modifiedMs, changedMs);
-      if (opts.collectBuildDirs) {
+      if (opts.collectBuildDirs && !aggregate) {
         // GNU find visits directories before their children. Keep only the
         // current ancestry, rather than retaining every directory in the tree.
         for (const ancestor of ancestors.keys()) if (!path.startsWith(ancestor + '/')) ancestors.delete(ancestor);
@@ -661,7 +704,7 @@ export async function inspectRetentionTrees(root: string, opts: {
       catch { malformed = true; }
       if (excluded.includes(path)) group.reason = 'protected policy root';
       else if (type === 'l') group.reason = 'symlink boundary';
-      else if (type !== 'f' && type !== 'd') group.reason = 'special filesystem entry';
+      else if (type !== 'f' && type !== 'd' && !aggregate) group.reason = 'special filesystem entry';
       else if (Number(dev) !== rootStat.dev) group.reason = 'filesystem boundary';
       else if (!privileged && uid !== undefined && Number(owner) !== uid) group.reason = 'foreign ownership boundary';
       else if (!opts.includeRecent && newest >= opts.retainAfterMs && !group.reason) group.reason = 'recent write';

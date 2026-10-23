@@ -78,12 +78,19 @@ interface PendingRequest {
 
 interface WorkerResult {
   json: string | null;
+  broadTreeScan?: boolean;
 }
 
 let _worker: Worker | null = null;
 let _workerReady: Promise<void> | null = null;
 let _nextId = 0;
 const _pending = new Map<number, PendingRequest>();
+// Bound retained source/structured-clone work as well as parser execution. A
+// refused census is unknown evidence; it must never fall back to inline parsing.
+export const TREE_SCAN_MAX_SOURCE_CHARS = 1024 * 1024;
+export const TREE_SCAN_MAX_REQUESTS = 4;
+export const TREE_SCAN_DEADLINE_MS = 10_000;
+let _treeScanRequests = 0;
 let _workerDisabled = false;
 let _consecutiveCrashes = 0;
 /**
@@ -401,16 +408,19 @@ function ensureWorker(): Promise<void> {
       return;
     }
 
+    const worker = _worker;
     let initialized = false;
 
-    _worker.on(
+    worker.on(
       'message',
       (msg: {
         kind: string;
         id?: number;
         json?: string | null;
+        broadTreeScan?: boolean;
         error?: string;
       }) => {
+        if (_worker !== worker) return;
         if (msg.kind === 'ready') {
           initialized = true;
           syncWorkerRef();
@@ -435,13 +445,18 @@ function ensureWorker(): Promise<void> {
           _lastEligibleServed = true;
           if (_halfOpen) closeBreakerOnServe();
           p.resolve({ json: msg.json ?? null });
+        } else if (msg.kind === 'broad_tree_scan_ok' && typeof msg.broadTreeScan === 'boolean') {
+          _consecutiveCrashes = 0;
+          if (_halfOpen) closeBreakerOnServe();
+          p.resolve({ json: null, broadTreeScan: msg.broadTreeScan });
         } else {
           p.reject(new Error(msg.error ?? 'cpu-task worker error'));
         }
       },
     );
 
-    _worker.on('error', (err) => {
+    worker.on('error', (err) => {
+      if (_worker !== worker) return;
       rejectAllPending(err);
       // A runtime crash clears the HANDLE so the next call respawns — it does
       // NOT disable the offload. Only a run of consecutive crashes does, so a
@@ -449,6 +464,10 @@ function ensureWorker(): Promise<void> {
       // be respawned on every request (WI-37688).
       _worker = null;
       _workerReady = null;
+      _workerRefd = false;
+      // Also handles a deadline or synthetic crash while the thread is alive.
+      // Its later exit must not clear a replacement worker's state.
+      void worker.terminate().catch(() => {});
       _lastCrashError = describeCause(err);
       _consecutiveCrashes += 1;
       // EVERY crash is logged, not just the one that trips the breaker. The
@@ -481,8 +500,9 @@ function ensureWorker(): Promise<void> {
       if (!initialized) rejectReady(err);
     });
 
-    _worker.on('exit', (code) => {
-      if (code !== 0 && !initialized) {
+    worker.on('exit', (code) => {
+      if (_worker !== worker) return;
+      if (!initialized) {
         rejectReady(new Error(`cpu-task worker exited with code ${code} before ready`));
       }
       // A worker can exit WITHOUT an 'error' event (terminate, an OOM kill,
@@ -491,6 +511,7 @@ function ensureWorker(): Promise<void> {
       rejectAllPending(new Error(`cpu-task worker exited with code ${code}`));
       _worker = null;
       _workerReady = null;
+      _workerRefd = false;
     });
   });
 
@@ -589,6 +610,60 @@ export async function serializeJsonResponse(
 
   // Sync fallback (small batch or worker unavailable).
   return JSON.stringify(value, bigIntReplacer);
+}
+
+/** AST evidence guard: worker failure is unknown evidence, never an inline fallback. */
+export async function detectBroadRepoTreeScanOffThread(source: string): Promise<boolean> {
+  if (source.length > TREE_SCAN_MAX_SOURCE_CHARS) {
+    throw new Error(`tree-scan source exceeds ${TREE_SCAN_MAX_SOURCE_CHARS} characters`);
+  }
+  // Reserve BEFORE the first await: booting/queued jobs count toward the bound.
+  if (_treeScanRequests >= TREE_SCAN_MAX_REQUESTS) {
+    throw new Error('tree-scan worker admission limit reached');
+  }
+  _treeScanRequests += 1;
+  if (_breakerAdmitsProbe({
+    disabled: _workerDisabled, halfOpen: _halfOpen, trippedAt: _breakerTrippedAt,
+    reArmFailures: _reArmFailures, now: Date.now(),
+  })) _halfOpen = true;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
+  try {
+    const ready = ensureWorker();
+    const worker = _worker;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      deadline = setTimeout(() => {
+        expired = true;
+        const error = new Error(`tree-scan worker deadline exceeded (${TREE_SCAN_DEADLINE_MS}ms)`);
+        // Reject startup and every queued request, terminate the stalled thread,
+        // and use the existing crash breaker to bound repeated failed respawns.
+        if (worker && _worker === worker) worker.emit('error', error);
+        reject(error);
+      }, TREE_SCAN_DEADLINE_MS);
+    });
+    const analysis = (async () => {
+      await ready;
+      if (expired || !worker || _worker !== worker) throw new Error('tree-scan worker unavailable');
+      const id = _nextId++;
+      return new Promise<WorkerResult>((resolve, reject) => {
+        _pending.set(id, { resolve, reject });
+        syncWorkerRef();
+        try {
+          worker.postMessage({ kind: 'broad_tree_scan', id, source });
+        } catch (error) {
+          _pending.delete(id);
+          syncWorkerRef();
+          reject(error);
+        }
+      });
+    })();
+    const result = await Promise.race([analysis, timeout]);
+    if (typeof result.broadTreeScan !== 'boolean') throw new Error('cpu-task worker returned no tree-scan verdict');
+    return result.broadTreeScan;
+  } finally {
+    clearTimeout(deadline);
+    _treeScanRequests -= 1;
+  }
 }
 
 /** Test seam — terminate the worker and reset module state. */

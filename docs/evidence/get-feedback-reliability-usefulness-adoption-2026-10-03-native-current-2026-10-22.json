@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "get-feedback-native-acceptance-v1",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "status": "partial evidence; not acceptance or shipment",
+  "currentNativeAcceptance20261022": {
+    "status": "partial native delivery proof; full matrix and shipment remain open",
+    "workItemId": "WI-10005891",
+    "requestKey": "gf-r6-20261022-codexlive-codex-v1",
+    "conversationId": "conv-request-e7aa1b67f69da1fffe5bf254497e468a7bb75071b57689b7f1dba9d650803f99",
+    "acceptanceRuntime": {
+      "endpoint": "http://127.0.0.1:3170",
+      "buildSha": "516579404d"
+    },
+    "successfulDispatch": {
+      "at": "2026-10-22T21:52:23.021Z",
+      "sourceOwnerId": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "sourceNativeSessionId": "01a151d5-1565-75a1-8f09-7580766394c7",
+      "sourceBackend": "codex",
+      "sourceState": "live",
+      "sourceBoundaryStatus": "measured",
+      "sourceSha256": "eccea738867896fc6709ea021afed0529dfeb4cef6155eebe0d36cba34978c22",
+      "answeringOwnerId": "su-aed19f4a-c6ba-4029-8d95-184b3293a534",
+      "answeringAdvSessionId": 49929,
+      "answeringNativeSessionId": "01a16599-a71c-7fb2-b07f-9279dc993000",
+      "operation": "convert",
+      "agent": "codex",
+      "model": "sol",
+      "verified": true,
+      "portId": "60631702-85f8-4056-b8a8-476de5ada004",
+      "portStatus": "delivered",
+      "renderedHash": "eaa790a5a3aa5fe36d22358be1b785b280a0c1435ef296c0ecc212635097d9e1",
+      "nativeRef": "~/.papercusp/su-codex-homes/session-49929/sessions/2026/10/22/rollout-2026-10-22T17-52-11-01a16599-a71c-7fb2-b07f-9279dc993000.jsonl",
+      "persistenceReceipt": true,
+      "exactChecksumInNativeUserPrompt": true,
+      "selectedSourceSessionAndTurn6InNativeSeed": true,
+      "postKickoffAssistantActivity": true
+    },
+    "typedAnswer": {
+      "postId": 1197082,
+      "kind": "answer",
+      "authorId": "su-aed19f4a-c6ba-4029-8d95-184b3293a534",
+      "createdAt": "2026-10-22T21:58:14.309Z",
+      "evidence": {
+        "session_id": "01a151d5-1565-75a1-8f09-7580766394c7",
+        "turn_idx": 6
+      },
+      "readInFull": true,
+      "nativeOuterCallId": "call_dd58bde6aec04b788e4ac1716f9eb5d4",
+      "physicalActorAttribution": "native-authored CLI recovery call and matching session-bound ledger receipt verified; native MCP per-call fingerprint and exhaustive actor census remain unmeasured"
+    },
+    "physicalCallAudit": {
+      "classification": "native-authored CLI recovery path; not a native MCP per-call witness",
+      "nativeCall": {
+        "line": 111,
+        "at": "2026-10-22T21:57:58.905Z",
+        "callId": "call_dd58bde6aec04b788e4ac1716f9eb5d4",
+        "lineSha256": "bb9f82afafa5ccae99b71e0050d40767cd5f848edc0ca147da24f57a657e4a15",
+        "mechanism": "exec invokes exec_command, which runs scripts/mcp-call.mjs consult:reply with the answering owner's PAPERCUSP_SID",
+        "yieldReceipt": "Native lines 115/117 preserve the original shell session handle; they are a yield, not completion."
+      },
+      "terminalReceipt": {
+        "pollCallId": "call_9955918c254b4922855d5e93089e101b",
+        "pollLine": 119,
+        "pollLineSha256": "1caa57c8a1b8df94111b2bf89fbe87916d82c4f7808b2bc8f1da142d5f0c4c4f",
+        "resultLine": 122,
+        "resultAt": "2026-10-22T21:58:41.372Z",
+        "resultLineSha256": "976a872eb87e4922f2d489e93af8a33170174aec6ecfc9380f4621d5ed8cf218",
+        "exitCode": 0,
+        "ok": true,
+        "postId": 1197082
+      },
+      "ledgerReceipt": {
+        "table": "harness_shared.tool_invocations",
+        "id": 43180800,
+        "toolName": "consult:reply",
+        "status": "ok",
+        "coordOwnerId": "su-aed19f4a-c6ba-4029-8d95-184b3293a534",
+        "servingBuildSha": "060876c3b0",
+        "dispatchSettledAt": "2026-10-22T21:58:36.026Z",
+        "nativeSession": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "candidateAdvSessionId": 49929,
+          "valueFingerprint": "2eae69b16a9f408c5b6f9958825c88e120e48dd32450b5dddb96d2eca6087d2a",
+          "callIdFingerprint": null
+        },
+        "nativeSessionFingerprintMatchesAnswerer": true,
+        "requestTraceId": "10a0f472-02ac-49ad-a7d6-1f8e1a376907"
+      },
+      "writerVerification": {
+        "sourceRevision": "060876c3b0",
+        "nativeCarrier": "scripts/mcp-call.mjs: buildMcpSessionQuery forwards the launcher/native-session environment value as query:native_session.",
+        "perCallFingerprint": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts records callIdFingerprint only for a bound native thread with requestMeta.callId; the observed query carrier supplies no such fingerprint.",
+        "timestamp": "packages/operator-core/lib/projected-tool-deps.ts: invoked_at is the explicitly captured dispatch-settle time, not the post creation time."
+      },
+      "scope": "The native call, terminal helper result, exact conversation, answer post and session-bound ledger row agree. This proves the observed CLI path; it does not establish a native MCP per-call witness or exclude other actors, non-MCP actions, or mutate-then-revert activity."
+    },
+    "sourceBoundary": {
+      "status": "measured routing-time endpoints; nonempty plan-lease case not exercised",
+      "sourceAdvSessionId": 44726,
+      "capturedAt": "2026-10-22T21:19:33.628Z",
+      "completedAt": "2026-10-22T21:19:34.065Z",
+      "snapshotKind": "live-jsonl",
+      "snapshotSha256": "eccea738867896fc6709ea021afed0529dfeb4cef6155eebe0d36cba34978c22",
+      "completeBytes": 3736844,
+      "workItemRefs": [
+        "EI-26079311014662672",
+        "EI-26140572392669188",
+        "EI-26370558466179959",
+        "EI-26688365359979197",
+        "WI-6554700010016661"
+      ],
+      "workItemCensusTruncated": false,
+      "planClaims": [],
+      "planClaimCensusTruncated": false,
+      "scope": "The persisted nativeConsultSources observation precedes the successful dispatch. These are sequential source/work-item/plan-claim endpoint reads, not an atomic snapshot or a transition, actor or wake history. An empty plan-claim census cannot establish noninterference with a nonempty source plan lease.",
+      "nextTrialRequirement": {
+        "requireSourcePlanClaims": true,
+        "acceptance": "Require a measured nonexpired source-owner plan lease at retrieval and dispatch, then retain exact native delivery, answer and actor/lease-boundary evidence before assigning that case credit."
+      }
+    },
+    "priorAttempt": {
+      "sourceOwnerId": "su-40c8507d-a846-479b-8774-304ad2d22f9d",
+      "answeringOwnerId": "su-d5d439e9-8ce8-4cf2-8559-4fa236e43788",
+      "outcome": "answer-pickup-stalled; later reply belongs to a different selected source and answering owner"
+    },
+    "stillOpen": [
+      "Native MCP per-call witness and source claim/actor boundary; this trial proves a native-authored CLI path and has an empty plan-claim census",
+      "Other two required native matrix rows",
+      "Original quality cohort and its recorded shortfall",
+      "Independent acceptance and exact final shipment"
+    ]
+  },
+  "historicalEvidence": {
+    "cohort": {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+      "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3"
+    },
+    "native20261009": {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-09.json",
+      "sha256": "0bca8b0cbaeedd2c55cfe88e45ed4a6349a897a4fa006bb164434f3196a0d703"
+    }
+  },
+  "scope": "Separate dated trial edition. The frozen historical cohort and prior native receipt retain their exact referenced bytes; this trial does not fill their quality shortfall or prove the full native matrix."
+}

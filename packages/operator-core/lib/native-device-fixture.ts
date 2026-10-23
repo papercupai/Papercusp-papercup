@@ -1,19 +1,21 @@
 /** Disposable native-device HTTPS acceptance, inside with-test-pg's operator-api profile.
  * Reuses the maintained protected listener and own-tunnel provisioning/removal contract.
  * node scripts/with-test-pg.mjs --isolated-runtime=operator-api -- node --import tsx
- *   packages/operator-core/lib/native-device-fixture.ts <private evidence dir> <cert.pem> [seconds]
+ *   packages/operator-core/lib/native-device-fixture.ts <private evidence dir> <cert.pem> <seconds> <offlineSeconds> <journey> <private agent-home bundle>
  * The receipt is public-safe; pair-payload.json is private input and is removed on exit.
  * The advertised-hostname journey takes an empty cert argument and offlineSeconds=0.
  * Its caller must lease and delegate only the existing /api/device provider rule
  * to ROUTE_READY.ingressTarget, then verify exact restoration before stopping it.
  * Readiness requires the private one-shot token to be redeemed through that route.
  * Existing temporary-hostname native cases keep their original safety guards.
+ * model-preflight exercises only the private loopback host and exits after its
+ * actual assistant reply. Bundle input uses the maintained access-only v3 format.
  */
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Resolver, resolve4, resolveNs } from 'node:dns/promises';
-import { existsSync, mkdirSync, mkdtempSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, mkdirSync, mkdtempSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tunnel/cloudflare-api';
@@ -21,6 +23,8 @@ import { assertPort, parseArgoTunnelCert, tunnelCnameTarget } from './own-tunnel
 import { provisionCloudflareTunnel, removeCloudflareTunnel, type RemovalTarget } from './own-tunnel/provision';
 import { isCliEntry } from './util/cli-entry';
 import type { WorkspaceRegistry } from './workspace-registry';
+import { assertWorkspaceHostAgentHomeBundleAdmissionEligible, parseWorkspaceHostAgentHomeBundle,
+  workspaceHostAgentHomePaths } from '@papercusp/deployment-driver';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const delay = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
@@ -168,6 +172,89 @@ export function fixtureIdentity(env: NodeJS.ProcessEnv) {
   const ingressPort = assertPort(Number(env.PAPERCUSP_EXTERNAL_INGRESS_PORT));
   assert(ingressPort !== Number(base.port) && ![3070, 3170, 3055].includes(ingressPort), 'Separate protected ingress required');
   return { workspaceId: env.PAPERCUSP_WORKSPACE_ID!, base: base.origin, ingressPort };
+}
+
+/** Explicit access-only material; never recover credentials from the ambient HOME. */
+export function provisionFixtureAgentHome(bundlePath: string, env = process.env) {
+  fixtureIdentity(env);
+  assert(bundlePath && isAbsolute(bundlePath), 'Explicit private agent-home bundle required');
+  const source = realpathSync(bundlePath);
+  assert(relative(ROOT, source).startsWith('..'), 'Agent-home bundle must be outside the repository');
+  const metadata = lstatSync(bundlePath);
+  assert(metadata.isFile() && !metadata.isSymbolicLink() && metadata.uid === process.getuid?.() &&
+    (metadata.mode & 0o077) === 0 && metadata.size <= 256 * 1024, 'Owned private agent-home bundle required');
+  const bundle = parseWorkspaceHostAgentHomeBundle(readFileSync(bundlePath));
+  assertWorkspaceHostAgentHomeBundleAdmissionEligible(bundle);
+  // Resolve every destination below the maintained private runtime, including
+  // parent symlinks. A caller may not redirect a private install into shared HOME.
+  const home = realpathSync(env.HOME!);
+  assert(home === resolve(env.HOME!) && relative(ROOT, home).startsWith('..'), 'Canonical private HOME required');
+  assert(/\/papercusp-test-runtime-[A-Za-z0-9_-]+\/home$/.test(home), 'Maintained disposable agent HOME required');
+  const papercuspHome = realpathSync(env.PAPERCUSP_HOME!);
+  assert(papercuspHome === join(home, '.papercusp'), 'Private product HOME must belong to private agent HOME');
+  const paths = workspaceHostAgentHomePaths(home);
+  const created: string[] = [];
+  const cleanup = () => { for (const path of created) rmSync(path, { force: true }); };
+  try {
+    for (const slot of ['claude', 'codex'] as const) {
+      const directory = dirname(paths[slot]);
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      assert.equal(realpathSync(directory), directory, 'Private credential directory must not redirect');
+      writeFileSync(paths[slot], bundle.files[slot], { mode: 0o600, flag: 'wx' });
+      created.push(paths[slot]);
+    }
+    return { cleanup, receipt: { contractVersion: bundle.contractVersion, slots: ['claude', 'codex'], accessOnly: true } };
+  } catch (error) { cleanup(); throw error; }
+}
+
+/** Exercise the actual phone model route before spending any native payload. */
+export async function verifyFixtureModelRoute(env = process.env, doFetch: typeof fetch = fetch) {
+  const identity = fixtureIdentity(env);
+  const nonce = 'fixture-model-' + randomUUID();
+  const deadline = AbortSignal.timeout(90_000);
+  const call = (path: string, init: RequestInit = {}) => doFetch(identity.base + path, {
+    ...init, redirect: 'error', signal: deadline,
+  });
+  const minted = await call('/api/device/desktop/mint-pair-token', { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: identity.workspaceId }) });
+  assert.equal(minted.status, 200, 'Model preflight mint failed');
+  const { qrPayload } = await minted.json();
+  assert(qrPayload?.workspaceId === identity.workspaceId && typeof qrPayload.pairToken === 'string' &&
+    qrPayload.pairToken, 'Model preflight payload mismatch');
+  let deviceId: string | undefined;
+  try {
+    const paired = await call('/api/device/pair', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pairToken: qrPayload.pairToken, deviceName: 'Private model preflight' }) });
+    assert.equal(paired.status, 200, 'Model preflight pair failed');
+    const result = await paired.json();
+    assert(typeof result.deviceId === 'string' && /^[0-9a-f-]{36}$/i.test(result.deviceId), 'Model preflight device missing');
+    deviceId = result.deviceId;
+    assert(result.workspaceId === identity.workspaceId && typeof result.deviceToken === 'string' &&
+      result.deviceToken, 'Model preflight principal mismatch');
+    const headers = { authorization: 'Bearer ' + result.deviceToken, 'content-type': 'application/json' };
+    const response = await call('/api/device/operator/converse', { method: 'POST', headers,
+      body: JSON.stringify({ text: 'Reply with exactly ' + nonce + '. Do not use tools.', modality: 'text' }) });
+    assert.equal(response.status, 200, 'Model preflight converse failed');
+    assert(response.headers.get('content-type')?.includes('text/event-stream'), 'Model preflight requires SSE');
+    // Drain under the same deadline, but never persist provider error text or
+    // merely accept a delta/done frame as a completed, rendered assistant turn.
+    const stream = await response.text();
+    assert(!/^event:\s*error\s*$/m.test(stream), 'Model preflight returned an error event');
+    const history = await call('/api/device/operator/conversation', { headers });
+    assert.equal(history.status, 200, 'Model preflight history failed');
+    const page = await history.json();
+    assert(Array.isArray(page.turns) && page.turns.some((turn: { role?: string; text?: string }) =>
+      turn.role === 'assistant' && typeof turn.text === 'string' && turn.text.includes(nonce)),
+    'Model preflight did not persist the actual assistant reply');
+    return { workspaceId: identity.workspaceId, persistedAssistantReply: true, completedAt: new Date().toISOString() };
+  } finally {
+    if (deviceId) {
+      const revoked = await doFetch(identity.base + '/api/device/desktop/devices/' + encodeURIComponent(deviceId), {
+        method: 'DELETE', redirect: 'error', signal: AbortSignal.timeout(15_000) });
+      await revoked.arrayBuffer();
+      assert.equal(revoked.status, 200, 'Model preflight device cleanup failed');
+    }
+  }
 }
 
 export async function verifyProtectedIngress(base: string, doFetch: typeof fetch = fetch) {
@@ -348,8 +435,10 @@ export async function prepareFixtureWorkspaceSwitch() {
 
 export async function runNativeDeviceFixture(evidencePath: string, certPath: string, seconds = 1800,
   interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0'), workspaceSwitch = false,
-  deviceExpiry = false, advertisedHostname = false) {
+  deviceExpiry = false, advertisedHostname = false,
+  modelAccess?: { agentHomeBundlePath: string; preflightOnly?: boolean }) {
   const identity = fixtureIdentity(process.env); // All preconditions precede any external write.
+  assert(modelAccess?.agentHomeBundlePath, 'Explicit private agent-home bundle required');
   assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 3600, 'Bounded lifetime required');
   assert(interruptionSeconds === 0 || (Number.isInteger(interruptionSeconds) && interruptionSeconds >= 30 &&
     interruptionSeconds <= 120), 'Offline fixture interval must be 30 to 120 seconds');
@@ -362,8 +451,9 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   assert(isAbsolute(evidencePath) && relative(ROOT, evidence).startsWith('..'), 'Evidence/private input must be outside the repository');
   // Device expiry uses the existing private desktop controls only. It creates
   // no tunnel, DNS record or public route and needs no provider credential.
-  const login = deviceExpiry || advertisedHostname ? undefined : parseArgoTunnelCert(readFileSync(certPath, 'utf8'));
-  assert(deviceExpiry || advertisedHostname || login, 'A maintained Cloudflare login certificate is required');
+  const localOnly = deviceExpiry || modelAccess.preflightOnly;
+  const login = localOnly || advertisedHostname ? undefined : parseArgoTunnelCert(readFileSync(certPath, 'utf8'));
+  assert(localOnly || advertisedHostname || login, 'A maintained Cloudflare login certificate is required');
   const api = login ? cloudflareApi({ apiToken: login.apiToken }) : undefined;
   const zone = api && login ? await api.getZone(login.zoneId) : undefined;
   if (zone && login) {
@@ -380,7 +470,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   }
   mkdirSync(evidence, { mode: 0o700 }); // Refuse an existing attempt; retain earlier evidence.
   const receipt: Record<string, unknown> = { schemaVersion: 1, runId, ...identity, hostname,
-    publicBase: deviceExpiry ? identity.base : 'https://' + hostname, loopbackOnly: deviceExpiry,
+    publicBase: localOnly ? identity.base : 'https://' + hostname, loopbackOnly: localOnly,
     ...(advertisedHostname ? { providerRouteOwnedByCaller: true,
       providerRouteRestoration: 'Not performed or attested by this fixture; requires the caller\'s exact provider receipt',
       cleanupScope: 'Owned fixture processes and private inputs; excludes the caller-owned provider route' } : {}),
@@ -391,6 +481,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       'Disposable public HTTPS fixture; no native UI, cloud relay or release acceptance claimed' };
   const save = () => saveFixtureReceipt(evidence, receipt);
   let host: ChildProcess | undefined, connector: ChildProcess | undefined;
+  let agentHome: ReturnType<typeof provisionFixtureAgentHome> | undefined;
   // Use the maintained host bundle producer instead of loading the CommonJS
   // TypeScript entry through tsx. The committed-source guard correctly refuses
   // a CommonJS transform of a checkout module; this fixture must exercise the
@@ -413,6 +504,8 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   };
   try {
     save();
+    agentHome = provisionFixtureAgentHome(modelAccess.agentHomeBundlePath);
+    receipt.agentHome = agentHome.receipt; save();
     const switchFixture = workspaceSwitch ? await prepareFixtureWorkspaceSwitch() : undefined;
     if (switchFixture) { receipt.workspaceSwitch = switchFixture; save(); }
     const expectedWorkspaceIds = switchFixture?.workspaces.map(w => w.id) ?? [identity.workspaceId];
@@ -465,6 +558,11 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
         receipt.localBoundary = await verifyProtectedIngress('http://127.0.0.1:' + identity.ingressPort);
     }, { timeoutMs: 180_000, pollMs: 500, stopped: () => stopped,
       record: diagnostic => { receipt.localReadiness = diagnostic; save(); } });
+    receipt.modelPreflight = await verifyFixtureModelRoute(); save();
+    if (modelAccess.preflightOnly) {
+      receipt.ready = true; receipt.readyAt = new Date().toISOString(); save();
+      return;
+    }
     if (advertisedHostname) {
       receipt.awaitingPublicRoute = { publicBase: receipt.publicBase,
         ingressTarget: 'http://127.0.0.1:' + identity.ingressPort };
@@ -604,6 +702,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   } finally {
     process.off('SIGTERM', stop); process.off('SIGINT', stop);
     await stopChild(connector); await stopChild(host);
+    agentHome?.cleanup();
     receipt.processCleanupVerified = (!host || !host.pid || host.exitCode !== null || host.signalCode !== null) &&
       (!connector || !connector.pid || connector.exitCode !== null || connector.signalCode !== null);
     try {
@@ -623,11 +722,12 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
 }
 
 if (isCliEntry(import.meta.url)) {
-  const [evidence, cert, lifetime, offlineSeconds, journey] = process.argv.slice(2);
-  assert(journey === undefined || ['workspace-switch', 'device-expiry', 'advertised-hostname'].includes(journey), 'Unknown native fixture journey');
+  const [evidence, cert, lifetime, offlineSeconds, journey, agentHomeBundlePath] = process.argv.slice(2);
+  assert(journey === undefined || ['workspace-switch', 'device-expiry', 'advertised-hostname', 'model-preflight'].includes(journey), 'Unknown native fixture journey');
   runNativeDeviceFixture(evidence ?? '', cert ?? '', lifetime ? Number(lifetime) : 1800,
     offlineSeconds === undefined ? undefined : Number(offlineSeconds), journey === 'workspace-switch',
-    journey === 'device-expiry', journey === 'advertised-hostname').catch(error => {
+    journey === 'device-expiry', journey === 'advertised-hostname',
+    { agentHomeBundlePath: agentHomeBundlePath ?? '', preflightOnly: journey === 'model-preflight' }).catch(error => {
     console.error('NATIVE_HTTPS_FIXTURE_PREFLIGHT_FAILED=' + error.message); process.exitCode = 1;
   });
 }

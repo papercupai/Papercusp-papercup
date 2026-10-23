@@ -222,6 +222,27 @@ describe('shared snapshot-backed push channel', () => {
     expect(Object.values(PUSH_LEG_FLAGS).map(flag => FLAG_DEFAULTS[flag])).toEqual(Array(8).fill(true));
   });
 
+  it('uses the default nonblocking snapshot reader on the cold hook path', async () => {
+    const [registry, home, workspace, snapshots, research] = await Promise.all([
+      import('../harness-registry'), import('../harness/operator-home-harness'),
+      import('../workspace-registry'), import('./push-snapshot'), import('./research-trail'),
+    ]);
+    const peek = vi.spyOn(snapshots, 'peekPushSnapshot').mockReturnValue(null);
+    const spies = [peek,
+      vi.spyOn(registry, 'loadHarnessRegistry').mockResolvedValue({
+        projects: [{ slug: 'papercusp', path: '/repo' }],
+      } as Awaited<ReturnType<typeof registry.loadHarnessRegistry>>),
+      vi.spyOn(home, 'operatorHomeHarnessSlug').mockReturnValue('papercusp'),
+      vi.spyOn(workspace, 'activeWorkspaceId').mockReturnValue(input.workspace),
+      vi.spyOn(research, 'recordResearchBatch').mockResolvedValue(undefined),
+    ];
+    try {
+      // Exercise production defaults, rather than injecting PushChannelDeps.
+      expect(await codeIntelPushText(input)).toBe('');
+      expect(peek).toHaveBeenCalledExactlyOnceWith('papercusp');
+    } finally { for (const spy of spies) spy.mockRestore(); }
+  });
+
   it('renders a first-touch snapshot witness while naming unmeasured symbol and runtime evidence', () => {
     const facts = snapshotFirstTouchLeg(input, snapshot());
     expect(facts).toHaveLength(1);

@@ -482,11 +482,14 @@ test("manifest resolution includes local archives from other workspaces without 
   } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
-test("incompatible installed dependencies reserve the writer while existing readers finish", { timeout: 25_000 }, async () => {
+for (const installed of ['incompatible', 'missing']) {
+test(`${installed} installed dependencies reserve the writer while existing readers finish`, { timeout: 25_000 }, async () => {
   const fixture = createManifestResolutionFixture({ flagOnlyDuringResolve: true });
   const packageDir = join(fixture.repoRoot, "node_modules", "fixture-pkg");
-  mkdirSync(packageDir, { recursive: true });
-  writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "fixture-pkg", version: "0.1.0" }));
+  if (installed === 'incompatible') {
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "fixture-pkg", version: "0.1.0" }));
+  }
   const gate = join(fixture.tempRoot, "resolve-ready");
   const lockRootDir = fixture.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   const name = repoLockName(fixture.repoRoot);
@@ -531,6 +534,7 @@ test("incompatible installed dependencies reserve the writer while existing read
     rmSync(fixture.tempRoot, { recursive: true, force: true });
   }
 });
+}
 
 test("test:affected preflight refuses stale workspace lock metadata before launching tests", async () => {
   const fixture = createManifestResolutionFixture();

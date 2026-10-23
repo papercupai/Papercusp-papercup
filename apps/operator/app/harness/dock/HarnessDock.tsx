@@ -10,7 +10,12 @@
 
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { DockviewApi, IDockviewHeaderActionsProps } from 'dockview';
+import { parseAsString, useQueryState } from 'nuqs';
+import { Maximize2, Minimize2 } from 'lucide-react';
+import { Button } from '../Button';
+import { usePopupMaximize } from '@/app/_components/chat/use-popup-maximize';
 import { DockWorkspace, createFetchDockLayoutStore, type DockLayoutRow, type DockLayoutStore } from '@papercusp/dock-workbench';
 import { fetchSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -71,7 +76,61 @@ const makeLayoutStore = (workspaceId: string) =>
  */
 const isDeferredPanelType = (type: string): boolean => type.startsWith('plugin:');
 
+const PaneFullscreenContext = createContext({
+  maximized: false,
+  toggle: (_panelId: string) => {},
+});
+
+/** Keep the renderer identity stable so resizing never remounts a pane. */
+export function DockPaneFullscreenActions({ activePanel }: IDockviewHeaderActionsProps) {
+  const { maximized, toggle } = useContext(PaneFullscreenContext);
+  if (!activePanel) return null;
+  const label = maximized ? `Restore ${activePanel.title}` : `Fullscreen ${activePanel.title}`;
+  return <Button variant="ghost" aria-label={label} title={maximized ? `${label} (Esc)` : label}
+    onPointerDown={event => event.stopPropagation()}
+    onClick={() => toggle(activePanel.id)}>
+    {maximized ? <Minimize2 size={13} aria-hidden /> : <Maximize2 size={13} aria-hidden />}
+  </Button>;
+}
+
 export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
+  const fullscreen = usePopupMaximize({ param: 'dockmax', open: true });
+  const [fullscreenPane, setFullscreenPane] = useQueryState('dockpane', parseAsString);
+  const [dockApi, setDockApi] = useState<DockviewApi | null>(null);
+  const ownsMaximizedGroup = useRef(false);
+  useLayoutEffect(() => {
+    if (!dockApi) return;
+    if (fullscreen.maximized && fullscreenPane) {
+      const panel = dockApi.getPanel(fullscreenPane);
+      if (panel) {
+        dockApi.maximizeGroup(panel);
+        ownsMaximizedGroup.current = true;
+      }
+    } else if (ownsMaximizedGroup.current) {
+      dockApi.exitMaximizedGroup();
+      ownsMaximizedGroup.current = false;
+      void setFullscreenPane(null);
+    }
+  }, [dockApi, fullscreen.maximized, fullscreenPane, setFullscreenPane]);
+  const togglePaneFullscreen = useCallback((panelId: string) => {
+    if (fullscreen.maximized) fullscreen.reset();
+    else {
+      void setFullscreenPane(panelId);
+      fullscreen.toggleScreen();
+    }
+  }, [fullscreen.maximized, fullscreen.reset, fullscreen.toggleScreen, setFullscreenPane]);
+  const fullscreenControls = useMemo(() => ({ maximized: fullscreen.maximized, toggle: togglePaneFullscreen }),
+    [fullscreen.maximized, togglePaneFullscreen]);
+  useEffect(() => {
+    if (!fullscreen.maximized || fullscreen.screenActive) return;
+    const restore = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      fullscreen.reset();
+    };
+    document.addEventListener('keydown', restore);
+    return () => document.removeEventListener('keydown', restore);
+  }, [fullscreen.maximized, fullscreen.screenActive, fullscreen.reset]);
   const workspaceId = useWorkspaceId();
   const layoutStore = useMemo<DockLayoutStore>(() => ({
     ...makeLayoutStore(workspaceId),
@@ -132,6 +191,7 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   useFocusedPanelTracker();
 
   const onApiReady = useCallback((api: Parameters<typeof bindDockApi>[0]) => {
+    setDockApi(api);
     bindDockApi(api);
     // Dock is live (layout hydrated + API bound) — close the harness-dock-open
     // measure begun on mount. No-op unless a matching begin ran (measure-once).
@@ -139,33 +199,42 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   }, []);
 
   const onApiDispose = useCallback(() => {
+    setDockApi(null);
     bindDockApi(null);
   }, []);
 
   const onPanelRemoved = useCallback((panelId: string) => {
+    if (panelId === fullscreenPane) fullscreen.reset();
     try {
       destroyIframe(panelId);
     } catch {
       /* destroy is idempotent; absorb errors */
     }
-  }, []);
+  }, [fullscreenPane, fullscreen.reset]);
 
   return (
-    <>
-      {confirmEl}
-      <DockWorkspace
-        layoutName={layoutName}
-        store={layoutStore}
-        className={className ?? 'dockview-theme-dark'}
-        missingComponent={MissingPanel}
-        canClosePanel={canClosePanel}
-        isDeferredPanelType={isDeferredPanelType}
-        onApiReady={onApiReady}
-        onApiDispose={onApiDispose}
-        onPanelRemoved={onPanelRemoved}
-        resetEventName="papercusp:dock-reset-layout"
-        loadEventName="papercusp:dock-load-layout"
-      />
-    </>
+    <PaneFullscreenContext.Provider value={fullscreenControls}>
+      <div ref={fullscreen.popupRef} data-testid="dock-fullscreen-surface"
+        data-fullscreen={fullscreen.maximized || undefined}
+        style={fullscreen.maximized
+          ? { position: 'fixed', inset: 0, zIndex: 8000, background: 'var(--bg)', display: 'flex', flexDirection: 'column' }
+          : { width: '100%', height: '100%', minHeight: 0 }}>
+        {confirmEl}
+        <DockWorkspace
+          layoutName={layoutName}
+          store={layoutStore}
+          className={className ?? 'dockview-theme-dark'}
+          missingComponent={MissingPanel}
+          canClosePanel={canClosePanel}
+          isDeferredPanelType={isDeferredPanelType}
+          onApiReady={onApiReady}
+          onApiDispose={onApiDispose}
+          onPanelRemoved={onPanelRemoved}
+          resetEventName="papercusp:dock-reset-layout"
+          loadEventName="papercusp:dock-load-layout"
+          rightHeaderActionsComponent={DockPaneFullscreenActions}
+        />
+      </div>
+    </PaneFullscreenContext.Provider>
   );
 }

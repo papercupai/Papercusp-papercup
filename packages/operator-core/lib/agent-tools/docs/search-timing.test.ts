@@ -40,4 +40,14 @@ describe('summarizeDocsLexicalTiming', () => {
   it('returns undefined when no recognized measurements are present', () => {
     expect(summarizeDocsLexicalTiming({ query: 'private' })).toBeUndefined();
   });
+
+  it('whitelists safe list-page phase details and omits unrecognized fields', () => {
+    expect(summarizeDocsLexicalTiming({
+      listPagesPhases: [
+        { component: 'starlight', phase: 'walk', state: 'completed', elapsedMs: 3.6, count: 600.8 },
+        { component: 'canonical-overlay', phase: 'canonical-read', state: 'shared', docId: 'private' },
+        { component: 'unknown', phase: 'query', state: 'completed', elapsedMs: 20 },
+      ],
+    })).toBe('docsLexicalTiming listParts=starlight.walk:completed:4ms:count=600,canonical-overlay.canonical-read:shared');
+  });
 });

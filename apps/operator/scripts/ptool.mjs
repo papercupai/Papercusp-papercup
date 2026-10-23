@@ -250,7 +250,22 @@ function resolveLauncherManagedStagingProxyCandidate(operatorUrl, env) {
  */
 export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = null) {
   const explicit = typeof explicitUrl === 'string' ? explicitUrl.trim() : '';
-  if (explicit) return [routeOperatorThroughProxy(explicit, env)];
+  if (explicit) {
+    const routed = routeOperatorThroughProxy(explicit, env);
+    try {
+      const pin = new URL(explicit);
+      const localHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(pin.hostname.toLowerCase());
+      // Keep the same-runtime staging proxy first, but retain the caller's
+      // exact :3170 pin as a pre-dispatch fallback if that proxy returns a
+      // typed upstream failure. Other explicit endpoints remain single-route.
+      if (routed !== explicit && pin.protocol === 'http:' && localHost && pin.port === '3170') {
+        return [routed, explicit];
+      }
+    } catch {
+      // Preserve malformed-URL diagnostics from the normal connection path.
+    }
+    return [routed];
+  }
 
   const primary = resolvePtoolOperatorBase(env);
   const candidates = [primary];
@@ -3502,8 +3517,9 @@ export async function connectWithOperatorCandidates(
       return { client, operatorUrl: liveOperatorUrl };
     } catch (error) {
       lastError = error;
+      const retryableLocalHttpFailure = isRetryableLocalHttpConnectFailure(error);
       const explicitHttpFailure = isExplicitHttpConnectFailure(error)
-        && !isRetryableLocalHttpConnectFailure(error);
+        && !retryableLocalHttpFailure;
       const isHttpNotFound = connectHttpStatusOf(error) === 404;
       const timedOutLocalAttempt = /^local operator connection attempt timed out/.test(errorDetail(error));
       const unavailableUdsEndpoint = isUdsEndpointUnavailable(error);
@@ -3511,7 +3527,7 @@ export async function connectWithOperatorCandidates(
       if (
         index === candidates.length - 1 ||
         (explicitHttpFailure && !permittedNotFoundFallback) ||
-        (!explicitHttpFailure && !isTransportFailure(error) && !timedOutLocalAttempt && !unavailableUdsEndpoint)
+        (!explicitHttpFailure && !isTransportFailure(error) && !timedOutLocalAttempt && !unavailableUdsEndpoint && !retryableLocalHttpFailure)
       ) {
         throw error;
       }

@@ -1405,4 +1405,26 @@ describe('implementation-independence covers falsifier observations and reposito
     expect(result.ratings['implementation-independence'].evidence).toContain('falsifier.observation');
     expect(result.ratings['implementation-independence'].evidence).toContain('falsifier.probeMethod is excluded');
   });
+
+  it.each([
+    ['Persisted draft or authenticated events are absent; live state/OS keychain changes; negative selector control passes.', 'pass'],
+    ['Persisted draft or authenticated events are absent. Live state/OS keychain changes. Negative selector control passes.', 'pass'],
+    ['Live state/OS keychain changes.', 'pass'],
+    ['Persisted draft is absent; Redis availability changes.', 'pass'],
+    ['Secrets are encrypted; the database is unavailable.', 'pass'],
+    ['The file is absent; 0600 is reported as the error code.', 'pass'],
+    ['Drafts are persisted in the OS keychain.', 'fail'],
+    ['Secrets are stored in a 0600 file.', 'fail'],
+    ['Secrets are mirrored to encrypted Postgres storage.', 'fail'],
+  ] as const)('confines storage prescriptions to one clause: %s', (text, expected) => {
+    for (const field of ['behavior', 'observation'] as const) {
+      const value = field === 'behavior'
+        ? { behavior: text }
+        : { behavior: 'The draft survives restart.', falsifier: { observation: text } };
+      const before = structuredClone(value);
+      const result = evaluateOne(value);
+      expect(result.ratings['implementation-independence'].rating, field).toBe(expected);
+      expect(value).toEqual(before);
+    }
+  });
 });

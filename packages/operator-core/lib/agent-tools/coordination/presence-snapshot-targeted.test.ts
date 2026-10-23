@@ -133,6 +133,7 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' 
 
 import {
   assemblePresenceSnapshot,
+  renderPresenceRebootstrapBlock,
   PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
   PRESENCE_SOURCE_LEG_TIMEOUT_MS,
   type PresenceSnapshotDiagnostic,
@@ -271,6 +272,38 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
     expect(snap.active.map((r) => r.ownerId)).toEqual(['su-aaa', 'su-bbb', 'su-ccc']);
     expect(snap.summary.active).toBe(2);
     expect(snap.summary.stale).toBe(1);
+  });
+
+  it('rebootstrap marks host-dependent state unknown without running host lookup or host conditions', async () => {
+    const owner = 'su-pty-rebootstrap';
+    const noHostDependentStateOwner = 'su-no-pty-role';
+    listPresenceMock.mockResolvedValue([
+      { ...row(owner, false), agentRole: 'su', source: 'psu' },
+      row(noHostDependentStateOwner, false),
+    ]);
+    wakeabilityMock.mockResolvedValue(new Map([
+      [owner, { wakeable: true, liveTurn: false }],
+      [noHostDependentStateOwner, { wakeable: true, liveTurn: false }],
+    ]));
+    findLiveHostAsyncMock.mockResolvedValue({ ownerId: owner, authBlocked: false } as { ownerId: string });
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {
+      includeDesktopEnrichment: false,
+      rebootstrapProjection: true,
+    });
+    const restored = snap.active.find((r) => r.ownerId === owner);
+    const unaffected = snap.active.find((r) => r.ownerId === noHostDependentStateOwner);
+
+    expect(findLiveHostAsyncMock).not.toHaveBeenCalled();
+    expect(readHostEventTailAsyncMock).not.toHaveBeenCalled();
+    expect(restored?.sessionState).toBeNull();
+    expect(restored?.confirmLiveness).toBe(true);
+    expect(unaffected?.sessionState).toBe('parked');
+    expect(unaffected?.confirmLiveness).toBe(false);
+    expect(snap.active).toHaveLength(2);
+    expect(snap.summary.byState).toMatchObject({ parked: 1, ended: 0, unknown: 1 });
+    expect(renderPresenceRebootstrapBlock(snap)).toContain('[liveness unknown]');
+    expect(renderPresenceRebootstrapBlock(snap)).toContain('su-no-pty-role [—]');
   });
 
   it('positive live psu host keeps a non-wakeable su row out of ended', async () => {

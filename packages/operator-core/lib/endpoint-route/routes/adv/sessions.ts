@@ -397,7 +397,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     home: os.homedir(),
   }));
   if (budget.level === 'refuse') throw new Error('target launch prompt already exhausts the selected context window');
-  const stableSource = await measure('port.acquire-source', () => service.acquireTrackedSessionSource(sourceRow));
+  const stableSource = await measure('port.acquire-source', () => service.acquireTrackedSessionSource(sourceRow, undefined, { measure }));
   const modelProvider = targetBackend === 'codex'
     ? 'openai'
     : targetBackend === 'claude' ? 'anthropic'

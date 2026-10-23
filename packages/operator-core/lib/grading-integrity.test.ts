@@ -1310,9 +1310,13 @@ describe('dispatchPendingGradingAudits', () => {
     );
     const brief = d.route.mock.calls[0]?.[0].brief ?? '';
     expect(brief).toContain("capability:git-evidence { op:'readFileAtCommit'");
-    expect(brief).toContain("tools:find { query:'capability:git-evidence', build:'staging' }");
-    expect(brief).toContain("Copy the returned servingGeneration unchanged and pass it plus build:'staging'");
-    expect(brief).toContain('If stale_tool_contract is returned, refresh from the same build and resume the exact cursor.');
+    expect(brief).toContain("tools:find { query:'capability:git-evidence', limit:1 }");
+    expect(brief).toContain('Copy the returned servingGeneration unchanged and pass it to every tools:invoke page request on that same runtime.');
+    // A retained evaluator uses an ephemeral port. Its main classification is
+    // independent of its pinned source; a staging selector blocks discovery.
+    expect(brief).toContain('Do not add a build selector');
+    expect(brief).not.toContain("build:'staging'");
+    expect(brief).toContain('If stale_tool_contract is returned, refresh from the same runtime and resume the exact cursor.');
     expect(brief).toContain('Preserve a transport failure as a retrieval failure; never treat it as absent evidence.');
     expect(brief).toContain(`code:run uses a default script budget of ${DEFAULT_SCRIPT_TIMEOUT_MS.toLocaleString('en-US')} ms`);
     expect(brief).toContain(`explicit timeoutSec can raise it to the ${FOREGROUND_TIMEOUT_CEILING_MS.toLocaleString('en-US')} ms`);

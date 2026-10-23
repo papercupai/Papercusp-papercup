@@ -5239,10 +5239,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const [{ readJournal }, { DREAM_ACTION_DECISION_PREFIX }, { GYM_ADMISSION_DECISION_PREFIX }] = await traceNamedQueryStage('dream-journal-dependencies-import', () => Promise.all([
           import('../journal-read'), import('../dream/dream-config'), import('../gym/autoloop-tick'),
         ]));
+        // Both decisions are normally written by the same bg-host. Scan that
+        // physical journal once, while retaining each consumer's own row cap.
+        // Distinct units remain independent sources with independent failures.
+        const sharedJournal = args.actionJournalUnit && args.actionJournalUnit === args.gymJournalUnit
+          ? readJournal({ units: [args.actionJournalUnit], since: `@${Date.parse(args.since!) / 1000}`,
+            until: `@${Date.parse(args.until!) / 1000}`,
+            grep: `(?:${DREAM_ACTION_DECISION_PREFIX}|${GYM_ADMISSION_DECISION_PREFIX})`, limit: 1000 })
+          : null;
+        const sourceJournal = (value: Awaited<ReturnType<typeof readJournal>>, prefix: string, limit: number) => {
+          const matching = value.entries.filter(entry => entry.message.includes(prefix));
+          const matched = matching.reduce((count, entry) => count + entry.repeat, 0);
+          const entries = matching.slice(-limit);
+          return { ...value, entries, matched: value.matched === null ? null : matched,
+            collapsed: entries.reduce((count, entry) => count + entry.repeat - 1, 0),
+            truncated: value.truncated || matched > limit,
+            // A clipped shared message can hide the other prefix after the cut.
+            // Neither source may infer absence from that incomplete message.
+            journalError: value.journalError ?? (value.entries.some(entry => entry.clipped) ? 'shared-journal-message-clipped' : null) };
+        };
         const captureJournal = (unit: string, grep: string, limit: number, label: string,
           stage: 'dream-action-journal' | 'dream-gym-journal') => traceNamedQueryStage(stage, () =>
-          withinJournalBudget(readJournal({ units: [unit], since: `@${Date.parse(args.since!) / 1000}`,
-            until: `@${Date.parse(args.until!) / 1000}`, grep, limit }), label))
+          withinJournalBudget(sharedJournal ? sharedJournal.then(value => sourceJournal(value, grep, limit))
+            : readJournal({ units: [unit], since: `@${Date.parse(args.since!) / 1000}`,
+              until: `@${Date.parse(args.until!) / 1000}`, grep, limit }), label))
             .then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
         const [journal, gymJournal] = await Promise.all([
           args.actionJournalUnit ? captureJournal(args.actionJournalUnit, DREAM_ACTION_DECISION_PREFIX, 20, 'dream-action-journal', 'dream-action-journal') : null,

@@ -9,10 +9,16 @@ const mocks = vi.hoisted(() => ({
   readPlanBySlug: vi.fn(),
   addDecisionOne: vi.fn(),
   loadConformanceReportPlans: vi.fn(),
+  runSpecConformanceSweep: vi.fn(),
+  productionSweepDeps: vi.fn(),
 }));
 
 vi.mock('./source', () => ({ readPlanBySlug: mocks.readPlanBySlug }));
 vi.mock('./add-decision', () => ({ addDecisionOne: mocks.addDecisionOne }));
+vi.mock('../../spec-conformance/sweep-action', () => ({
+  runSpecConformanceSweep: mocks.runSpecConformanceSweep,
+  productionSweepDeps: mocks.productionSweepDeps,
+}));
 vi.mock('../../spec-conformance/conformance-report', async (orig) => ({
   ...(await orig<typeof import('../../spec-conformance/conformance-report')>()),
   loadConformanceReportPlans: mocks.loadConformanceReportPlans,
@@ -21,7 +27,7 @@ vi.mock('./_ctx-opts', () => ({ ctxToPlanSourceOpts: async () => ({ workspaceId:
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'su-test' }) }));
 vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
-  harnessScopedCtx: (_harness: unknown, ctx: unknown) => ctx,
+  harnessScopedCtx: (harness: string | undefined, ctx: { harnessSlug?: string }) => ({ ...ctx, ...(harness ? { harnessSlug: harness } : {}) }),
 }));
 
 import tool, { appendResultFrom, ownerTurnVerificationFrom, verifyOwnerTurnRef } from './conformance';
@@ -150,6 +156,45 @@ describe('plans:conformance handler', () => {
     expect(await call({ op: 'propose-deviation', requirement: 'R-2', reason: 'x' })).toMatchObject({ error: 'invalid_args' });
     expect(await call({ op: 'approve-deviation', slug: 'p', proposal: 'D-001' })).toMatchObject({ error: 'invalid_args' });
     expect(mocks.addDecisionOne).not.toHaveBeenCalled();
+  });
+});
+
+describe("plans:conformance op:'run'", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.readPlanBySlug.mockResolvedValue({ row: { content: PLAN, harnessSlug: 'h' } });
+    mocks.productionSweepDeps.mockReturnValue({});
+    mocks.runSpecConformanceSweep.mockResolvedValue({
+      scanned: 1, candidates: 1, ran: [{ key: 'h/p', ok: true, summary: { drifting: ['R-2'] } }],
+      skipped: [], deferred: [], idle: 0, footprintProbeErrors: [],
+    });
+  });
+
+  it('reads one plan in the resolved scope and returns its exact runner outcome', async () => {
+    const out = await call({ op: 'run', harness: 'h', slug: 'p' });
+    expect(out).toMatchObject({ ok: true, op: 'run', harnessSlug: 'h', planSlug: 'p', ran: [{ summary: { drifting: ['R-2'] } }] });
+    expect(mocks.readPlanBySlug).toHaveBeenCalledExactlyOnceWith('p', { workspaceId: 'ws', harnessSlug: 'h' });
+    expect(mocks.productionSweepDeps).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'ws' });
+    const [opts, deps] = mocks.runSpecConformanceSweep.mock.calls[0];
+    expect(opts).toEqual({ target: { harnessSlug: 'h', planSlug: 'p' } });
+    expect(await deps.listPlans()).toEqual([{ harnessSlug: 'h', planSlug: 'p', content: PLAN }]);
+    expect(mocks.loadConformanceReportPlans).not.toHaveBeenCalled();
+    expect(mocks.addDecisionOne).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing slug or missing plan without starting a sweep', async () => {
+    expect(await call({ op: 'run' })).toMatchObject({ ok: false, error: 'invalid_args' });
+    expect(await call({ op: 'run', harness: 'all', slug: 'p' })).toMatchObject({ ok: false, error: 'invalid_args' });
+    mocks.readPlanBySlug.mockResolvedValue(null);
+    expect(await call({ op: 'run', slug: 'missing' })).toMatchObject({ ok: false, error: 'plan_not_found' });
+    expect(mocks.runSpecConformanceSweep).not.toHaveBeenCalled();
+  });
+
+  it('preserves a failed or skipped target as an unsuccessful tool result', async () => {
+    mocks.runSpecConformanceSweep.mockResolvedValue({ ran: [{ key: 'h/p', ok: false, summary: { error: 'boom' } }] });
+    expect(await call({ op: 'run', slug: 'p' })).toMatchObject({ ok: false, ran: [{ summary: { error: 'boom' } }] });
+    mocks.runSpecConformanceSweep.mockResolvedValue({ ran: [], skipped: [{ key: 'h/p', reason: 'no-requirements' }] });
+    expect(await call({ op: 'run', slug: 'p' })).toMatchObject({ ok: false, skipped: [{ reason: 'no-requirements' }] });
   });
 });
 

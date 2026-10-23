@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { frozenRepairLatency } from './release/frozen-candidate-repair-queue';
+import { buildTestPassReuseHealth } from './release/test-pass-reuse-report';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { GATE_ABORT_DETAIL_LIVENESS_MARKER } from './release/gate-abort-status';
@@ -2219,6 +2220,10 @@ describe('gitPipelinePosition (P-002)', () => {
 
   it('D-013: exact judged-SHA promotion stays green while staging is ahead after absorption', async () => {
     const judged = '1'.repeat(40);
+    const reuse = buildTestPassReuseHealth(
+      'TEST_PASS_REUSE_TOTAL tasks=1 candidates=20 reused=12 audited=1 minSavedTestMs=50 unmeasured=0',
+      judged, Date.now() - 5_000,
+    );
     const mainPin = '2'.repeat(40);
     const stagingHead = '3'.repeat(40);
     const pathCommit = '4'.repeat(40);
@@ -2244,6 +2249,7 @@ describe('gitPipelinePosition (P-002)', () => {
               consecutiveReds: 0,
               observedCandidate: judged,
               lastMainPin: mainPin,
+              testPassReuse: reuse,
               verdictObservedAtMs: Date.now() - 1_000,
             },
             'synced',
@@ -2256,6 +2262,10 @@ describe('gitPipelinePosition (P-002)', () => {
     );
 
     expect(res.verdictProvenance.mainBehindStaging).toBe(true);
+    expect(res.gate.ownerBrief?.testProgress.passReuse).toMatchObject({
+      status: 'recorded', judgedSha: judged, selectedForReuse: 12, candidates: 20,
+      recordedAtMs: reuse!.recordedAtMs, consumerSkippedFiles: null,
+    });
     expect(res.gate.ownerBrief?.answer).toBe('green');
     expect(res.gate.ownerBrief?.promotion).toMatchObject({
       judgedSha: judged,

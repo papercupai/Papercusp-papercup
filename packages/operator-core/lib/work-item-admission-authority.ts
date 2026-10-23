@@ -40,6 +40,12 @@ export const admissionCredentialDigest = (bytes: string | Buffer): string =>
 
 export class AdmissionAuthorityRefused extends Error {}
 
+/** Policy I/O failure is not a final authority verdict. Let the existing
+ * promoter retry the queued request on a later tick, with fresh authorization. */
+export class AdmissionAuthorityUnavailable extends Error {
+  readonly code = 'policy-unavailable';
+}
+
 /** Called on the authenticated dispatch context, never on caller-supplied args. */
 export function bindAdmissionAuthority(
   ctx: UnifiedToolContext & AdmissionAuthorityContext,
@@ -146,6 +152,12 @@ export async function authorizeAdmissionReplay(
     }
     const verdict = await runWithWorkspaceIfConcrete(scope.workspaceId, () =>
       preflightDispatchStack(tool, name, input, ctx, PROJECTED_DEPS));
-    if (!verdict.allowed) throw new AdmissionAuthorityRefused(`${name}: ${verdict.error?.message ?? 'current authority denied'}`);
+    if (!verdict.allowed) {
+      const message = `${name}: ${verdict.error?.message ?? 'current authority denied'}`;
+      if (verdict.error?.meta?.kernelCode === 'policy-unavailable') {
+        throw new AdmissionAuthorityUnavailable(message);
+      }
+      throw new AdmissionAuthorityRefused(message);
+    }
   }
 }

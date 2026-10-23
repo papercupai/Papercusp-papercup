@@ -67,7 +67,10 @@ export class PosthogSpanExporter implements SpanExporter {
   private async deliver(spans: ReadableSpan[]) {
     if (this.closed) throw new Error('exporter_closed');
     const config = await this.readConfig();
-    const allowed = config.allowed ? spans.filter(span => !config.consentSince || millis(span.startTime) >= config.consentSince) : [];
+    // The persisted grant uses millisecond precision, while OTel starts have
+    // submillisecond precision. Exclude the entire grant millisecond: work
+    // collected just before the grant must not appear newer than its rounded epoch.
+    const allowed = config.allowed ? spans.filter(span => !config.consentSince || Math.floor(millis(span.startTime)) > config.consentSince) : [];
     this.counters.consentDroppedSpans += spans.length - allowed.length;
     if (!allowed.length) return;
     const url = new URL('/batch/', config.host);

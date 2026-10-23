@@ -8,6 +8,8 @@ import fastGlob from 'fast-glob';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import ts from 'typescript';
+import { detectBroadRepoTreeScanOffThread, TREE_SCAN_MAX_REQUESTS } from '../../cpu-task-worker';
+import { mapWithConcurrency } from '../../gym/concurrency';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
 import {
@@ -410,31 +412,7 @@ async function expandedRepoSourcePathsAtRoot(
  * or glob read, and a traversal helper (`walk`, `scanTree`, ...).  AST identifiers keep
  * comments and string fixtures from self-triggering this guard.
  */
-export function detectBroadRepoTreeScan(source: string): boolean {
-  const file = ts.createSourceFile('repo-measurement.test.ts', source, ts.ScriptTarget.Latest, true);
-  let hasRootCollection = false;
-  let hasDirectoryRead = false;
-  let hasTraversal = false;
-  const expressionName = (expression: ts.Expression): string | null => {
-    if (ts.isIdentifier(expression)) return expression.text;
-    if (ts.isPropertyAccessExpression(expression)) return expression.name.text;
-    return null;
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node)) {
-      const name = node.text.toUpperCase();
-      if (/ROOTS?$|(?:DIRS|DIRECTORIES)$/.test(name) && name.length > 4) hasRootCollection = true;
-      if (/^(?:WALK|SCAN(?:TREE|DIRECTORY|FILES)?|VISIT)$/i.test(node.text)) hasTraversal = true;
-    }
-    if (ts.isCallExpression(node)) {
-      const name = expressionName(node.expression);
-      if (name && /^(?:READDIR|READDIRSYNC|GLOB|GLOBSYNC|FASTGLOB)$/i.test(name)) hasDirectoryRead = true;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return hasRootCollection && hasDirectoryRead && hasTraversal;
-}
+export const detectBroadRepoTreeScan = detectBroadRepoTreeScanOffThread;
 
 async function readCommittedMeasurementText(
   root: string,
@@ -458,13 +436,22 @@ async function broadRepoTreeScanGuard(
   root: string,
   recipe: RepoFilesEvidenceMeasurement,
   commit: string | null,
+  committedScans: Map<string, Promise<boolean>>,
 ): Promise<string | null> {
   if (recipe.sourceGlobs?.length || recipe.treeInstrumentKey || !recipe.testPaths?.length) return null;
   for (const path of recipe.testPaths) {
-    const source = await (commit
-      ? readCommittedMeasurementText(root, commit, path)
-      : readFile(resolve(root, path), 'utf8')).catch(() => null);
-    if (source !== null && detectBroadRepoTreeScan(source)) {
+    const key = commit ? JSON.stringify([root, commit, path]) : null;
+    let scan = key ? committedScans.get(key) : undefined;
+    if (!scan) {
+      scan = (async () => {
+        const source = await (commit
+          ? readCommittedMeasurementText(root, commit, path)
+          : readFile(resolve(root, path), 'utf8')).catch(() => null);
+        return source !== null && await detectBroadRepoTreeScan(source);
+      })();
+      if (key) committedScans.set(key, scan);
+    }
+    if (await scan) {
       return `repo_measurement_broad_tree_scan_requires_source_globs:${path}`;
     }
   }
@@ -4225,8 +4212,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   // starts; binding-specific runtime and adequacy checks still run below. A rejected
   // measurement remains rejected for every identical binding, never a cached pass.
   const committedMeasurements = new Map<string, Promise<DetailedRepoEvidenceMeasurement>>();
-  const serverMeasurements = await Promise.all(
-    rows.map(async (row, index) => {
+  const committedTreeScans = new Map<string, Promise<boolean>>();
+  // Each binding can submit an AST scan before its file measurement. Respect the
+  // scanner's existing admission bound instead of rejecting our own later rows.
+  const serverMeasurements = await mapWithConcurrency(
+    rows,
+    TREE_SCAN_MAX_REQUESTS,
+    async (row, index) => {
       const bindingStartedAt = diagnostics ? Date.now() : 0;
       // A REPLAY RE-MEASURES UNLESS THE CALLER HANDS US SERVER-MEASURED PROOF.
       // `currentProvenance:'server-measured'` is a caller saying "this pinned tuple is
@@ -4297,6 +4289,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             measurementRoot,
             recipe,
             measuredAtCommit,
+            committedTreeScans,
           );
           if (broadTreeScanRefusal) throw new Error(broadTreeScanRefusal);
           // Same single read as before; the per-file hashes it now also returns are what
@@ -4430,7 +4423,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           reason: (error instanceof Error ? error.message : String(error)).slice(0, 240),
         };
       }
-    }),
+    },
   );
   recordPhase('serverMeasurements', serverMeasurementsStartedAt);
   // Post-read half of the batch fence: a probe that locked a binding's paths while the

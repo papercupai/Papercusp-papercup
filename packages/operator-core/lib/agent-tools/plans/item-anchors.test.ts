@@ -40,6 +40,21 @@ describe('plan item anchors', () => {
     expect(await declarationContentHash(source.replace('other = 2', 'other = 3'), symbol)).toBe(before);
     expect(await declarationContentHash(source.replace('return 1', 'return 2'), symbol)).not.toBe(before);
   });
+  it.each([
+    ["'a  b'", "'a b'"],
+    ['`a  b`', '`a b`'],
+    ['`a  ${1}  b`', '`a ${1} b`'],
+    ['/a  b/', '/a b/'],
+  ])('preserves meaningful whitespace in %s while ignoring surrounding formatting', async (before, after) => {
+    const { symbol } = await fixture();
+    const original = `export function planned() { return ${before}; }\n`;
+    const formatted = `export function planned() {\n  return    ${before};\n}\n`;
+    const changed = `export function planned() { return ${after}; }\n`;
+    const originalHash = await declarationContentHash(original, symbol);
+    expect(originalHash).not.toBeNull();
+    expect(await declarationContentHash(formatted, symbol)).toBe(originalHash);
+    expect(await declarationContentHash(changed, symbol)).not.toBe(originalHash);
+  });
   it('stores a file content hash, and keeps missing paths and symbols explicit', async () => {
     const f = await fixture();
     const anchors = await resolvePlanItemAnchors([{ path: 'code.ts' }, { path: 'missing.ts' }, { symbol: 'missing' }], { ...f, budgetMs: 5000 });
@@ -64,6 +79,21 @@ describe('plan item anchors', () => {
     await writeFile(join(f.root, 'consumer.ts'), 'export const noCall = 1;\n');
     expect((await resolvePlanItemAnchors([{ symbol: 'planned' }], { ...f, budgetMs: 5000 }))[0])
       .toMatchObject({ resolution: 'unknown', unknownReason: 'no-snapshot', consumers: [], tests: [] });
+  });
+  it('corroborates returned test paths without spending the proof cap on unrelated import branches', async () => {
+    const f = await fixture();
+    const unrelated = Array.from({ length: 600 }, (_, index) => `unrelated-${index}.ts`);
+    const snapshot = { ...f.snapshot, importers: new Map(f.snapshot.importers), hashes: new Map(f.snapshot.hashes) };
+    snapshot.importers.set('code.ts', ['consumer.ts', ...unrelated]);
+    for (const path of unrelated) snapshot.hashes.set(path, hash('unrelated snapshot branch'));
+    // These branches do not reach a returned test and need not even remain on disk.
+    const [anchor] = await resolvePlanItemAnchors([{ symbol: 'planned' }], { ...f, snapshot, budgetMs: 5000 });
+    expect(anchor).toMatchObject({ resolution: 'resolved', symbolId: 'fixture:planned',
+      consumers: [{ path: 'consumer.ts', line: 4 }], tests: ['flow.test.ts'] });
+    // The selected transitive test is still positive evidence and must be corroborated.
+    await writeFile(join(f.root, 'flow.test.ts'), 'export const noReachability = true;\n');
+    expect((await resolvePlanItemAnchors([{ symbol: 'planned' }], { ...f, snapshot, budgetMs: 5000 }))[0])
+      .toMatchObject({ resolution: 'unknown', unknownReason: 'no-snapshot', tests: [] });
   });
   it('rejects traversal and symlinks outside the repository', async () => {
     const f = await fixture(); const outside = await fixture();

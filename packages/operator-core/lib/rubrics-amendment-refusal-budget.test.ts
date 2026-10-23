@@ -23,6 +23,19 @@ describe('amendmentSourceRefusal — bounded, actionable malformed-source refusa
     ])).toBe(`${PREFIX}:bar_requirement_parse_failed: malformed requirement record: **R-2 Second outcome**`);
   });
 
+  it('identifies incomplete canonical sources within the same diagnostic budget', () => {
+    const prefix = 'acceptance_bar_amendment_preview_source_incomplete';
+    const message = amendmentSourceRefusal(prefix, [
+      { code: 'bar_snapshot_source_unavailable', source: 'evidence', detail: `read failed\n${'x'.repeat(2_000)}` },
+      { code: 'bar_snapshot_source_truncated', source: 'lineage', detail: 'lineage read reached its 500-row contract limit' },
+    ]);
+    expect(message).toContain(`${prefix}:bar_snapshot_source_unavailable: evidence: read failed `);
+    expect(message).toContain('; bar_snapshot_source_truncated: lineage: lineage read reached its 500-row contract limit');
+    expect(message).not.toContain('\n');
+    expect(message).not.toContain('x'.repeat(budget.maxDetailChars));
+    expect(message.length).toBeLessThanOrEqual(budget.maxMessageChars);
+  });
+
   it('flattens a multi-line parser detail onto one line and clips it to maxDetailChars', () => {
     const schemaError = `[\n  {\n    "code": "invalid_type",\n    "path": ["acceptance"],\n    "message": "${'y'.repeat(2_000)}"\n  }\n]`;
     const message = amendmentSourceRefusal(PREFIX, [{ code: 'bar_requirement_parse_failed', barKey: 'R-2', detail: schemaError }]);

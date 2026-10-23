@@ -65,13 +65,15 @@ export const INDEX_FAULT_TRACKING_ITEM = 'WI-10004911';
 /**
  * Reads the auditd watch (key `papercusp-gitindex`, /etc/audit/rules.d/60-papercusp-gitindex.rules)
  * that can record processes writing `.git/index` / `index.lock` while its sink is live.
+ * Force the configured log source: ausearch otherwise reads piped stdin in noninteractive
+ * jobs, where an empty pipe produces a false no-match despite persisted audit events.
  * An empty search cannot establish that no writer exists. `--start recent` is the last 10
  * minutes — the banner fires while the index is torn, so the write that tore it is in that window.
  * Do NOT swap in an explicit `--start 'MM/DD/YYYY HH:MM:SS'`: on this box that form returned 0
  * records for a window the raw log proved held thousands (measured 2026-10-01).
  */
 export const INDEX_FAULT_CAPTURE_COMMAND =
-  "sudo -n ausearch -k papercusp-gitindex -i --start recent | grep -E '^type=(SYSCALL|PATH|PROCTITLE)'";
+  "sudo -n ausearch --input-logs -k papercusp-gitindex -i --start recent | grep -E '^type=(SYSCALL|PATH|PROCTITLE)'";
 
 export const INDEX_AUDIT_SINK_STATE_PATH = '/run/auditd.state';
 export const INDEX_AUDIT_SINK_PROBE_COMMAND = 'node scripts/lib/git-index-fault.mjs --audit-sink';

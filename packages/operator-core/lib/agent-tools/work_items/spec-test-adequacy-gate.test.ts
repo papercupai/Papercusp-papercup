@@ -318,6 +318,85 @@ function mechanicalDeps() {
   };
 }
 
+describe('item-close contribution boundary', () => {
+  function contributionWorld() {
+    const deps = mechanicalDeps();
+    const covering = clause({ createdBy: 'independent-contract-author', falsifier: { observation: 'Acknowledged event replayed.' } });
+    const projection = clause({ specId: 'AUTO-BAR-R-9-P-003', contentHash: 'projection-r9',
+      sourceValId: null, requiredTestLayers: ['e2e'], sourceBar: {
+        barKey: 'R-9', barHash: 'bar-r9', barSetHash: 'bars', rubricSlug: 'reconnect-acceptance',
+        rubricRevision: 3, evidencePlane: 'deployed',
+      } });
+    const pin = (c: SpecClauseRevision) => ({ planSlug: c.planSlug, specId: c.specId,
+      revision: c.revision, contentHash: c.contentHash });
+    const review = listedEvidence({ id: 700, evidenceKind: 'independent-verification',
+      evidenceRef: 'review:contract-contribution', createdBy: 'outside-reviewer', verifiesBindingId: 1,
+      details: { itemCloseContribution: { schemaVersion: 1, workItemId: WORK_ITEM.id, planItemId: 'P-003',
+        requirementKey: 'R-9', barHash: 'bar-r9', projection: pin(projection), covering: pin(covering),
+        proofCohort: deps.rows.map(row => ({ bindingId: row.id, bindingFingerprint: row.bindingFingerprint })),
+        itemClose: { behavior: covering.behavior, falsifier: covering.falsifier!.observation,
+          requiredTestLayers: covering.requiredTestLayers, requiredEvidence: covering.requiredEvidence,
+          mutationRequired: covering.mutationRequired, evidencePlane: 'tree' },
+        disposition: 'defer-parent-proof-to-plan-shipment' } } });
+    deps.listClauses.mockResolvedValue([projection, covering]);
+    const rows = [...deps.rows, review];
+    deps.listEvidence.mockResolvedValue(rows);
+    const fullDeps = { ...deps, contributionDeferral: {
+      mappedProjection: vi.fn(async () => true), independent: vi.fn(async () => true),
+    } };
+    const input = { workItem: WORK_ITEM, workspaceId: 'test-workspace', attestation: ATTESTATION,
+      completion: { contributesTo: ['R-9'], discharges: [] as string[] } };
+    return { input, deps: fullDeps, covering, projection, review, rows,
+      run: () => specTestAdequacyCompletionGate(input, fullDeps) };
+  }
+
+  it('unblocks the next implementation item with proven item scope and a distinct deferred BAR receipt', async () => {
+    const w = contributionWorld();
+    const result = await w.run();
+    expect(result).toMatchObject({ ok: true, checked: ['SPEC-003-01@1'], deferredContributions: [{
+      requirementKey: 'R-9', projection: { specId: 'AUTO-BAR-R-9-P-003' },
+      covering: { specId: 'SPEC-003-01' }, finalGate: 'plan-shipment', evidencePlane: 'tree',
+    }] });
+    expect(result.exempted).toBeUndefined();
+    expect(result.checked).not.toContain('AUTO-BAR-R-9-P-003@1');
+  });
+
+  it.each(['discharge', 'missing-review', 'missing-cover', 'unproven-cover', 'weakened-cover', 'unmapped'] as const)(
+    'still refuses %s', async (mode) => {
+      const w = contributionWorld();
+      if (mode === 'discharge') { w.input.completion.contributesTo = []; w.input.completion.discharges = ['R-9']; }
+      if (mode === 'missing-review') w.deps.listEvidence.mockResolvedValue(w.deps.rows);
+      if (mode === 'missing-cover') w.deps.listClauses.mockResolvedValue([w.projection]);
+      if (mode === 'unproven-cover') w.deps.listEvidence.mockResolvedValue([w.rows[0]!, w.review]);
+      if (mode === 'weakened-cover') w.covering.requiredTestLayers = ['static'];
+      if (mode === 'unmapped') w.deps.contributionDeferral.mappedProjection.mockResolvedValue(false);
+      const result = await w.run();
+      expect(result.ok).toBe(false);
+      expect(result.deferredContributions).toBeUndefined();
+    },
+  );
+
+  it('refuses a conflicting declaration even when proof is otherwise adequate', async () => {
+    const w = contributionWorld(); w.input.completion.discharges = ['R-9'];
+    expect(await w.run()).toMatchObject({ ok: false, reason: expect.stringContaining('both') });
+  });
+
+  it('refuses when cited row A is inadequate although unreviewed cohort B earns ordinary adequacy', async () => {
+    const w = contributionWorld();
+    const relation = w.review.details.itemCloseContribution as { proofCohort: { bindingId: number; bindingFingerprint: string }[] };
+    relation.proofCohort = [relation.proofCohort[0]!];
+    expect(await w.run()).toMatchObject({ ok: false, reason: expect.stringContaining('no caught mutation probe') });
+  });
+
+  it('does not defer an unrelated additional BAR', async () => {
+    const w = contributionWorld();
+    w.deps.listClauses.mockResolvedValue([w.covering, w.projection,
+      { ...w.projection, specId: 'AUTO-BAR-R-8-P-003', contentHash: 'other-projection',
+        sourceBar: { ...w.projection.sourceBar!, barKey: 'R-8' } }]);
+    expect(await w.run()).toMatchObject({ ok: false, reason: expect.stringContaining('AUTO-BAR-R-8-P-003') });
+  });
+});
+
 describe('test-checked completion uses mechanical adequacy', () => {
   it('completes with passing named tests and a caught mutant without reading judge cards', async () => {
     const deps = mechanicalDeps();

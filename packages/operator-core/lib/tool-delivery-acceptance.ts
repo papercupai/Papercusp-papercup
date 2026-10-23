@@ -1,7 +1,12 @@
 /** Executable R-6/R-9 measurements; reuse the LLM ledger and its existing AJV oracle. */
 import { getOrgPg } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
+import { getBuildInfo } from './build-info';
 import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
 import { buildOracleSchemaIndex, r6PrimaryVerdict, type OracleToolCall } from './llm-testing/r6-malformed-call-oracle';
 
@@ -30,6 +35,12 @@ export interface ToolDeliveryExperiment {
   scenarios: readonly string[];
   /** A frozen preregistration, not definitions reconstructed from today's registry. */
   manifestContract?: ToolDeliveryManifestContract;
+  executionContract?: {
+    registeredAt: string;
+    replicationsPerArm: number;
+    neverRetryMeasuredReplication: boolean;
+    armOrder: readonly { scenario: string; arms: readonly string[] }[];
+  };
 }
 export const HISTORICAL_TOOL_DELIVERY_EXPERIMENT: ToolDeliveryExperiment = {
   id: 'session-tool-delivery-ab-20261021', arms: TOOL_DELIVERY_ARMS, scenarios: TOOL_DELIVERY_SCENARIOS,
@@ -37,7 +48,8 @@ export const HISTORICAL_TOOL_DELIVERY_EXPERIMENT: ToolDeliveryExperiment = {
 /** Add a distinct candidate only AFTER transport proof and plan preregistration. */
 export const TOOL_DELIVERY_EXPERIMENTS: Readonly<Record<string, ToolDeliveryExperiment>> = {
   [HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id]: HISTORICAL_TOOL_DELIVERY_EXPERIMENT,
-  [candidatePreregistration.experiment.id]: candidatePreregistration.experiment as unknown as ToolDeliveryExperiment,
+  [candidatePreregistration.experiment.id]: { ...candidatePreregistration.experiment,
+    executionContract: { registeredAt: candidatePreregistration.createdAt, ...candidatePreregistration.configuration } } as unknown as ToolDeliveryExperiment,
 };
 
 export function toolDeliveryExperiment(id = HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id): ToolDeliveryExperiment {
@@ -122,6 +134,10 @@ export interface ToolDeliveryRun {
   transcript_norm_json: unknown;
   raw_events?: unknown;
   transcript_raw_zstd?: Buffer | null;
+  started_at?: string | Date;
+  finished_at?: string | Date | null;
+  matrix_group_id?: string | null;
+  matrix_index?: number | null;
 }
 type Verdict = 'pass' | 'fail' | 'unknown';
 export interface ToolDeliveryMeasurement {
@@ -137,6 +153,133 @@ export interface ToolDeliveryMeasurement {
   unmeasuredRunIds: string[];
   oracle?: ReturnType<typeof r6PrimaryVerdict>;
   limits: string[];
+  custody?: { verified: boolean; reason: string; privateOriginalSha256?: string; sourceFiles?: string[] };
+}
+
+/** Read ALL unique candidate variants, then verify order; a caller window cannot select replications. */
+function validateExecutionOrder(rows: readonly ToolDeliveryRun[], experiment: ToolDeliveryExperiment): string | undefined {
+  if (!experiment.manifestContract) return;
+  const contract = experiment.executionContract;
+  if (!contract || !Number.isFinite(Date.parse(contract.registeredAt)) || contract.replicationsPerArm !== 3 ||
+      contract.neverRetryMeasuredReplication !== true || digest(contract.armOrder.map(block => block.scenario)) !== digest(experiment.scenarios) ||
+      contract.armOrder.some(block => digest([...block.arms].sort()) !== digest(['compact', 'full']))) {
+    return 'Missing or invalid preregistered execution order and registration anchor.';
+  }
+  const expected = contract.armOrder.flatMap(block => block.arms.flatMap(arm => [0, 1, 2].map(index =>
+    ({ scenario: block.scenario, variant: arm === 'compact' ? experiment.arms.compactArm : experiment.arms.fullArm, index }))));
+  if (rows.length !== expected.length) return 'The entire candidate population must contain exactly thirty unretried runs.';
+  const time = (value: string | Date | null | undefined) => value == null ? NaN : new Date(value).getTime();
+  if (rows.some(row => !Number.isFinite(time(row.started_at)) || !Number.isFinite(time(row.finished_at)))) {
+    return 'Missing candidate chronology; unfinished attempts cannot disappear.';
+  }
+  const chronological = [...rows].sort((a, b) => time(a.started_at) - time(b.started_at));
+  const groups = new Set<string>();
+  let previousStart = -Infinity, previousEnd = Date.parse(contract.registeredAt), group: string | null | undefined;
+  for (const [i, row] of chronological.entries()) {
+    const slot = expected[i]!, start = time(row.started_at), end = time(row.finished_at);
+    if (start <= previousStart || start < previousEnd || end < start || row.scenario_id !== slot.scenario ||
+        row.variant !== slot.variant || row.matrix_index !== slot.index || !row.matrix_group_id) {
+      return 'Candidate chronology, arm order or matrix replication index differs from preregistration.';
+    }
+    if (slot.index === 0) {
+      group = row.matrix_group_id;
+      if (groups.has(group)) return 'A matrix group was reused across candidate blocks.';
+      groups.add(group);
+    } else if (group !== row.matrix_group_id) return 'A candidate block contains a retried or replaced matrix group.';
+    previousStart = start; previousEnd = end;
+  }
+}
+
+type Preregistration = typeof candidatePreregistration & { measurementAmendment?: {
+  decisionRef: string; registeredAt: string;
+  sourceReplacements: Record<string, { originalSha256: string; sha256: string }>;
+  addedFiles: Record<string, string>;
+} };
+/** Private capture remains immutable. Only separately preregistered measurement source can be repinned. */
+export function verifyToolDeliverySourceCustody(input: {
+  registration?: Preregistration;
+  privateCapture: Buffer;
+  readSource: (path: string, ref?: string) => Buffer;
+  buildSha: string | null;
+}): NonNullable<ToolDeliveryMeasurement['custody']> {
+  const registration: Preregistration = input.registration ?? candidatePreregistration;
+  const sha = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
+  const privateOriginalSha256 = sha(input.privateCapture);
+  const sourceFiles: string[] = [];
+  const bad = (reason: string) => ({ verified: false, reason, privateOriginalSha256, sourceFiles });
+  try {
+    if (privateOriginalSha256 !== registration.capture.privateCapture.originalSha256) return bad('Private original capture SHA mismatch.');
+    const frozen = JSON.parse(input.privateCapture.toString('utf8'));
+    if (digest(frozen.experiment) !== digest(registration.experiment) || digest(frozen.configuration) !== digest(registration.configuration) ||
+        digest({ ...frozen.sourcePins, scenarioPaths: registration.sourcePins.scenarioPaths }) !== digest(registration.sourcePins)) {
+      return bad('Portable treatment differs from the private original.');
+    }
+    for (const arm of ['compact', 'full'] as const) {
+      const { systemPromptText, ...delta } = frozen.variants[arm].configDelta;
+      if (digest(delta) !== digest(registration.variants[arm].configDelta) || frozen.variants[arm].id !== registration.variants[arm].id ||
+          typeof systemPromptText !== 'string' || sha(systemPromptText) !== registration.variants[arm].systemPromptTextSha256 ||
+          digest(systemPromptText) !== registration.experiment.manifestContract.systemSha256) return bad('Private prompt or variant equality failed.');
+    }
+    for (const [scenario, path] of Object.entries(registration.sourcePins.scenarioPaths)) {
+      if (!String(frozen.sourcePins.scenarioPaths[scenario]).endsWith(`/${path}`) && frozen.sourcePins.scenarioPaths[scenario] !== path) {
+        return bad('Portable scenario source differs from the private original.');
+      }
+      if (sha(input.readSource(path)) !== registration.experiment.manifestContract.scenarioHashes[scenario as keyof typeof registration.experiment.manifestContract.scenarioHashes]) {
+        return bad(`Scenario source custody mismatch: ${path}`);
+      }
+    }
+    const amendment = registration.measurementAmendment;
+    const allowed = ['packages/operator-core/lib/tool-delivery-acceptance.ts', 'packages/operator-core/lib/scorecards.ts'];
+    if (!amendment || !amendment.addedFiles['packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts'] ||
+        !amendment.sourceReplacements['packages/operator-core/lib/tool-delivery-acceptance.ts'] ||
+        !/^deterministic-tool-definition-delivery-2026-09-21#D-\d+$/.test(amendment.decisionRef) || !Number.isFinite(Date.parse(amendment.registeredAt)) ||
+        Object.keys(amendment.sourceReplacements).some(path => !allowed.includes(path)) ||
+        Object.keys(amendment.addedFiles).some(path => path !== 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts')) {
+      return bad('Missing or invalid measurement-only amendment; original treatment remains frozen.');
+    }
+    if (!input.buildSha || !/^[a-f0-9]{7,40}$/.test(input.buildSha)) return bad('Loaded measurement build identity is unavailable.');
+    for (const [path, originalSha256] of Object.entries(registration.sourcePins.files)) {
+      const replacement = amendment?.sourceReplacements[path];
+      if (replacement && replacement.originalSha256 !== originalSha256) return bad(`Original measurement source pin changed: ${path}`);
+      const expected = replacement?.sha256 ?? originalSha256;
+      // The runner's generated catalog is intentionally loaded from the frozen commit.
+      const frozenModule = path === 'apps/operator/scripts/tool-delivery.generated.mjs';
+      if (sha(input.readSource(path, frozenModule ? registration.sourcePins.head : undefined)) !== expected ||
+          (!frozenModule && sha(input.readSource(path, input.buildSha)) !== expected)) return bad(`Source custody mismatch: ${path}`);
+      sourceFiles.push(path);
+    }
+    for (const [path, expected] of Object.entries(amendment?.addedFiles ?? {})) {
+      if (sha(input.readSource(path)) !== expected || sha(input.readSource(path, input.buildSha)) !== expected) return bad(`Measurement source custody mismatch: ${path}`);
+      sourceFiles.push(path);
+    }
+    return { verified: true, reason: 'Private original, unchanged treatment and pinned measurement sources verified.', privateOriginalSha256, sourceFiles };
+  } catch { return bad('Private capture or pinned source could not be verified.'); }
+}
+
+/** The once-only runner's durable marker and complete receipt bind this population to its first execution. */
+export function validateToolDeliveryBatchReceipt(rows: readonly ToolDeliveryRun[], started: unknown, receipt: unknown,
+  registration: Preregistration = candidatePreregistration): string | undefined {
+  const marker = object(started), amendment = registration.measurementAmendment;
+  const markerAt = typeof marker.at === 'string' ? Date.parse(marker.at) : NaN;
+  if (!amendment || !Number.isFinite(markerAt) || markerAt < Date.parse(amendment.registeredAt) ||
+      marker.experimentId !== registration.experiment.id || marker.privateSha256 !== registration.capture.privateCapture.originalSha256) {
+    return 'Missing or invalid once-only execution marker after measurement preregistration.';
+  }
+  if (!Array.isArray(receipt) || receipt.length !== 10 || rows.length !== 30 ||
+      rows.some(row => !row.started_at || new Date(row.started_at).getTime() < markerAt)) return 'Incomplete or earlier candidate execution population.';
+  const expected = registration.configuration.armOrder.flatMap(block => block.arms.map(arm => ({ scenario: block.scenario, arm })));
+  const ids: string[] = [];
+  for (const [i, raw] of receipt.entries()) {
+    const block = object(raw), slot = expected[i]!;
+    const variant = slot.arm === 'compact' ? registration.experiment.arms.compactArm : registration.experiment.arms.fullArm;
+    const actual = rows.filter(row => row.scenario_id === slot.scenario && row.variant === variant)
+      .sort((a, b) => (a.matrix_index ?? -1) - (b.matrix_index ?? -1));
+    if (block.scenario !== slot.scenario || block.arm !== slot.arm || block.variantId !== variant ||
+        !Array.isArray(block.ids) || digest(block.ids) !== digest(actual.map(row => row.id)) ||
+        digest(block.statuses) !== digest(actual.map(row => row.status))) return 'Once-only block receipt differs from the complete persisted population.';
+    ids.push(...block.ids);
+  }
+  if (new Set(ids).size !== 30 || digest([...ids].sort()) !== digest(rows.map(row => row.id).sort())) return 'Candidate receipt omits or replaces attempts.';
 }
 
 /** Unknown is deliberate: an empty, errored, asymmetric, or confounded sample cannot be green. */
@@ -168,6 +311,11 @@ export function evaluateToolDeliveryRuns(rows: readonly ToolDeliveryRun[], schem
   }
   if (experiment.scenarios.length !== 5 || new Set(experiment.scenarios).size !== 5 ||
       experiment.arms.compactArm === experiment.arms.fullArm) return result;
+  const executionError = validateExecutionOrder(rows, experiment);
+  if (executionError) {
+    result.comprehension.reason = result.invalidArguments.reason = executionError;
+    return result;
+  }
   if (experiment.manifestContract) {
     result.manifests = [];
     for (const row of measured) {
@@ -215,7 +363,7 @@ export function evaluateToolDeliveryRuns(rows: readonly ToolDeliveryRun[], schem
         name: call.name, input: call.input });
     }
   }
-  result.oracle = r6PrimaryVerdict(calls, schemas, experiment.arms);
+  result.oracle = r6PrimaryVerdict(calls, schemas, experiment.arms, experiment.scenarios);
   result.invalidArguments = { verdict: result.oracle.verdict === 'PASS' ? 'pass' : result.oracle.verdict === 'FAIL' ? 'fail' : 'unknown', reason: result.oracle.reason };
   return result;
 }
@@ -229,7 +377,13 @@ export async function measureToolDeliveryAcceptance(window: { workspaceId: strin
   const experiment = toolDeliveryExperiment(window.experimentId);
   // llm_test_runs is a transcript corpus, not a workspace-keyed tenant table.
   // Exact predeclared variant identities and scenario ids scope this experiment.
-  const rows = await sql<ToolDeliveryRun[]>`
+  const rows = experiment.manifestContract ? await sql<ToolDeliveryRun[]>`
+    SELECT id, scenario_id, scenario_hash, sut_model, judge_model, status,
+           telemetry_json->>'variantId' AS variant, transcript_norm_json, transcript_raw_zstd,
+           started_at, finished_at, matrix_group_id, matrix_index
+      FROM harness_shared.llm_test_runs
+     WHERE telemetry_json->>'variantId' = ANY(${Object.values(experiment.arms)})
+     ORDER BY started_at, id LIMIT 101` : await sql<ToolDeliveryRun[]>`
     SELECT id, scenario_id, scenario_hash, sut_model, judge_model, status,
            telemetry_json->>'variantId' AS variant, transcript_norm_json,
            CASE WHEN ${Boolean(experiment.manifestContract)} THEN transcript_raw_zstd ELSE NULL END AS transcript_raw_zstd
@@ -250,7 +404,26 @@ export async function measureToolDeliveryAcceptance(window: { workspaceId: strin
     const contract = experiment.manifestContract;
     const tools = contract.fullDefinitions.map(tool => ({ name: tool.name,
       input_schema: (tool.input_schema ?? tool.parameters) as Record<string, unknown> }));
-    return evaluateToolDeliveryRuns(rows, buildOracleSchemaIndex(tools, new Map(contract.canonicalBySanitized)), experiment);
+    const result = evaluateToolDeliveryRuns(rows, buildOracleSchemaIndex(tools, new Map(contract.canonicalBySanitized)), experiment);
+    let receiptError: string | undefined;
+    try {
+      const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 }).trim();
+      result.custody = verifyToolDeliverySourceCustody({
+        privateCapture: readFileSync(resolve(homedir(), '.papercusp/experiments/tool-delivery-full-after-use-original-20261021.json')),
+        buildSha: getBuildInfo().sha,
+        readSource: (path, ref) => ref ? execFileSync('git', ['show', `${ref}:${path}`], { cwd: root, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }) : readFileSync(resolve(root, path)),
+      });
+      const directory = resolve(homedir(), '.papercusp/experiments/d062-once-20261022');
+      receiptError = validateToolDeliveryBatchReceipt(rows, JSON.parse(readFileSync(resolve(directory, 'started.json'), 'utf8')),
+        JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')));
+    } catch { result.custody = { verified: false, reason: 'Private original source custody is unavailable.' }; }
+    const outsideWindow = rows.some(row => !row.started_at || !row.finished_at ||
+      new Date(row.started_at).getTime() < Date.parse(window.windowStart) || new Date(row.finished_at).getTime() > Date.parse(window.windowEnd));
+    if (!result.custody.verified || outsideWindow || receiptError) {
+      result.comprehension = result.invalidArguments = { verdict: 'unknown',
+        reason: outsideWindow ? 'Observation window omits candidate attempts; the entire population was retained.' : receiptError ?? result.custody.reason };
+    }
+    return result;
   }
   const { buildShippingSeedCatalog } = await import('./llm-testing/targets/su-compact-catalog');
   const { catalog } = await buildShippingSeedCatalog('full');

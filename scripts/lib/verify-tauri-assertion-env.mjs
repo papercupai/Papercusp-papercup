@@ -86,17 +86,25 @@ if (assertionPath === '--command') {
   if (!shell) {
     if (hasPlaywrightTest(args)) sourceFailure();
   } else {
-    // shell-quote treats a comment as lasting to the end of its input. Do not
-    // let a leading comment hide a later unsupported multiline invocation.
-    if (/[\r\n]/.test(command) && /\bplaywright\b/.test(command)) sourceFailure();
     // Parse quoting without executing shell code or expanding the real root
     // before boot. A fresh marker distinguishes expansion from literal text.
     const ownedRoot = `/__verify_owned_source_${randomUUID()}`;
     let tokens;
     try {
       const { default: parse } = await import('shell-quote/parse.js');
-      tokens = parse(command, key => key === 'OPERATOR_SOURCE_ROOT' ? ownedRoot : { unresolved: key })
-        .filter(token => !(token && typeof token === 'object' && 'comment' in token));
+      tokens = [];
+      const pending = [command];
+      while (pending.length) {
+        for (const token of parse(pending.shift(), key => key === 'OPERATOR_SOURCE_ROOT' ? ownedRoot : { unresolved: key })) {
+          if (token && typeof token === 'object' && 'comment' in token) {
+            // shell-quote puts the rest of its input in a comment token, even
+            // after a newline. Resume there so comments cannot hide a CLI;
+            // classify quoted words rather than runner names inside paths.
+            const newline = token.comment.search(/[\r\n]/);
+            if (newline >= 0) pending.push(token.comment.slice(newline + 1));
+          } else tokens.push(token);
+        }
+      }
     } catch {
       fail('OPERATOR_SOURCE_ROOT command preflight requires an installed shell-quote parser and valid shell quoting');
     }

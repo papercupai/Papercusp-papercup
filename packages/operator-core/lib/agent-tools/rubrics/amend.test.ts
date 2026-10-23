@@ -31,7 +31,10 @@ const receiptDb = vi.hoisted(() => {
   type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null };
   const rows = new Map<string, Row>();
   const sql = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+    // postgres' bulk insert helper is called before its tagged statement.
+    if (!Array.isArray(parts) || !('raw' in parts)) return [];
     const query = parts.join('?');
+    if (query.includes('INSERT INTO harness_shared.fallback_observations')) return [];
     if (query.includes('DELETE FROM harness_shared.rubric_amend_receipts')) return [];
     if (query.includes('INSERT INTO harness_shared.rubric_amend_receipts')) {
       const [workspace, rubric, key] = values as string[];
@@ -46,13 +49,13 @@ const receiptDb = vi.hoisted(() => {
       return row ? [row] : [];
     }
     if (query.includes('UPDATE harness_shared.rubric_amend_receipts')) {
-      const success = query.includes('result_json =');
-      const [workspace, rubric, key] = (success ? values.slice(3) : values.slice(1)) as string[];
+      const failed = query.includes("SET state = 'failed'");
+      const [workspace, rubric, key] = values.slice(failed ? 2 : 3) as string[];
       const row = rows.get(`${workspace}:${rubric}:${key}`);
       if (row) {
-        row.state = success ? String(values[0]) : 'failed';
-        row.result_json = success ? JSON.parse(String(values[1])) : null;
-        row.error = success ? values[2] as string | null : String(values[0]);
+        row.state = failed ? 'failed' : String(values[0]);
+        row.result_json = JSON.parse(String(values[1]));
+        row.error = failed ? String(values[0]) : values[2] as string | null;
         row.finished_at = new Date();
       }
       return [];

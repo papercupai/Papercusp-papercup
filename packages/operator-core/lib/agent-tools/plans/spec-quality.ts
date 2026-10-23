@@ -410,12 +410,14 @@ function implementationCouplingReason(behavior: string): string | null {
       return 'prescribes implementation reuse or selection ' + JSON.stringify(prescription);
     }
   }
+  // A semicolon separates observations just like a sentence boundary. Do not
+  // join a persistence verb in one clause to a backend or permission in another.
   const filesystemPermission =
-    /\b0[0-7]{3}\b[^.!?\n]{0,60}\b(?:file|file\s+system|filesystem|directory)\b|\b(?:file|file\s+system|filesystem|directory)\b[^.!?\n]{0,60}\b0[0-7]{3}\b/i.exec(behavior);
+    /\b0[0-7]{3}\b[^.!?;\n]{0,60}\b(?:file|file\s+system|filesystem|directory)\b|\b(?:file|file\s+system|filesystem|directory)\b[^.!?;\n]{0,60}\b0[0-7]{3}\b/i.exec(behavior);
   const namedStorageBackend =
-    /\b(?:stored|persisted|written|saved|kept|mirrored|replicated)\b[^.!?\n]{0,80}\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b|\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b[^.!?\n]{0,80}\b(?:database|storage|store)\b/i.exec(behavior);
+    /\b(?:stored|persisted|written|saved|kept|mirrored|replicated)\b[^.!?;\n]{0,80}\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b|\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b[^.!?;\n]{0,80}\b(?:database|storage|store)\b/i.exec(behavior);
   const storageEncryptionOrMirroring =
-    /\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b[^.!?\n]{0,80}\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b|\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b[^.!?\n]{0,80}\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b/i.exec(behavior);
+    /\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b[^.!?;\n]{0,80}\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b|\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b[^.!?;\n]{0,80}\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b/i.exec(behavior);
   const storageMechanism = filesystemPermission ?? namedStorageBackend ?? storageEncryptionOrMirroring;
   if (storageMechanism) {
     return 'prescribes a storage mechanism ' + JSON.stringify(storageMechanism[0].trim());

@@ -17,6 +17,18 @@ const h = vi.hoisted(() => ({
   measurementRoot: '',
   planSlug: 'reconnect-plan',
   orgQueries: [] as string[],
+  leaseHeld: false,
+}));
+
+const resourceAcquire = vi.hoisted(() => vi.fn());
+const resourceRelease = vi.hoisted(() => vi.fn());
+vi.mock('../locks/su-lock-store', async (original) => ({
+  ...(await original<typeof import('../locks/su-lock-store')>()),
+  tryAcquireResource: (...args: unknown[]) => resourceAcquire(...args),
+  tryReleaseResource: (...args: unknown[]) => resourceRelease(...args),
+}));
+vi.mock('../locks/in-workspace-txn', () => ({
+  inWorkspaceTxn: async (_domain: string, _owner: string, run: (tx: unknown) => Promise<unknown>) => run({}),
 }));
 
 vi.mock('../../work-items', async (original) => ({
@@ -316,6 +328,15 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  h.leaseHeld = false;
+  resourceAcquire.mockReset().mockImplementation(async () => {
+    h.leaseHeld = true;
+    return { ok: true, lock_id: 'certification-lease', fence_seq: 0, reused: false };
+  });
+  resourceRelease.mockReset().mockImplementation(async () => {
+    h.leaseHeld = false;
+    return { ok: true, waiters: {} };
+  });
   completionGate.mockResolvedValue({ ok: true, applicable: true, checked: ['SPEC-PASS@1'] });
   h.planSlug = PLAN;
   h.orgQueries = [];
@@ -381,6 +402,87 @@ afterEach(() => {
 });
 
 describe('plans:certify-spec-clauses', () => {
+  describe('staging runtime lease', () => {
+    it.each([false, true])('refuses before evaluation or filing while a restart owns staging (dryRun=%s)', async (dryRun) => {
+      resourceAcquire.mockResolvedValueOnce({
+        ok: false,
+        reason: 'held_exclusive',
+        holders: [{ owner: 'restart-owner', owner_label: 'restart', mode: 'exclusive', status: 'held' }],
+      });
+
+      const result = await certify({ dryRun });
+
+      expect(result).toMatchObject({
+        ok: false,
+        reason: 'resource_held_exclusive',
+        resource: 'staging-server',
+        holders: [{ owner: 'restart-owner', mode: 'exclusive', status: 'held' }],
+      });
+      expect(listClauses).not.toHaveBeenCalled();
+      expect(dispatchTool).not.toHaveBeenCalled();
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(resourceRelease).not.toHaveBeenCalled();
+    });
+
+    it('holds one host-wide shared lease across evaluation, both serial filings and their replays', async () => {
+      h.rows.push(
+        bindingRow({ id: 6, specId: 'SPEC-BLOCKED', evidenceKind: 'counterexample', evidenceRef: 'counterexample:second', outcome: 'pass' }, bound),
+        bindingRow({ id: 7, specId: 'SPEC-BLOCKED', evidenceKind: 'test', evidenceRef: 'test:second', outcome: 'passed' }, bound),
+        bindingRow({ id: 8, specId: 'SPEC-BLOCKED', evidenceKind: 'fixture', evidenceRef: 'fixture:second', outcome: 'passed' }, bound),
+      );
+      listClauses.mockImplementation(async (input: { specIds?: string[] }) => {
+        expect(h.leaseHeld).toBe(true);
+        const all = [clause('SPEC-PASS'), clause('SPEC-BLOCKED')];
+        return (input.specIds ? all.filter((row) => input.specIds!.includes(row.specId)) : all) as never;
+      });
+      let filed = 0;
+      captureImprovement.mockImplementation(async () => {
+        expect(h.leaseHeld).toBe(true);
+        expect(resourceRelease).not.toHaveBeenCalled();
+        return { ok: true, created: true, issue: { id: `EI-LEASE-${++filed}` } };
+      });
+
+      const result = await certify({});
+
+      expect(result.counts, JSON.stringify(result)).toMatchObject({ filed: 2, refused: 0 });
+      expect(resourceAcquire).toHaveBeenCalledOnce();
+      expect(resourceAcquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        coordinationDomain: 'papercusp-host-global',
+        resource: 'staging-server',
+        owner: 'su-certifier',
+        mode: 'shared',
+        ttlSec: (certifyTool.timeoutSec ?? 0) + 60,
+      }));
+      expect(resourceRelease).toHaveBeenCalledOnce();
+      expect(resourceRelease).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        owner: 'su-certifier', lockId: 'certification-lease',
+      }));
+      expect(h.leaseHeld).toBe(false);
+    });
+
+    it('releases the lease when evaluation throws before any card is filed', async () => {
+      const failure = new Error('evaluation failed');
+      const evaluation = vi.spyOn(evaluatorTool, 'handler').mockRejectedValueOnce(failure);
+      try {
+        await expect(certify({})).rejects.toBe(failure);
+      } finally {
+        evaluation.mockRestore();
+      }
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(resourceRelease).toHaveBeenCalledOnce();
+      expect(h.leaseHeld).toBe(false);
+    });
+
+    it('releases the lease when a serial card filing fails', async () => {
+      captureImprovement.mockRejectedValueOnce(new Error('card persistence failed'));
+
+      await expect(certify({ specIds: ['SPEC-PASS'] })).rejects.toThrow('card persistence failed');
+      expect(captureImprovement).toHaveBeenCalledOnce();
+      expect(resourceRelease).toHaveBeenCalledOnce();
+      expect(h.leaseHeld).toBe(false);
+    });
+  });
+
   it('does not certify calibrated fixture claims without a measured fixture fingerprint', async () => {
     h.rows = h.rows.map((row) => row.evidence_kind === 'fixture' ? { ...row, fixture_fingerprint: null } : row);
     const result = await certify({ specIds: ['SPEC-PASS'] });

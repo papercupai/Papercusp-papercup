@@ -3683,6 +3683,132 @@
     "recurrenceGuard": "Run both existing maintained identity guards after future evidence appends; do not add exceptions."
   },
   "currentNativeNpmLifecycleDiagnostics20261022": {
+    "scenarioPathQualification20261022": {
+      "workItemId": "WI-6554700010020304",
+      "status": "named-diagnostics-path-qualified-overall-adequacy-still-fails",
+      "clauseRevision": 2,
+      "clauseFingerprint": "7b20041e8763630fff842cbd1dc2d94d9e0e6c68fd72910cf6c2f1f61071b836",
+      "scenarioId": "native-npm-shell-identity",
+      "baselineTestRunId": 21784014,
+      "appendedTestBindingId": 65217,
+      "bindingFingerprint": "89db55020dc00c82500d8a9542b7f564eaf6a697caf833e5041310663c6adbcd",
+      "retainedHistoricalBindingIds": [65173, 65174],
+      "recordedTestLayer": "unit",
+      "requiredTestLayers": [],
+      "sourceComparisonHead": "d32eae0110551750ed8698297b5f8851e94fd4e0",
+      "sourceAndLogVerification": "All four source/test pins and both exact log hashes and byte lengths in committedClause2Verification20261022 matched saved evidence. Each source/test file also matched its current committed blob. No test replay was needed.",
+      "pathBasis": "The five exact canonical scenario cases execute npm under sh or configured Bash and call writeBudgetedTaskNativeExecutionReceipt with native observations. They assert shell, script, argv, cwd, direct root-child identity, lifecycle terminal status and hash-matched spawn/close artifacts against fixture inputs snapshotted before receipt writing. Eleven rejection controls share the same sixteen-pass baseline. The new binding adds adequacy.pathReachable=true and the exact scenario target with this source basis; it preserves the measured unit layer and existing disclosures.",
+      "readback": {
+        "bindingCurrentness": "current",
+        "measurementStatus": "measured",
+        "measuredAtCommit": "d32eae0110551750ed8698297b5f8851e94fd4e0",
+        "testRunStatus": "pass",
+        "testRunLayer": "unit",
+        "staleReasons": [],
+        "unknownReasons": []
+      },
+      "adequacy": {
+        "evaluatorBuild": "516579404d",
+        "classRef": "plan-class-feature-ship",
+        "scope": "diagnostic exact-clause work-item cohort; not a governing ship verdict",
+        "measuredBindingIds": [65173, 65174, 65217],
+        "correctLayerBefore": "fail",
+        "correctLayerAfter": "pass",
+        "overallVerdict": "fail",
+        "wouldBlock": ["disclosed-gap"],
+        "disclosedGapBindingIds": [65173, 65174, 65217]
+      },
+      "correction": "The older section's correctLayer wording joined two facts. An empty requiredTestLayers array is not itself a failure: spec-test-adequacy.ts leaves layer reachability unevaluated in that case. The measured failure was missing successful named-scenario path proof. The clause and its recorded unit provenance remain unchanged.",
+      "limits": [
+        "No source behavior, immutable clause revision, historical proof or test-layer classification was changed.",
+        "Original per-step streams/reports, twelve fixture skips, ordered-chain/no-skip acceptance and complete import/dependency/environment/runtime closure remain unqualified.",
+        "Operational acceptance, independent engineer archive review, D020/P006, six forms, P018, P028, P031/D045 and full-plan shipment remain open."
+      ]
+    },
+    "committedClause2Verification20261022": {
+      "workItemId": "WI-6554700010020304",
+      "guardWorkItemId": "WI-6554700010020339",
+      "status": "clean-committed-baseline-and-contained-mutation-bound-adequacy-blocked",
+      "sourceHead": "1d63e8bf049543d7b49fdc700d5470203f949e53",
+      "sourcePins": {
+        "scripts/lib/budgeted-task-scheduler.d.mts": "42154a89c0826f5c043e4f8c5e6cc3366062929d99cce15b42938361c9be6a23",
+        "scripts/lib/budgeted-task-scheduler.mjs": "65d6f63a2aba55475c498c35920b8d48ea653ad4098e41cf27b3f72d900489e7",
+        "scripts/lib/vitest-startup-trace.mjs": "4912efb5c5483329bfac50b9f63de3112d0a28c50f8c7f4347945ffa8b1b93ac",
+        "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts": "4305843c2ee260e0f17cf938ce770c980581ff90db7ac7f5d2d84f44923cc547"
+      },
+      "baseline": {
+        "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_RUN_GROUP=c0523-lifecycle-clean-fire68 npm run lint:as-committed -- test:file --any --ref=1d63e8bf049543d7b49fdc700d5470203f949e53 -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native npm lifecycle diagnostics'",
+        "ledgerRowId": 21784014,
+        "passed": 16,
+        "failed": 0,
+        "explicitUnselected": 287,
+        "requestedFiles": 1,
+        "executedFiles": 1,
+        "matchedFiles": 1,
+        "childSubstituted": 0,
+        "nativeExitCode": 0,
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "log": {
+          "ref": ".papercusp/scratch/c0523-lifecycle-clean-fire68.log",
+          "sha256": "c753e5f4e67f69b209c957bf08ccdf07c5dbd97d1de726a28ebdda508d28d15e",
+          "byteLength": 135231
+        }
+      },
+      "mutation": {
+        "probeInvocationId": "3fc89a8f-de24-432c-96cb-e08022338add",
+        "sourcePreparation": "The maintained lint:as-committed materialize-only route retained the same commit, tied to the baseline log. The probe also retained its committed source root; no tracked source was edited for the mutation.",
+        "runnerPath": "scripts/mutation-probe.sh",
+        "runnerSha256": "d210f33e3a959b925eefbb1745088b88064937629b90168b242a8240b9d7bb4f",
+        "mutateExpression": "s/script: spawn\\.lifecycle\\.script,/script: \"unobserved command\",/g; s/argv: spawn\\.argv\\.slice\\(\\)/argv: [\"-c\", \"unobserved command\"]/g",
+        "mutantSha256": "8fa4ef558233ba6e9c13194f50d2f215c63f42af25fd9509d8728a35a9f3e9d2",
+        "testCommandSha256": "3c41bf3a5cfae18afb392caa8a9dea15b2ae21aeebdc78d589ae7e6bec85fab3",
+        "phases": [
+          { "phase": "baseline", "ledgerRowId": 21784772, "passed": 16, "failed": 0, "nativeExitCode": 0 },
+          { "phase": "copy-baseline", "ledgerRowId": 21784782, "passed": 16, "failed": 0, "nativeExitCode": 0 },
+          { "phase": "mutant", "ledgerRowId": 21784789, "passed": 11, "failed": 5, "nativeExitCode": 1 }
+        ],
+        "perPhase": { "explicitUnselected": 287, "requestedFiles": 1, "executedFiles": 1, "matchedFiles": 1, "childSubstituted": 0, "worktreeDirty": false, "isScratchConfig": false },
+        "containment": { "status": "contained", "overlays": 1, "uncovered": 0, "failedOverlays": 0 },
+        "result": { "verdict": "caught", "expected": "caught", "guardExit": 1, "mutantParse": "ok", "assertionEvidence": "test-file-assertion-failure", "relocation": "overlay", "probeExitCode": 0 },
+        "trackedSubjectUnchanged": true,
+        "log": {
+          "ref": ".papercusp/scratch/c0523-lifecycle-mutation-fire68.log",
+          "sha256": "2e946253ed276102e8cfd8569dfa872779784a8b7d28829b0c66482c0114ae46",
+          "byteLength": 400524
+        },
+        "ledgerReadback": "Three exact mutation-probe rows retain the same clean commit, test/subject/mutant/command pins and probe invocation. The five failed assertions are the four original sh lifecycle outcomes and configured Bash; normal and copy baselines retain sixteen selected passes."
+      },
+      "clause": {
+        "planSlug": "adhoc-work-item-specs",
+        "workItemId": "WI-6554700010020188",
+        "specId": "adhoc.WI-6554700010020188.native-npm-lifecycle-diagnostics",
+        "revision": 2,
+        "contentHash": "7b20041e8763630fff842cbd1dc2d94d9e0e6c68fd72910cf6c2f1f61071b836",
+        "testBindingId": 65173,
+        "mutationBindingId": 65174,
+        "testBindingFingerprint": "af2b6ca82a727359e8c2b6e9f2c167baa97a4ca9455d60dd36d49d7d853b5ca8",
+        "mutationBindingFingerprint": "933c0ee4305300f868efefbc8ecfd96e849ff1dd707292073a9a8df3ec5d2ab7",
+        "scenarioId": "native-npm-shell-identity",
+        "caseScope": "Baseline binding copies the sixteen passed canonical case titles verbatim; mutation binding names the five failed shell-identity titles and targets the exact required scenario. Inline fixture paths were supplied at first bind; both fixture manifests are snapshotted before receipt writers run.",
+        "readback": { "currentBindings": [65173, 65174], "staleReasons": [], "unknownReasons": [] },
+        "adequacy": {
+          "classRef": "plan-class-feature-ship",
+          "evaluatorBuild": "516579404d",
+          "verdict": "fail",
+          "passing": ["traceability", "fixture-calibration", "falsifiability", "oracle-independence", "execution-integrity", "freshness", "plan-class-risk-floor"],
+          "wouldBlock": ["correct-layer", "disclosed-gap"],
+          "correctLayer": "The canonical clause declares requiredTestLayers=[]; no declared layer/path reachability proof qualifies the required scenario. The saved native row records unit. Do not upgrade that layer or claim path proof from labels alone.",
+          "disclosedGap": "The bindings explicitly retain the original per-step streams/reports, ordered-chain/no-skip and runtime/import/dependency/environment/operational/full-plan gaps; those disclosures cannot be graded away."
+        }
+      },
+      "limits": [
+        "This settles the strengthened guard's clean source, bounded mutation and exact clause@2 bindings; it does not establish full clause or plan acceptance.",
+        "Containment applies to this retained checkout and these probe phases. Historical partial-containment runs keep their original limitations; new subtrees and external aliases remain outside the general containment claim.",
+        "Historical clause@1, prospective-label and earlier oracle sections retain their original pins and provenance. Original twelve fixture skips and287 unselected cases remain unqualified.",
+        "Authentic per-step streams/reports, EI-26674110593853508 reader compatibility, complete runtime closure, engineer archive review, D020/P006, six forms, P018, P028, P031/D045 and full shipment remain open."
+      ]
+    },
     "configuredShellFixtureOracle20261022": {
       "workItemId": "WI-6554700010020339",
       "relatedProofWorkItemId": "WI-6554700010020304",
@@ -4319,5 +4445,5 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Child0339 strengthens the native script/argv/cwd oracle using the independent fixture manifest. The paired current-local probe changes the same mutant from survived to caught; both baselines retain16selected passes and287unselected. End the editing turn and verify automatic committed-content settlement before child0304 measures clean retained clause@2 baseline/mutation and binds new proof. Preserve historical clause@1 and label-only proof identities, partial containment and dirty-source limits, and all original per-step stdout/stderr/report and ordered-reader gaps. This does not resolve EI-26674110593853508 or satisfy runtime/operational/full-plan shipment acceptance. Preserve engine review, D020/P006, six forms, P018, P028 and P031/D045."
+  "next": "Child0304 now retains clean committed clause@2 baseline/mutation proof and current bindings65173/65174. Adequacy still fails correct-layer and disclosed-gap: reconcile the canonical clause's missing test-layer declaration and successful scenario path proof without relabelling native unit provenance or erasing disclosures. Continue the parent source and acceptance requirements for authentic per-step streams/reports, EI-26674110593853508 reader compatibility and full runtime closure. Preserve historical proof pins, original twelve fixture skips, engineer archive review, D020/P006, six forms, P018, P028 and P031/D045; the full plan remains unshipped."
 }

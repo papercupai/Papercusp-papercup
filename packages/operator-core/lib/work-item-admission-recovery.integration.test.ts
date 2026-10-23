@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { AdmissionAuthorityUnavailable } from './work-item-admission-authority';
 import {
   AdmissionRecoveryRefused, observeAdmissionRecoveryPickup, requestAdmissionRecovery, runAdmissionRecoveries,
   readAuthorizedComponentScreeningIds,
@@ -574,6 +575,26 @@ describe('original-item durable admission recovery', () => {
     authorize.mockRejectedValueOnce(new Error('policy store unavailable'));
     await expect(runAdmissionRecoveries(scope, deps(), db.sql)).rejects.toThrow('policy store unavailable');
     expect((await current()).payload._admissionRecovery.state).toBe('queued');
+  });
+
+  it('retries the original queued request after a typed policy-reader denial without an unauthorized mutation', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    authorize.mockRejectedValueOnce(new AdmissionAuthorityUnavailable('policy reader unavailable'));
+    const interrupted = deps();
+    await expect(runAdmissionRecoveries(scope, interrupted, db.sql)).rejects.toBeInstanceOf(AdmissionAuthorityUnavailable);
+    expect(await current()).toMatchObject({
+      admission: 'pending', taken_by: null,
+      payload: { _admissionRecovery: { state: 'queued', requestId: first.request.requestId } },
+    });
+    expect(interrupted.screen).not.toHaveBeenCalled();
+    expect(interrupted.dispatch).not.toHaveBeenCalled();
+
+    const nextTick = deps();
+    await runAdmissionRecoveries(scope, nextTick, db.sql);
+    expect(nextTick.dispatch).toHaveBeenCalledOnce();
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      state: 'delivered', requestId: first.request.requestId, pickupConfirmed: false,
+    });
   });
 
   it.each(['before-claim', 'before-wake'])('holds and resumes the original request when caller is revoked %s', async (phase) => {

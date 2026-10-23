@@ -12502,6 +12502,120 @@ async function applyFrozenRepairCarryAtCut(
   }
 }
 
+/** Shared read-only candidate policy; preparation and execution must use the same decision. */
+async function selectCheckpointFreshCandidate(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  input: {
+    candidate: string;
+    lastReady: string | null;
+    opts: CheckpointOpts;
+    repairVerification: boolean;
+    initialCandidateVerification: boolean;
+    diagnosticOnly: boolean;
+    repairQueue: FrozenCandidateRepairQueue | null;
+  },
+): Promise<{ candidate: string; tip: string; quietCutApplied: boolean; freezeCut: FreezeCutRecord | null }> {
+  let { candidate } = input;
+  const { lastReady, opts, repairVerification, initialCandidateVerification, diagnosticOnly, repairQueue } = input;
+  // QUIET CUT (2026-07-01): never judge a tip younger than the quiet window. On a shared
+  // tree, a logically-atomic cross-package change lands across SEVERAL ~3-min git-sync
+  // ticks — a candidate cut between the halves is TORN and reds the whole run on a state
+  // no one ever intended to ship (the 2026-07-01 camelCase facade tear: the consumer-side
+  // test update landed minutes after the candidate was cut). Stepping back to the newest
+  // commit that has been the tip-state for ≥ quietAgeSec gives an in-flight change one
+  // more tick to land its other half before being judged. Only applies when the caller
+  // didn't pin an explicit candidate; opt out with PAPERCUSP_QUIET_CUT=0, tune with
+  // PAPERCUSP_QUIET_CUT_SEC (default 240s ≈ 1.5 ticks).
+  // The tip as it stood BEFORE the quiet cut may step back off it. Captured here so the run can
+  // PUBLISH the excluded window (see recordInFlightCandidate below) instead of leaving every
+  // reader to reconstruct it from git timestamps by hand — arithmetic over mixed-offset dates
+  // that is silently wrong rather than erroring when you get it subtly right-looking.
+  const candidateBeforeQuietCut = candidate;
+  let quietCutApplied = false;
+  if (
+    !opts.candidate &&
+    !repairVerification &&
+    !initialCandidateVerification &&
+    // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
+    quietCutSecFromEnv() > 0
+  ) {
+    try {
+      const quietSec = quietCutSecFromEnv();
+      const tipTime = await commitUnixTime(cfg.integrationRoot, candidate);
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (nowSec - tipTime < quietSec) {
+        const aged = await revListBefore(
+          cfg.integrationRoot,
+          cfg.integrationBranch,
+          nowSec - quietSec,
+        );
+        // Guards: the aged pick must exist, differ, and still fast-forward from the pin
+        // (equal-to-lastReady is fine — the up-to-date path below reports it).
+        if (
+          aged &&
+          aged !== candidate &&
+          (!lastReady ||
+            (await isAncestor(cfg.integrationRoot, lastReady, aged)))
+        ) {
+          deps.log(
+            `quiet-cut: tip ${candidate.slice(0, 8)} is ${nowSec - tipTime}s old (<${quietSec}s quiet window) — ` +
+              `judging ${aged.slice(0, 8)} instead (the newest ≥${quietSec}s-old state); the tip gets the next run`,
+          );
+          candidate = aged;
+          quietCutApplied = true;
+        }
+      }
+    } catch (e) {
+      deps.log(
+        `quiet-cut: skipped (${e instanceof Error ? e.message : e}) — judging the tip as before`,
+      );
+    }
+  }
+
+  // P-012 (green-main-cycle-time-2026-10-08): FREEZE FROM KNOWN-GOOD POINTS. A fresh cut judges
+  // the newest staging commit whose per-sync batch check passed (sync_delta.lastPassed), not the
+  // bare tip, when that commit is on the tip's lineage and strictly ahead of the green pin (see
+  // known-good-freeze.ts for why those two rules keep the gate from starving). Not on a
+  // bounded-life re-cut: that run judges exactly the target its carry was measured against,
+  // which P-021 already chose under the same rules. The record rides on the verdict, with the
+  // round's red legs (`redLegsAtR1`), so every fresh candidate says where it came from.
+  let freezeCut: FreezeCutRecord | null = null;
+  if (
+    !opts.candidate &&
+    !repairVerification &&
+    !initialCandidateVerification &&
+    !diagnosticOnly &&
+    repairQueue === null
+  ) {
+    let knownGood: string | null = null;
+    let knownGoodUnreadable = false;
+    try {
+      knownGood = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
+    } catch (e) {
+      knownGoodUnreadable = true;
+      deps.log(`warn: P-012 known-good point unreadable, judging ${candidate.slice(0, 8)}: ${e instanceof Error ? e.message : e}`);
+    }
+    freezeCut = await decideKnownGoodFreezeCut({
+      tip: candidateBeforeQuietCut,
+      candidate,
+      lastReady,
+      knownGood,
+      knownGoodUnreadable,
+      isAncestor: (a, b) => isAncestor(cfg.integrationRoot, a, b),
+    });
+    if (freezeCut.candidate !== candidate) {
+      candidate = freezeCut.candidate;
+      // A known-good cut steps back off the tip exactly like the quiet cut: publish the excluded
+      // window (tipAtSelection) and run the split-pair detector over it.
+      quietCutApplied = candidate !== candidateBeforeQuietCut;
+    }
+    deps.log(formatFreezeCutLine(freezeCut));
+  }
+
+  return { candidate, tip: candidateBeforeQuietCut, quietCutApplied, freezeCut };
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -13883,101 +13997,15 @@ async function runGreenCheckpointInner(
     }
   }
 
-  // QUIET CUT (2026-07-01): never judge a tip younger than the quiet window. On a shared
-  // tree, a logically-atomic cross-package change lands across SEVERAL ~3-min git-sync
-  // ticks — a candidate cut between the halves is TORN and reds the whole run on a state
-  // no one ever intended to ship (the 2026-07-01 camelCase facade tear: the consumer-side
-  // test update landed minutes after the candidate was cut). Stepping back to the newest
-  // commit that has been the tip-state for ≥ quietAgeSec gives an in-flight change one
-  // more tick to land its other half before being judged. Only applies when the caller
-  // didn't pin an explicit candidate; opt out with PAPERCUSP_QUIET_CUT=0, tune with
-  // PAPERCUSP_QUIET_CUT_SEC (default 240s ≈ 1.5 ticks).
-  // The tip as it stood BEFORE the quiet cut may step back off it. Captured here so the run can
-  // PUBLISH the excluded window (see recordInFlightCandidate below) instead of leaving every
-  // reader to reconstruct it from git timestamps by hand — arithmetic over mixed-offset dates
-  // that is silently wrong rather than erroring when you get it subtly right-looking.
-  const candidateBeforeQuietCut = candidate;
-  let quietCutApplied = false;
+  const selected = await selectCheckpointFreshCandidate(cfg, deps, {
+    candidate, lastReady, opts, repairVerification, initialCandidateVerification,
+    diagnosticOnly, repairQueue,
+  });
+  candidate = selected.candidate;
+  const candidateBeforeQuietCut = selected.tip;
+  let quietCutApplied = selected.quietCutApplied;
+  let freezeCut = selected.freezeCut;
   let splitSourceTestPairs: SplitSourceTestPair[] = [];
-  if (
-    !opts.candidate &&
-    !repairVerification &&
-    !initialCandidateVerification &&
-    // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
-    quietCutSecFromEnv() > 0
-  ) {
-    try {
-      const quietSec = quietCutSecFromEnv();
-      const tipTime = await commitUnixTime(cfg.integrationRoot, candidate);
-      const nowSec = Math.floor(Date.now() / 1000);
-      if (nowSec - tipTime < quietSec) {
-        const aged = await revListBefore(
-          cfg.integrationRoot,
-          cfg.integrationBranch,
-          nowSec - quietSec,
-        );
-        // Guards: the aged pick must exist, differ, and still fast-forward from the pin
-        // (equal-to-lastReady is fine — the up-to-date path below reports it).
-        if (
-          aged &&
-          aged !== candidate &&
-          (!lastReady ||
-            (await isAncestor(cfg.integrationRoot, lastReady, aged)))
-        ) {
-          deps.log(
-            `quiet-cut: tip ${candidate.slice(0, 8)} is ${nowSec - tipTime}s old (<${quietSec}s quiet window) — ` +
-              `judging ${aged.slice(0, 8)} instead (the newest ≥${quietSec}s-old state); the tip gets the next run`,
-          );
-          candidate = aged;
-          quietCutApplied = true;
-        }
-      }
-    } catch (e) {
-      deps.log(
-        `quiet-cut: skipped (${e instanceof Error ? e.message : e}) — judging the tip as before`,
-      );
-    }
-  }
-
-  // P-012 (green-main-cycle-time-2026-10-08): FREEZE FROM KNOWN-GOOD POINTS. A fresh cut judges
-  // the newest staging commit whose per-sync batch check passed (sync_delta.lastPassed), not the
-  // bare tip, when that commit is on the tip's lineage and strictly ahead of the green pin (see
-  // known-good-freeze.ts for why those two rules keep the gate from starving). Not on a
-  // bounded-life re-cut: that run judges exactly the target its carry was measured against,
-  // which P-021 already chose under the same rules. The record rides on the verdict, with the
-  // round's red legs (`redLegsAtR1`), so every fresh candidate says where it came from.
-  let freezeCut: FreezeCutRecord | null = null;
-  if (
-    !opts.candidate &&
-    !repairVerification &&
-    !initialCandidateVerification &&
-    !diagnosticOnly &&
-    repairQueue === null
-  ) {
-    let knownGood: string | null = null;
-    let knownGoodUnreadable = false;
-    try {
-      knownGood = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
-    } catch (e) {
-      knownGoodUnreadable = true;
-      deps.log(`warn: P-012 known-good point unreadable, judging ${candidate.slice(0, 8)}: ${e instanceof Error ? e.message : e}`);
-    }
-    freezeCut = await decideKnownGoodFreezeCut({
-      tip: candidateBeforeQuietCut,
-      candidate,
-      lastReady,
-      knownGood,
-      knownGoodUnreadable,
-      isAncestor: (a, b) => isAncestor(cfg.integrationRoot, a, b),
-    });
-    if (freezeCut.candidate !== candidate) {
-      candidate = freezeCut.candidate;
-      // A known-good cut steps back off the tip exactly like the quiet cut: publish the excluded
-      // window (tipAtSelection) and run the split-pair detector over it.
-      quietCutApplied = candidate !== candidateBeforeQuietCut;
-    }
-    deps.log(formatFreezeCutLine(freezeCut));
-  }
 
   // P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the first FRESH cut after a frozen queue
   // was retired must hold that queue's admitted fixes. Only a fresh cut: a live queue judges its

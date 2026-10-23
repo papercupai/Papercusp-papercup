@@ -367,14 +367,15 @@ export function ordinaryAdmissionRadius(input: {
 }
 
 /** Runs on the admission worker. Neither inventory nor blob reads consult the working tree. */
-export function immutablePrecheckPopulation(input: ImmutablePrecheckInput):
+export async function immutablePrecheckPopulation(input: ImmutablePrecheckInput): Promise<
   | { ok: true; population: FixPrecheckPopulation }
-  | { ok: false; detail: string } {
+  | { ok: false; detail: string }
+> {
   const root = resolve(input.root);
   const unavailable = (detail: string) => ({ ok: false as const, detail });
   try {
     const top = treeAt(root, input.commit);
-    const canonicalRoot = resolveCanonicalIntegrationRoot(root);
+    const canonicalRoot = await resolveCanonicalIntegrationRoot(root);
     const admitted = new Set(input.admittedPaths.map((file) => file.trim().replaceAll('\\', '/').replace(/^\.\//, '')));
     const gitlinks = top.filter((entry) => entry.type === 'commit' && admitted.has(entry.file));
     // P-007: an ordinary admission adds its related-test radius to the exact admitted files.
@@ -437,7 +438,7 @@ export type AdmissionJob =
 export interface AdmissionJobResults {
   git: AdmissionGitResult;
   'reconcile-lineage': ReturnType<typeof reconcileFrozenRepairQueueWithLineageRef>;
-  'precheck-population': ReturnType<typeof immutablePrecheckPopulation>;
+  'precheck-population': Awaited<ReturnType<typeof immutablePrecheckPopulation>>;
   containment: ReturnType<typeof containmentForPaths>;
   'committed-patch': ReturnType<typeof buildCommittedPatchSource>;
   'hunk-exact': HunkExactSourceOutcome;
@@ -463,9 +464,9 @@ export function admissionPreflightFromSpec(
   );
 }
 
-/** Run one job synchronously against the unchanged builders. Throws exactly what they throw. */
-export function executeAdmissionJob<K extends AdmissionJobKind>(job: AdmissionJobOf<K>): AdmissionJobResults[K];
-export function executeAdmissionJob(job: AdmissionJob): AdmissionJobResults[AdmissionJobKind] {
+/** Run one job against the unchanged builders. Throws exactly what they throw. */
+export function executeAdmissionJob<K extends AdmissionJobKind>(job: AdmissionJobOf<K>): Promise<AdmissionJobResults[K]>;
+export async function executeAdmissionJob(job: AdmissionJob): Promise<AdmissionJobResults[AdmissionJobKind]> {
   switch (job.kind) {
     case 'git':
       return realAdmissionGit(job.argv, { cwd: job.cwd });
@@ -512,19 +513,22 @@ export interface AdmissionJobPort {
  * one message handler at a time, so jobs never interleave — the builders' sync invariant holds.
  */
 export function serveAdmissionJobs(port: AdmissionJobPort): void {
+  let pending = Promise.resolve();
   port.on('message', (request) => {
-    try {
-      const value = executeAdmissionJob(request.job);
-      port.postMessage({ type: 'result', id: request.id, ok: true, value });
-    } catch (err) {
-      const e = err instanceof Error ? err : new Error(String(err));
-      port.postMessage({
-        type: 'result',
-        id: request.id,
-        ok: false,
-        error: { name: e.name, message: e.message, ...(e.stack ? { stack: e.stack } : {}) },
+    pending = pending.then(async () => {
+      try {
+        const value = await executeAdmissionJob(request.job);
+        port.postMessage({ type: 'result', id: request.id, ok: true, value });
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err));
+        port.postMessage({
+          type: 'result',
+          id: request.id,
+          ok: false,
+          error: { name: e.name, message: e.message, ...(e.stack ? { stack: e.stack } : {}) },
+        });
+      }
       });
-    }
   });
   port.postMessage({ type: 'ready' });
 }

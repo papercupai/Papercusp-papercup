@@ -23,6 +23,10 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { harnessArg } from '../_harness-scope';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { readIdentity } from '../locks/identity';
+import { resourceLockDomain } from '../locks/coordination-domain';
+import { guardResource } from '../locks/resource-lock-guard';
 import evaluatorTool, { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { emitScorecardForToolContext, scorecardEmitArgs, SCORECARD_EMIT_TIMEOUT_SEC } from '../scorecards/emit';
@@ -32,6 +36,10 @@ import { GRADING_AUDIT_RESERVATION_TTL_MS } from '../../grading-integrity';
 import { getWorkItem } from '../../work-items';
 import { specTestAdequacyCompletionGate } from '../work_items/spec-test-adequacy-gate';
 import type { SpecTestAdequacyMeasurementEvidence } from '../../harness/improvements/observation-types';
+
+// Share the existing host-wide lease used by audit repair so coordinated restart
+// drains the full evaluation and every serial filing, including exact replays.
+const CERTIFICATION_RESOURCE = 'staging-server';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -166,188 +174,217 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
-    const dryRun = args.dryRun === true;
-    // Parse through the evaluator's OWN schema so a selector it would reject is rejected
-    // here too; no `current` is passed, so freshness is server-measured only.
-    const evaluatorArgs = evaluatorArgsSchema.parse({
-      ...(args.harness !== undefined ? { harness: args.harness } : {}),
-      slug: args.slug,
-      classRef: args.classRef,
-      ...(args.workItemIds ? { workItemIds: args.workItemIds } : {}),
-      ...(args.evidenceRefs ? { evidenceRefs: args.evidenceRefs } : {}),
-      ...(args.specIds ? { specIds: args.specIds } : {}),
-      ...(args.planItemIds ? { planItemIds: args.planItemIds } : {}),
-      ...(args.includeDraft !== undefined ? { includeDraft: args.includeDraft } : {}),
-      ...(args.limit !== undefined ? { limit: args.limit } : {}),
-      // The drafts this verb files exist only in the evaluator's full body (P-007).
-      detail: 'full',
-    });
-    const evaluated = (await evaluatorTool.handler(evaluatorArgs, ctx)) as { data: Record<string, unknown> };
-    const evaluation = evaluated.data;
-    if (evaluation.ok !== true) {
-      return { data: { ok: false, dryRun, evaluator: evaluation } };
-    }
+    const { ownerId, ownerLabel } = readIdentity(ctx);
+    const outcome = await guardResource(
+      {
+        coordinationDomain: resourceLockDomain(CERTIFICATION_RESOURCE),
+        ownerId,
+        ownerLabel,
+        coordIdentity: resolveAgentIdentity(ctx),
+        resource: CERTIFICATION_RESOURCE,
+        mode: 'shared',
+        ttlSec: SCORECARD_EMIT_TIMEOUT_SEC + 60,
+        reason: 'plans:certify-spec-clauses evaluates and files through the staging runtime',
+      },
+      async () => {
+      const dryRun = args.dryRun === true;
+      // Parse through the evaluator's OWN schema so a selector it would reject is rejected
+      // here too; no `current` is passed, so freshness is server-measured only.
+      const evaluatorArgs = evaluatorArgsSchema.parse({
+        ...(args.harness !== undefined ? { harness: args.harness } : {}),
+        slug: args.slug,
+        classRef: args.classRef,
+        ...(args.workItemIds ? { workItemIds: args.workItemIds } : {}),
+        ...(args.evidenceRefs ? { evidenceRefs: args.evidenceRefs } : {}),
+        ...(args.specIds ? { specIds: args.specIds } : {}),
+        ...(args.planItemIds ? { planItemIds: args.planItemIds } : {}),
+        ...(args.includeDraft !== undefined ? { includeDraft: args.includeDraft } : {}),
+        ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        // The drafts this verb files exist only in the evaluator's full body (P-007).
+        detail: 'full',
+      });
+      const evaluated = (await evaluatorTool.handler(evaluatorArgs, ctx)) as { data: Record<string, unknown> };
+      const evaluation = evaluated.data;
+      if (evaluation.ok !== true) {
+        return { data: { ok: false, dryRun, evaluator: evaluation } };
+      }
 
-    // A plan-level PASS may combine proofs from several work items. Completion
-    // consumes only its target's bindings and reconciled behavior contract, so
-    // reuse that gate rather than deriving a second readiness verdict here.
-    const completionWorkItemId = args.completionWorkItemId ??
-      (args.workItemIds?.length === 1 ? args.workItemIds[0] : undefined);
-    const completionReadiness = await (async () => {
-      if (!completionWorkItemId) return {
-        status: 'not-checked' as const,
-        note: 'Certification can combine evidence from multiple work items. It does not establish that any work item can close. Supply completionWorkItemId to check the existing scoped completion gate.',
-      };
-      try {
-        const workItem = await getWorkItem(completionWorkItemId, args.harness);
-        if (!workItem) return {
-          status: 'unavailable' as const,
-          workItemId: completionWorkItemId,
-          reason: 'The target work item could not be resolved.',
+      // A plan-level PASS may combine proofs from several work items. Completion
+      // consumes only its target's bindings and reconciled behavior contract, so
+      // reuse that gate rather than deriving a second readiness verdict here.
+      const completionWorkItemId = args.completionWorkItemId ??
+        (args.workItemIds?.length === 1 ? args.workItemIds[0] : undefined);
+      const completionReadiness = await (async () => {
+        if (!completionWorkItemId) return {
+          status: 'not-checked' as const,
+          note: 'Certification can combine evidence from multiple work items. It does not establish that any work item can close. Supply completionWorkItemId to check the existing scoped completion gate.',
         };
-        const gate = await specTestAdequacyCompletionGate({
-          workItem,
-          attestation: { classRef: args.classRef },
-        });
-        return {
-          status: gate.ok ? 'ready' as const : 'not-ready' as const,
-          workItemId: completionWorkItemId,
-          scope: 'spec-test-adequacy' as const,
-          checkedBeforeFiling: true,
-          gate,
-          note: 'This is the existing spec-test-adequacy gate before card filing, not the full work-item completion contract. Filing does not change this snapshot.',
-        };
-      } catch (error) {
-        return {
-          status: 'unavailable' as const,
-          workItemId: completionWorkItemId,
-          reason: error instanceof Error ? error.message : String(error),
-        };
-      }
-    })();
+        try {
+          const workItem = await getWorkItem(completionWorkItemId, args.harness);
+          if (!workItem) return {
+            status: 'unavailable' as const,
+            workItemId: completionWorkItemId,
+            reason: 'The target work item could not be resolved.',
+          };
+          const gate = await specTestAdequacyCompletionGate({
+            workItem,
+            attestation: { classRef: args.classRef },
+          });
+          return {
+            status: gate.ok ? 'ready' as const : 'not-ready' as const,
+            workItemId: completionWorkItemId,
+            scope: 'spec-test-adequacy' as const,
+            checkedBeforeFiling: true,
+            gate,
+            note: 'This is the existing spec-test-adequacy gate before card filing, not the full work-item completion contract. Filing does not change this snapshot.',
+          };
+        } catch (error) {
+          return {
+            status: 'unavailable' as const,
+            workItemId: completionWorkItemId,
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        }
+      })();
 
-    const rows = Array.isArray(evaluation.rows) ? (evaluation.rows as EvaluatorRow[]) : [];
-    const clauses: ClauseOutcome[] = [];
-    // Sequential on purpose: scorecards:emit serializes on a per-rubric mutex anyway, and
-    // a refusal on one clause must be attributable to that clause alone.
-    for (const row of rows) {
-      const verdict = typeof row.verdict === 'string' ? row.verdict : 'unknown';
-      const wouldBlock = stringList(row.wouldBlock);
-      const base = {
-        specId: typeof row.specId === 'string' ? row.specId : '(unknown)',
-        specRevision: typeof row.specRevision === 'number' ? row.specRevision : null,
-        verdict,
-        wouldBlock,
-        ...(row.measurementEvidence ? { measurementEvidence: row.measurementEvidence } : {}),
-      };
-      if (verdict !== 'pass' || wouldBlock.length > 0) {
-        clauses.push({ ...base, card: { status: 'not-passing' } });
-        continue;
-      }
-      const draft =
-        row.scorecardDraft && typeof row.scorecardDraft === 'object' && !Array.isArray(row.scorecardDraft)
-          ? (row.scorecardDraft as Record<string, unknown>)
-          : null;
-      const parsed = draft ? scorecardEmitArgs.safeParse({
-        ...draft,
-        terminal: true,
-        ...(args.acknowledgeExisting === true ? { acknowledgeExisting: true } : {}),
-      }) : null;
-      if (!parsed?.success) {
-        clauses.push({
-          ...base,
-          card: {
-            status: 'refused',
-            code: 'invalid_evaluator_draft',
-            error: draft
-              ? `the evaluator's scorecardDraft does not parse as scorecards:emit args: ${parsed?.error.issues
-                  .slice(0, 3)
-                  .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
-                  .join('; ')}`
-              : 'the evaluator returned a passing row with no scorecardDraft',
-          },
-        });
-        continue;
-      }
-      type EmitReply = {
-        ok?: unknown;
-        created?: unknown;
-        issueId?: unknown;
-        previousIssueId?: unknown;
-        reason?: unknown;
-        code?: unknown;
-        error?: unknown;
-      };
-      let emitted = (await emitScorecardForToolContext(parsed.data, ctx, { previewOnly: dryRun })) as EmitReply;
-      // A card stranded on a retired evaluator build blocks this clause forever (see
-      // findBuildStrandedPendingCard). Supersede it once with the card just reproduced.
-      // Identical evidence can return success before the pending-audit gate. It still
-      // needs a current-build card when the old build cannot complete that audit.
-      let strandedSuperseded: StrandedCard | undefined;
-      const unchangedEvidence = emitted.ok === true && emitted.created === false && emitted.reason === 'unchanged-evidence';
-      if ((emitted.code === 'grading_audit_required' || unchangedEvidence) && !parsed.data.supersedes && parsed.data.subject) {
-        const stranded = await findBuildStrandedPendingCard(parsed.data.rubricRef, parsed.data.subject);
-        if (stranded) {
-          strandedSuperseded = stranded;
-          emitted = (await emitScorecardForToolContext(
-            { ...parsed.data, supersedes: stranded.issueId },
-            ctx,
-            { previewOnly: dryRun },
-          )) as EmitReply;
+      const rows = Array.isArray(evaluation.rows) ? (evaluation.rows as EvaluatorRow[]) : [];
+      const clauses: ClauseOutcome[] = [];
+      // Sequential on purpose: scorecards:emit serializes on a per-rubric mutex anyway, and
+      // a refusal on one clause must be attributable to that clause alone.
+      for (const row of rows) {
+        const verdict = typeof row.verdict === 'string' ? row.verdict : 'unknown';
+        const wouldBlock = stringList(row.wouldBlock);
+        const base = {
+          specId: typeof row.specId === 'string' ? row.specId : '(unknown)',
+          specRevision: typeof row.specRevision === 'number' ? row.specRevision : null,
+          verdict,
+          wouldBlock,
+          ...(row.measurementEvidence ? { measurementEvidence: row.measurementEvidence } : {}),
+        };
+        if (verdict !== 'pass' || wouldBlock.length > 0) {
+          clauses.push({ ...base, card: { status: 'not-passing' } });
+          continue;
+        }
+        const draft =
+          row.scorecardDraft && typeof row.scorecardDraft === 'object' && !Array.isArray(row.scorecardDraft)
+            ? (row.scorecardDraft as Record<string, unknown>)
+            : null;
+        const parsed = draft ? scorecardEmitArgs.safeParse({
+          ...draft,
+          terminal: true,
+          ...(args.acknowledgeExisting === true ? { acknowledgeExisting: true } : {}),
+        }) : null;
+        if (!parsed?.success) {
+          clauses.push({
+            ...base,
+            card: {
+              status: 'refused',
+              code: 'invalid_evaluator_draft',
+              error: draft
+                ? `the evaluator's scorecardDraft does not parse as scorecards:emit args: ${parsed?.error.issues
+                    .slice(0, 3)
+                    .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+                    .join('; ')}`
+                : 'the evaluator returned a passing row with no scorecardDraft',
+            },
+          });
+          continue;
+        }
+        type EmitReply = {
+          ok?: unknown;
+          created?: unknown;
+          issueId?: unknown;
+          previousIssueId?: unknown;
+          reason?: unknown;
+          code?: unknown;
+          error?: unknown;
+        };
+        let emitted = (await emitScorecardForToolContext(parsed.data, ctx, { previewOnly: dryRun })) as EmitReply;
+        // A card stranded on a retired evaluator build blocks this clause forever (see
+        // findBuildStrandedPendingCard). Supersede it once with the card just reproduced.
+        // Identical evidence can return success before the pending-audit gate. It still
+        // needs a current-build card when the old build cannot complete that audit.
+        let strandedSuperseded: StrandedCard | undefined;
+        const unchangedEvidence = emitted.ok === true && emitted.created === false && emitted.reason === 'unchanged-evidence';
+        if ((emitted.code === 'grading_audit_required' || unchangedEvidence) && !parsed.data.supersedes && parsed.data.subject) {
+          const stranded = await findBuildStrandedPendingCard(parsed.data.rubricRef, parsed.data.subject);
+          if (stranded) {
+            strandedSuperseded = stranded;
+            emitted = (await emitScorecardForToolContext(
+              { ...parsed.data, supersedes: stranded.issueId },
+              ctx,
+              { previewOnly: dryRun },
+            )) as EmitReply;
+          }
+        }
+        const strandedField = strandedSuperseded ? { strandedSuperseded } : {};
+        if (emitted.ok === true) {
+          const unchanged = emitted.created === false && emitted.reason === 'unchanged-evidence';
+          const card = dryRun && !unchanged
+            ? { status: 'would-file' as const }
+            : {
+                status: unchanged ? 'unchanged' as const : 'filed' as const,
+                issueId: unchanged
+                  ? (typeof emitted.previousIssueId === 'string' ? emitted.previousIssueId : null)
+                  : (typeof emitted.issueId === 'string' ? emitted.issueId : null),
+              };
+          clauses.push({
+            ...base,
+            card,
+            ...strandedField,
+          });
+        } else {
+          clauses.push({
+            ...base,
+            card: {
+              status: 'refused',
+              code: typeof emitted.code === 'string' ? emitted.code : null,
+              error: typeof emitted.error === 'string' ? emitted.error : 'scorecards:emit refused without an error message',
+            },
+            ...strandedField,
+          });
         }
       }
-      const strandedField = strandedSuperseded ? { strandedSuperseded } : {};
-      if (emitted.ok === true) {
-        const unchanged = emitted.created === false && emitted.reason === 'unchanged-evidence';
-        const card = dryRun && !unchanged
-          ? { status: 'would-file' as const }
-          : {
-              status: unchanged ? 'unchanged' as const : 'filed' as const,
-              issueId: unchanged
-                ? (typeof emitted.previousIssueId === 'string' ? emitted.previousIssueId : null)
-                : (typeof emitted.issueId === 'string' ? emitted.issueId : null),
-            };
-        clauses.push({
-          ...base,
-          card,
-          ...strandedField,
-        });
-      } else {
-        clauses.push({
-          ...base,
-          card: {
-            status: 'refused',
-            code: typeof emitted.code === 'string' ? emitted.code : null,
-            error: typeof emitted.error === 'string' ? emitted.error : 'scorecards:emit refused without an error message',
-          },
-          ...strandedField,
-        });
-      }
-    }
 
-    const count = (status: ClauseOutcome['card']['status']) =>
-      clauses.filter((clause) => clause.card.status === status).length;
-    const counts = {
-      clauses: clauses.length,
-      passing: clauses.length - count('not-passing'),
-      filed: count('filed'),
-      unchanged: count('unchanged'),
-      refused: count('refused'),
-      notPassing: count('not-passing'),
-    };
-    return {
-      data: {
-        ok: counts.refused === 0,
-        dryRun,
-        slug: evaluation.slug,
-        evaluatorBuild: evaluation.evaluatorBuild,
-        classRef: evaluation.classRef,
-        governing: evaluation.governing,
-        ...(typeof evaluation.governingNote === 'string' ? { governingNote: evaluation.governingNote } : {}),
-        counts,
-        clauses,
-        completionReadiness,
+      const count = (status: ClauseOutcome['card']['status']) =>
+        clauses.filter((clause) => clause.card.status === status).length;
+      const counts = {
+        clauses: clauses.length,
+        passing: clauses.length - count('not-passing'),
+        filed: count('filed'),
+        unchanged: count('unchanged'),
+        refused: count('refused'),
+        notPassing: count('not-passing'),
+      };
+      return {
+        data: {
+          ok: counts.refused === 0,
+          dryRun,
+          slug: evaluation.slug,
+          evaluatorBuild: evaluation.evaluatorBuild,
+          classRef: evaluation.classRef,
+          governing: evaluation.governing,
+          ...(typeof evaluation.governingNote === 'string' ? { governingNote: evaluation.governingNote } : {}),
+          counts,
+          clauses,
+          completionReadiness,
+        },
+      };
       },
-    };
+    );
+    if (!outcome.acquired) {
+      const build = getBuildInfo();
+      return {
+        data: {
+          ok: false,
+          dryRun: args.dryRun === true,
+          evaluatorBuild: { sha: build.sha, version: build.version },
+          reason: `resource_${outcome.reason}`,
+          resource: CERTIFICATION_RESOURCE,
+          holders: outcome.holders,
+        },
+      };
+    }
+    return outcome.result;
   },
 });

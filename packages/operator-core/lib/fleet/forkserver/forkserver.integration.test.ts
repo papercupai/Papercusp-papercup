@@ -27,6 +27,7 @@ import { captureSidecarContainment, observeSidecarExit } from '../sidecar-exec-l
 import { execFileViaSidecar, isSidecarInfrastructureFault } from '../git-via-sidecar';
 import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { linuxProcStateFromStat } from '../../process-identity';
 
 // Keep the production launcher and real kernel scopes; only the unrelated
 // durable ledger/flag stores are hermetic in this process integration suite.
@@ -54,10 +55,17 @@ function collect(child: Pick<SidecarChild, 'on' | 'once' | 'stdout' | 'stderr'>)
       retainText: false,
       onDecodedText: (text) => { out.stdout += text; },
     });
-    child.stderr?.on('data', (d: Buffer) => { out.stderr += d.toString('utf8'); });
+    const stderrCollector = createTextCollector(child.stderr, {
+      retainText: false,
+      onDecodedText: (text) => { out.stderr += text; },
+    });
     child.once('spawn', () => out.events.push('spawn'));
-    child.on('error', (e: NodeJS.ErrnoException) => { out.events.push('error'); out.error = e; if (e.code === FORKSERVER_LOST_CODE) resolve(out); });
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      out.events.push('error'); out.error = e;
+      if (e.code === FORKSERVER_LOST_CODE) { stderrCollector.text(); resolve(out); }
+    });
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+      stderrCollector.text();
       out.events.push('close'); out.code = code; out.signal = signal; resolve(out);
     });
   });
@@ -69,8 +77,17 @@ const viaForkserver = async (command: string, args: string[], extra: Partial<Par
 const direct = (command: string, args: string[]) =>
   collect(spawn(command, args, { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }) as unknown as SidecarChild);
 
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+function kernelState(pid: number): string {
+  try { return linuxProcStateFromStat(readFileSync(`/proc/${pid}/stat`, 'utf8')) ?? 'unknown'; }
+  catch (error) {
+    return ['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '') ? 'gone' : 'unknown';
+  }
+}
+
+function exited(pid: number): boolean {
+  // Signal zero succeeds for an unreaped zombie. Unknown/unreadable state must
+  // still fail closed, just as the production process-group exit fence does.
+  return ['gone', 'Z', 'X'].includes(kernelState(pid));
 }
 
 async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
@@ -325,6 +342,26 @@ describe.runIf(linux)('sidecar forkserver', () => {
     expect(await readFile(outPath, 'utf8')).toBe('handoff-bytes\n');
   });
 
+  it('proves an unreaped zombie has exited while signal zero still succeeds', async () => {
+    const child = await spawnSidecarChild({ command: 'sh', args: ['-c', 'sleep 30 & echo $!; wait'], env, detached: true });
+    const done = collect(child);
+    let grandchild = 0;
+    child.stdout?.once('data', (d: Buffer) => { grandchild = Number(d.toString().trim()); });
+    try {
+      expect(await waitFor(() => grandchild > 0, 5_000)).toBe(true);
+      process.kill(child.pid!, 'SIGSTOP');
+      expect(await waitFor(() => kernelState(child.pid!) === 'T', 5_000)).toBe(true);
+      process.kill(grandchild, 'SIGTERM');
+      expect(await waitFor(() => kernelState(grandchild) === 'Z', 5_000)).toBe(true);
+      expect(() => process.kill(grandchild, 0)).not.toThrow();
+      expect(exited(grandchild)).toBe(true);
+    } finally {
+      try { process.kill(child.pid!, 'SIGCONT'); } catch { /* already exited */ }
+      try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* already exited */ }
+      await done;
+    }
+  });
+
   it('a SIGTERM to the process group kills the child and its grandchild', async () => {
     const child = await spawnSidecarChild({ command: 'sh', args: ['-c', 'sleep 30 & echo $!; wait'], env, detached: true });
     const done = collect(child);
@@ -334,7 +371,7 @@ describe.runIf(linux)('sidecar forkserver', () => {
     process.kill(-child.pid!, 'SIGTERM');
     const r = await done;
     expect(r.signal).toBe('SIGTERM');
-    expect(await waitFor(() => !alive(grandchild), 5_000)).toBe(true);
+    expect(await waitFor(() => exited(grandchild), 5_000), `grandchild ${grandchild} state=${kernelState(grandchild)}`).toBe(true);
   });
 
   it('when the forkserver is killed mid-exec, execProcess settles an infrastructure fault before the timeout and the next exec succeeds', async () => {

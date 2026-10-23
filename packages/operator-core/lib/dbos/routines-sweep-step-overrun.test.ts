@@ -62,11 +62,20 @@ describe('routinesSweepTick step overrun logging', () => {
     );
     const passEnd = source.indexOf('\nconst routinesTickWorkflow', passStart);
     const pass = source.slice(passStart, passEnd);
+    const tickStart = source.indexOf('async function routinesSweepTickImpl(): Promise<void> {');
+    const tickEnd = source.indexOf('\nasync function routinesSweepPassImpl', tickStart);
+    const tick = source.slice(tickStart, tickEnd);
+    const proxyStart = source.indexOf('const timedSweepDbos = new Proxy(DBOS, {');
+    const proxyEnd = source.indexOf('\n});', proxyStart);
+    const proxy = source.slice(proxyStart, proxyEnd);
     const loopStart = source.indexOf('async function runLoopRebaseSweep(');
     const loopEnd = source.indexOf('/** The scheduled tick:', loopStart);
     const loopHelper = source.slice(loopStart, loopEnd);
 
     expect(passStart).toBeGreaterThan(-1);
+    expect(tick).toContain('await routinesSweepPassImpl(timedSweepDbos)');
+    expect(proxy).toContain('runSweepStepWithOverrunBudget(');
+    expect(proxy).toContain('Reflect.apply(value, target, [wrappedOperation, ...stepArgs])');
     expect(pass).toMatch(/DBOS\.runStep\(/);
     expect(pass).not.toMatch(/runLoopRebaseSweep\(sql\)/);
     expect(pass).toContain('runLoopRebaseSweep(sql, DBOS)');

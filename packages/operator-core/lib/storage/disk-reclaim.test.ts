@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -683,5 +683,64 @@ describe('native retention completion', () => {
         stages: [{ name: 'spawn-register-task', elapsedMs: 5 }, { name: 'spawn-mark-running', elapsedMs: 42 }],
       });
     } finally { release(); now.mockRestore(); }
+  });
+});
+
+describe('scheduled reclaim failure receipts', () => {
+  const startedAt = '2026-10-22T22:00:00.000Z';
+
+  it('persists an incomplete fallback receipt before returning it', async () => {
+    const run = vi.fn().mockRejectedValue(new Error('finalizePendingYield is not defined'));
+    const persisted: DiskReclaimReceipt[] = [];
+    const persistFailureReceipt = vi.fn(async (receipt: DiskReclaimReceipt) => { persisted.push(receipt); });
+    const finishedAt = new Date('2026-10-22T22:01:00.000Z');
+
+    const receipt = await runScheduledDiskReclaimWithFailureReceipt(run, startedAt, {
+      persistFailureReceipt,
+      now: () => finishedAt,
+    });
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(receipt).toMatchObject({
+      schemaVersion: 1,
+      startedAt,
+      finishedAt: finishedAt.toISOString(),
+      dryRun: false,
+      complete: false,
+      policyExhausted: null,
+      devices: [],
+      entries: [],
+      delegates: [],
+      errors: ['finalizePendingYield is not defined'],
+    });
+    expect(persistFailureReceipt).toHaveBeenCalledExactlyOnceWith(receipt);
+    expect(persisted).toEqual([receipt]);
+  });
+
+  it('does not return a successful fallback when audit persistence fails', async () => {
+    const run = vi.fn().mockRejectedValue(new Error('scheduled reclaim failed'));
+    const persistFailureReceipt = vi.fn().mockRejectedValue(new Error('audit unavailable'));
+
+    await expect(runScheduledDiskReclaimWithFailureReceipt(run, startedAt, {
+      persistFailureReceipt,
+    })).rejects.toThrow('audit unavailable');
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(persistFailureReceipt).toHaveBeenCalledOnce();
+  });
+
+  it('leaves successful pass receipts to the scheduled runner', async () => {
+    const receipt: DiskReclaimReceipt = {
+      schemaVersion: 1, id: 'scheduled-success', startedAt, finishedAt: startedAt, dryRun: false,
+      complete: true, policyExhausted: true, devices: [], entries: [], delegates: [], errors: [],
+    };
+    const run = vi.fn().mockResolvedValue(receipt);
+    const persistFailureReceipt = vi.fn();
+
+    await expect(runScheduledDiskReclaimWithFailureReceipt(run, startedAt, {
+      persistFailureReceipt,
+    })).resolves.toBe(receipt);
+
+    expect(persistFailureReceipt).not.toHaveBeenCalled();
   });
 });

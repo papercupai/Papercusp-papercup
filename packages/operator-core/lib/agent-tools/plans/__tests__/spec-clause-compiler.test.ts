@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   compileSpecClauses,
+  computeSpecSetHash,
   specBehaviorNonFalsifiableReason,
   type SpecClauseEnrichment,
 } from '../spec-clause-compiler';
@@ -62,6 +63,47 @@ describe('compileSpecClauses', () => {
 
     expect(after.specSetHash).not.toBe(before.specSetHash);
     expect(after.invalidated).toBe(true);
+  });
+
+  it.each([
+    { observation: 'The child reports a different interpreter.' },
+    { probeMethod: 'Launch a second controlled child.' },
+    { requiredScenarios: ['child-pass', 'child-timeout'] },
+    { causalPairing: 'one-to-one' as const },
+  ])('invalidates spec-set identity when a declared falsifier changes: %j', (change) => {
+    const [clause] = compileSpecClauses(
+      plan('  - **[VAL-demo-001]**', '    - **Verify:** GET /health returns 200'),
+      { enrichments: ACTIVE_HTTP_SPEC },
+    ).candidates;
+    const falsifier = {
+      observation: 'The child exits without its completion marker.',
+      probeMethod: 'Launch a controlled child.',
+      requiredScenarios: ['child-pass'],
+    };
+
+    expect(computeSpecSetHash([{ ...clause, falsifier: { ...falsifier, ...change } }]))
+      .not.toBe(computeSpecSetHash([{ ...clause, falsifier }]));
+    expect(computeSpecSetHash([{ ...clause, falsifier }])).not.toBe(computeSpecSetHash([clause]));
+  });
+
+  it('normalizes falsifier formatting and scenario order without changing legacy undeclared identities', () => {
+    const [clause] = compileSpecClauses(
+      plan('  - **[VAL-demo-001]**', '    - **Verify:** GET /health returns 200'),
+      { enrichments: ACTIVE_HTTP_SPEC },
+    ).candidates;
+    const falsifier = {
+      observation: 'The child exits without its completion marker.',
+      probeMethod: 'Launch a controlled child.',
+      requiredScenarios: ['child-pass', 'child-timeout'],
+    };
+
+    expect(computeSpecSetHash([{ ...clause, falsifier: {
+      observation: '  The child exits  without its completion marker. ',
+      probeMethod: '**Launch a controlled child.**',
+      requiredScenarios: ['child-timeout', 'child-pass', 'child-pass'],
+    } }])).toBe(computeSpecSetHash([{ ...clause, falsifier }]));
+    expect(computeSpecSetHash([{ ...clause, falsifier: null }])).toBe(computeSpecSetHash([clause]));
+    expect(computeSpecSetHash([{ ...clause, falsifier: undefined }])).toBe(computeSpecSetHash([clause]));
   });
 
   it('hashes the spec set independently of clause source order', () => {

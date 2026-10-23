@@ -1,13 +1,14 @@
 import { createServer, request } from 'node:http';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it, vi } from 'vitest';
 import { createTextCollector } from './child-output';
-import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, saveFixtureReceipt, verifyAdvertisedFixtureRoute, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
+import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, provisionFixtureAgentHome, saveFixtureReceipt, verifyAdvertisedFixtureRoute, verifyFixtureModelRoute, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
+import { encodeWorkspaceHostAgentHomeBundle, workspaceHostAgentHomePaths } from '@papercusp/deployment-driver';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 import { advanceFixtureDeviceClock, DEVICE_EXPIRY_OFFSET_MS } from './native-device-fixture-clock';
 
@@ -22,6 +23,99 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('installs only projected credentials in disposable HOME and removes its exact files', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'papercusp-test-runtime-')));
+    const home = join(root, 'home');
+    mkdirSync(join(home, '.papercusp'), { recursive: true, mode: 0o700 });
+    const env = { ...privateEnv, HOME: home, PAPERCUSP_HOME: join(home, '.papercusp') };
+    const bundle = join(root, 'agent-home.json');
+    const raw = { claude: Buffer.from(JSON.stringify({ claudeAiOauth: {
+      accessToken: 'claude-access', refreshToken: 'claude-refresh-secret',
+    } })), codex: Buffer.from(JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: 'api-secret',
+      tokens: { access_token: 'codex-access', id_token: 'identity', refresh_token: 'codex-refresh-secret' } })), omp: null };
+    writeFileSync(bundle, encodeWorkspaceHostAgentHomeBundle(raw), { mode: 0o600 });
+    const paths = workspaceHostAgentHomePaths(home);
+    try {
+      expect(() => provisionFixtureAgentHome('', env)).toThrow('Explicit private');
+      chmodSync(bundle, 0o644);
+      expect(() => provisionFixtureAgentHome(bundle, env)).toThrow('Owned private');
+      expect(existsSync(paths.claude)).toBe(false);
+      chmodSync(bundle, 0o600);
+      const provision = provisionFixtureAgentHome(bundle, env);
+      expect(JSON.parse(readFileSync(paths.claude, 'utf8')).claudeAiOauth).toEqual({ accessToken: 'claude-access', refreshToken: '' });
+      const codex = JSON.parse(readFileSync(paths.codex, 'utf8'));
+      expect(codex.tokens).toMatchObject({ access_token: 'codex-access', refresh_token: '' });
+      expect(codex.OPENAI_API_KEY).not.toBe('api-secret');
+      expect(statSync(paths.codex).mode & 0o777).toBe(0o600);
+      expect(JSON.stringify(provision.receipt)).not.toMatch(/accessToken|codex-access|claude-access|refresh-secret|api-secret/);
+      const existing = readFileSync(paths.claude);
+      expect(() => provisionFixtureAgentHome(bundle, env)).toThrow();
+      expect(readFileSync(paths.claude)).toEqual(existing);
+      provision.cleanup();
+      expect(existsSync(paths.claude)).toBe(false);
+      expect(existsSync(paths.codex)).toBe(false);
+      expect(existsSync(bundle)).toBe(true); // caller owns the input lifetime
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses credential redirection and rolls back a partially installed bundle', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'papercusp-test-runtime-')));
+    const home = join(root, 'home');
+    mkdirSync(join(home, '.papercusp'), { recursive: true });
+    const elsewhere = join(root, 'shared'); mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(home, '.codex'));
+    const bundle = join(root, 'agent-home.json');
+    writeFileSync(bundle, encodeWorkspaceHostAgentHomeBundle({
+      claude: Buffer.from(JSON.stringify({ claudeAiOauth: { accessToken: 'claude-access' } })),
+      codex: Buffer.from(JSON.stringify({ tokens: { access_token: 'codex-access', id_token: 'identity', refresh_token: '' } })),
+      omp: null,
+    }), { mode: 0o600 });
+    try {
+      expect(() => provisionFixtureAgentHome(bundle, { ...privateEnv, HOME: home,
+        PAPERCUSP_HOME: join(home, '.papercusp') })).toThrow('must not redirect');
+      expect(existsSync(join(home, '.claude/.credentials.json'))).toBe(false);
+      expect(readdirSync(elsewhere)).toEqual([]);
+      expect(() => provisionFixtureAgentHome(bundle, { ...privateEnv, HOME: elsewhere,
+        PAPERCUSP_HOME: join(elsewhere, '.papercusp') })).toThrow('Maintained disposable');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['assistant', 'user-only', 'empty', 'error', 'unauthorized'] as const)(
+    'requires an actual persisted nonce reply and revokes the model-probe device: %s', async outcome => {
+      let nonce = '';
+      const deviceId = '00000000-0000-4000-8000-000000000001';
+      const calls: string[] = [];
+      const doFetch = vi.fn(async (input: string, init: RequestInit = {}) => {
+        const path = new URL(input).pathname;
+        expect(new URL(input).origin).toBe(privateEnv.PAPERCUSP_OPERATOR_URL);
+        expect(init.signal).toBeInstanceOf(AbortSignal);
+        calls.push(path);
+        if (path.endsWith('mint-pair-token')) return Response.json({ qrPayload: { workspaceId: privateEnv.PAPERCUSP_WORKSPACE_ID, pairToken: 'one-shot' } });
+        if (path.endsWith('/pair')) return Response.json({ deviceId, workspaceId: privateEnv.PAPERCUSP_WORKSPACE_ID, deviceToken: 'private-device-token' });
+        if (init.method === 'DELETE') return Response.json({ ok: true });
+        expect(init.headers).toMatchObject({ authorization: 'Bearer private-device-token' });
+        if (path.endsWith('/converse')) {
+          nonce = JSON.parse(String(init.body)).text.match(/fixture-model-[a-f0-9-]+/)[0];
+          return new Response(outcome === 'error' ? 'event: error\ndata: {"message":"provider-secret"}\n\n' :
+            'event: done\ndata: {}\n\n', { status: outcome === 'unauthorized' ? 401 : 200,
+            headers: { 'content-type': 'text/event-stream' } });
+        }
+        return Response.json({ turns: outcome === 'empty' ? [] : [{ role: outcome === 'user-only' ? 'user' : 'assistant', text: nonce }] });
+      }) as unknown as typeof fetch;
+      const result = verifyFixtureModelRoute(privateEnv, doFetch);
+      if (outcome === 'assistant') await expect(result).resolves.toMatchObject({ persistedAssistantReply: true });
+      else await expect(result).rejects.toThrow(outcome === 'error' ? 'error event' :
+        outcome === 'unauthorized' ? 'converse failed' : 'actual assistant reply');
+      expect(calls.at(-1)).toBe('/api/device/desktop/devices/' + deviceId);
+    });
+
+  it('rejects a shared operator before the model preflight makes any request', async () => {
+    const doFetch = vi.fn();
+    await expect(verifyFixtureModelRoute({ ...privateEnv, PAPERCUSP_WORKSPACE_ID: 'shared' }, doFetch))
+      .rejects.toThrow('Disposable workspace');
+    expect(doFetch).not.toHaveBeenCalled();
+  });
+
   it('publishes complete private runtime receipts while an independent reader is active', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'fixture-receipt-'));
     const path = join(directory, 'runtime.json');

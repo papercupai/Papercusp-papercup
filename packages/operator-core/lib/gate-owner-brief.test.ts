@@ -37,7 +37,8 @@ describe('owner brief test progress retrieval', () => {
   it('keeps aggregate file counts exact when rendered details are truncated, without inventing a case total', () => {
     const p = progress();
     expect(p.candidateFiles).toMatchObject({ value: 83, filesJudged: 400, detailsTruncated: true,
-      unit: 'test-files', candidateSha: CANDIDATE, readAtMs: NOW });
+      unit: 'test-files', candidateSha: CANDIDATE, readAtMs: NOW, observedAtMs: null,
+      observationTimeReason: expect.stringContaining('does not retain') });
     expect(p.fullSuiteFailingCases).toMatchObject({ value: null, status: 'not-measured', unit: 'test-cases' });
   });
 
@@ -52,6 +53,17 @@ describe('owner brief test progress retrieval', () => {
       status: 'converging', baseline: 9, latest: 3, decrease: 6,
       unit: 'queue-failure-signatures', observedAtMs: NOW - 10_000,
     });
+  });
+
+  it('withholds aggregate counts from a different or unrecorded current subject', () => {
+    for (const candidateFailures of [{ ...failures, candidateSha: STAGING_HEAD },
+      { ...failures, repairHeadSha: STAGING_HEAD }]) {
+      expect(progress({ candidateFailures }).candidateFiles).toMatchObject({
+        status: 'incomparable', value: null, filesJudged: null,
+        reason: expect.stringContaining('current frozen candidate'),
+      });
+    }
+    expect(progress({ repairQueue: null }).candidateFiles).toMatchObject({ status: 'incomparable', value: null });
   });
 
   it('withholds a trend when the repair head or candidate differs', () => {

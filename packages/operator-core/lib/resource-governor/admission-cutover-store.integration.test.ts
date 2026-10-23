@@ -37,6 +37,10 @@ beforeAll(async () => {
       `
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
     CREATE SCHEMA IF NOT EXISTS harness_shared;
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigint PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      ended_at timestamptz, resume_claim_key text, resume_claimed_at timestamptz
+    );
     CREATE SEQUENCE harness_shared.work_item_seq;
     CREATE OR REPLACE FUNCTION harness_shared.next_work_item_id()
     RETURNS text
@@ -86,6 +90,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`
     TRUNCATE harness_shared.resource_governor_admissions,
+             harness_shared.adv_sessions,
              harness_shared.operator_settings,
              harness_shared.work_items`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
@@ -129,6 +134,84 @@ function runtime(
 }
 
 describe('PgAdmissionCutoverQueueStore', () => {
+  it.each(['legacy', 'cutover'] as const)('starts an ended-source lease on %s with a live launcher, then restores child death and expiry protection', async (kind) => {
+    const clock = { now: 50_000 };
+    let childLive = false;
+    let launcherLive = true;
+    const resolve = (async (subjects: readonly { ownerId: string }[]) => new Map(subjects.map(({ ownerId }) => [
+      ownerId, { sessionState: ownerId === 'launcher' ? launcherLive ? 'live' : 'ended' : childLive ? 'live' : 'ended' },
+    ]))) as never;
+    await db.sql`INSERT INTO harness_shared.adv_sessions
+      (id, workspace_id, coord_owner_id, ended_at, resume_claim_key, resume_claimed_at)
+      VALUES (11, ${WORKSPACE}, 'ended-source', to_timestamp(1), 'exact-resume', to_timestamp(50))`;
+    const d = runtime(kind, 'resume', { now: () => clock.now, namespace: 'agent-process', resolveSessionStatesFn: resolve });
+    // Place the real competing maintenance pass in the dangerous window, after
+    // the real lease commits and before beginGovernedExecution marks it running.
+    const leaseReceipt = d.driver.leaseReceipt.bind(d.driver);
+    vi.spyOn(d.driver, 'leaseReceipt').mockImplementation(async (input) => {
+      const claim = await leaseReceipt(input);
+      await d.store.reconcileExpired?.('agent-process', clock.now);
+      return claim;
+    });
+    // Counterfactual: the same real ended source and live launcher fail at the
+    // original transition when the receipt lacks this exact reservation proof.
+    await expect(execution.beginGovernedExecution({ idempotencyKey: 'unprotected', admissionClass: 'agent' },
+      { owner: 'ended-source' }, d)).rejects.toMatchObject({
+        governedAdmissionTransition: { state: 'queued', decision: 'owner-ended', leasePresent: false },
+      });
+    const start = (key: string, ttlMs = 10_000) => execution.beginGovernedExecution({
+      idempotencyKey: key, admissionClass: 'agent', metadata: {
+        targetOwnerId: 'ended-source', launchedBy: 'launcher', resumeAdvSessionId: 11,
+        resumeClaimKey: 'exact-resume', resumeStartupExpiresAtMs: 55_000,
+      },
+    }, { owner: 'ended-source', leaseTtlMs: ttlMs }, d);
+
+    // Real leaseReceipt -> owner scan -> markRunning: this failed owner-ended
+    // before the reservation-aware startup transition, despite the live launcher.
+    const running = await start('exact');
+    expect(running.lease.owner).toBe('ended-source');
+    expect(await d.governor.status('exact')).toMatchObject({ state: 'running' });
+    const [source] = await db.sql`SELECT ended_at FROM harness_shared.adv_sessions WHERE id = 11`;
+    expect(source.ended_at).not.toBeNull();
+
+    // An unrelated old lease of the same ended owner is still reclaimable.
+    const prior = await d.governor.admit({ idempotencyKey: 'old-owner-lease', admissionClass: 'agent' });
+    if (prior.kind !== 'queued') throw new Error('expected queued prior lease');
+    await d.driver.leaseReceipt({ receiptId: prior.receipt.receiptId, owner: 'ended-source', ttlMs: 10_000 });
+    await d.store.reconcileExpired?.('agent-process', clock.now);
+    expect(await d.governor.status('old-owner-lease')).toMatchObject({ state: 'queued' });
+    expect(await d.governor.status('exact')).toMatchObject({ state: 'running' });
+
+    // Child readiness consumes the reservation; the real child remains owner.
+    childLive = true;
+    await db.sql`UPDATE harness_shared.adv_sessions SET ended_at = NULL,
+      resume_claim_key = NULL, resume_claimed_at = NULL WHERE id = 11`;
+    await d.store.reconcileExpired?.('agent-process', clock.now);
+    expect(await d.governor.status('exact')).toMatchObject({ state: 'running' });
+    childLive = false;
+    await d.store.reconcileExpired?.('agent-process', clock.now);
+    expect(await d.governor.status('exact')).toMatchObject({ state: 'queued' });
+
+    // Restore startup, then prove launcher death, startup expiry, and ordinary
+    // lease expiry independently remove protection without a child exit callback.
+    await db.sql`UPDATE harness_shared.adv_sessions SET ended_at = to_timestamp(1),
+      resume_claim_key = 'exact-resume', resume_claimed_at = to_timestamp(50) WHERE id = 11`;
+    await start('launcher-dies');
+    launcherLive = false;
+    await d.store.reconcileExpired?.('agent-process', clock.now);
+    expect(await d.governor.status('launcher-dies')).toMatchObject({ state: 'queued' });
+    launcherLive = true;
+    await start('startup-expires');
+    clock.now = 55_000;
+    await d.store.reconcileExpired?.('agent-process', clock.now);
+    expect(await d.governor.status('startup-expires')).toMatchObject({ state: 'queued' });
+    clock.now = 50_000;
+    await start('lease-expires', 1_000);
+    clock.now = 51_001;
+    await d.store.reconcileExpired?.('agent-process', clock.now);
+    expect(await d.governor.status('lease-expires')).toMatchObject({ state: 'queued' });
+  });
+
   it('persists LSP pressure through the production store and agrees with controller readback until settlement', async () => {
     // Reuse the production cutover store on the isolated database. Only the
     // process-global connection lookup and owner liveness are substituted.

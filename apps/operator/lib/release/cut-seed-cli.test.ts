@@ -19,6 +19,8 @@ import Corestore from 'corestore';
 import { openOwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
 import { cutHiveSeed } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
 import { SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-excluded-tables';
+import { shouldDropGovernorReceiptSnapshotRow } from '@papercusp/operator-core/lib/sync/hyperbee/governor-receipt-snapshot-filter';
+import type { produceLogSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/log-snapshot';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   parseGitDepth,
@@ -796,6 +798,8 @@ describe('refreshCorestoreStateForSeed', () => {
   it('P-004: does NOT append a fresh head snapshot for a FULL cut (sparse falsy)', async () => {
     const ownLog = { keyHex: 'cd'.repeat(32), append: vi.fn(async () => {}), appendBatch: vi.fn(async () => {}), get: vi.fn(async () => null), length: 0 };
     const produceSnapshotImpl = vi.fn();
+    const loadGovernorReceiptKeysImpl = vi.fn();
+    const loadSnapshotEnvelopeKeysImpl = vi.fn();
     await refreshCorestoreStateForSeed({
       workspaceId: 'papercusp-workspace',
       hive: 'papercusp',
@@ -805,10 +809,14 @@ describe('refreshCorestoreStateForSeed', () => {
       backfillImpl: vi.fn(async () => ({ skipped: false, enqueued: 0, dropped: 0 })),
       drainImpl: vi.fn(async () => 0),
       produceSnapshotImpl,
+      loadGovernorReceiptKeysImpl,
+      loadSnapshotEnvelopeKeysImpl,
       warn: vi.fn(),
       // sparse omitted → full cut
     });
     expect(produceSnapshotImpl).not.toHaveBeenCalled();
+    expect(loadGovernorReceiptKeysImpl).not.toHaveBeenCalled();
+    expect(loadSnapshotEnvelopeKeysImpl).not.toHaveBeenCalled();
   });
 
   it('P-004: appends a fresh head snapshot AFTER the drain when sparse (so the sparse start is in the reader scan window)', async () => {
@@ -825,6 +833,8 @@ describe('refreshCorestoreStateForSeed', () => {
       backfillImpl: vi.fn(async () => ({ skipped: false, enqueued: 3, dropped: 0 })),
       drainImpl,
       produceSnapshotImpl,
+      loadGovernorReceiptKeysImpl: async () => [],
+      loadSnapshotEnvelopeKeysImpl: async () => ({ potId: 'papercusp', keys: [] }),
       warn,
       sparse: true,
     });
@@ -833,6 +843,62 @@ describe('refreshCorestoreStateForSeed', () => {
     // Drain fully first, THEN snapshot: the snapshot must compact the drained state.
     expect(drainImpl).toHaveBeenCalledTimes(2);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('appended fresh head snapshot'));
+  });
+
+  it('filters only absent governor receipts using the pre-census log boundary on a quiesced cut', async () => {
+    const ownLog = { keyHex: 'cd'.repeat(32), append: vi.fn(async () => {}), appendBatch: vi.fn(async () => {}), get: vi.fn(async () => null), length: 10 };
+    const pg = {} as never;
+    const order: string[] = [];
+    const envelopeKeys = { potId: 'papercusp', keys: [{ epoch: 1, key: new Uint8Array(32) }] };
+    const loadGovernorReceiptKeysImpl = vi.fn(async () => {
+      order.push('census');
+      ownLog.length = 11; // A concurrent append after the captured boundary must survive.
+      return ['papercusp/WI-LIVE'];
+    });
+    const produceSnapshotImpl = vi.fn(async (_log: Parameters<typeof produceLogSnapshot>[0], opts: Parameters<typeof produceLogSnapshot>[1]) => {
+      order.push('snapshot');
+      const filter = opts?.governorReceiptFilter;
+      expect(filter).toEqual({ maxSourceIndexExclusive: 10, liveQualifiedKeys: ['papercusp/WI-LIVE'], envelopeKeys });
+      if (!filter) throw new Error('missing governor receipt filter');
+      const receipt = { payload: { resource_governor: {} } };
+      const row = { table: 'engineer-issues', sourceIndex: 2, hbKey: 'papercusp/WI-DEAD' };
+      expect(shouldDropGovernorReceiptSnapshotRow(receipt, row, filter)).toBe(true);
+      expect(shouldDropGovernorReceiptSnapshotRow(receipt, { ...row, hbKey: 'papercusp/WI-LIVE' }, filter)).toBe(false);
+      expect(shouldDropGovernorReceiptSnapshotRow(receipt, { ...row, sourceIndex: 10 }, filter)).toBe(false);
+      expect(shouldDropGovernorReceiptSnapshotRow({ payload: { lane: 'observation' } }, row, filter)).toBe(false);
+      expect(shouldDropGovernorReceiptSnapshotRow({ payload: {} }, row, filter)).toBe(false);
+      expect(opts?.excludeTables).toEqual(SEED_EXCLUDED_TABLES);
+      expect(opts?.excludeTables).not.toContain('engineer-issues');
+      return { appended: true, coversUpTo: 11, rowCount: 4, chunkCount: 1 };
+    });
+    await refreshCorestoreStateForSeed({
+      workspaceId: 'papercusp-workspace', hive: 'papercusp', store: {} as never, pg,
+      openOwnLogImpl: async () => ownLog,
+      backfillImpl: vi.fn(async () => ({ skipped: false, enqueued: 0, dropped: 0 })),
+      drainImpl: async () => { order.push('drain'); return 0; },
+      loadGovernorReceiptKeysImpl,
+      loadSnapshotEnvelopeKeysImpl: async (workspaceId, hive) => {
+        expect([workspaceId, hive]).toEqual(['papercusp-workspace', 'papercusp']);
+        return envelopeKeys;
+      },
+      produceSnapshotImpl, warn: vi.fn(), sparse: true,
+    });
+    expect(loadGovernorReceiptKeysImpl).toHaveBeenCalledWith('papercusp-workspace', pg);
+    expect(order).toEqual(['drain', 'census', 'snapshot']);
+  });
+
+  it('refuses a quiesced filtered snapshot when its census cannot be loaded', async () => {
+    const produceSnapshotImpl = vi.fn();
+    await expect(refreshCorestoreStateForSeed({
+      workspaceId: 'papercusp-workspace', hive: 'papercusp', store: {} as never, pg: {} as never,
+      openOwnLogImpl: async () => ({ keyHex: 'cd'.repeat(32), length: 10 }) as never,
+      backfillImpl: vi.fn(async () => ({ skipped: false, enqueued: 0, dropped: 0 })),
+      drainImpl: async () => 0,
+      loadGovernorReceiptKeysImpl: async () => { throw new Error('census unavailable'); },
+      loadSnapshotEnvelopeKeysImpl: async () => ({ potId: 'papercusp', keys: [] }),
+      produceSnapshotImpl, warn: vi.fn(), sparse: true,
+    })).rejects.toThrow('census unavailable');
+    expect(produceSnapshotImpl).not.toHaveBeenCalled();
   });
 });
 

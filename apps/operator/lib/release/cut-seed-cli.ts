@@ -149,6 +149,10 @@ import {
   type SnapshotFoldProgress,
 } from "@papercusp/operator-core/lib/sync/hyperbee/log-snapshot";
 import { SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-excluded-tables';
+import type {
+  loadLiveGovernorReceiptSnapshotKeys,
+  loadOwnCompactionEnvelopeKeys,
+} from '@papercusp/operator-core/lib/sync/hyperbee/governor-receipt-snapshot-census';
 import {
   findLiveOperatorHoldingHive,
   waitForLiveOperatorHoldingHive,
@@ -749,6 +753,8 @@ export async function refreshCorestoreStateForSeed(inp: {
    */
   readonly sparse?: boolean;
   readonly produceSnapshotImpl?: typeof produceLogSnapshot;
+  readonly loadGovernorReceiptKeysImpl?: typeof loadLiveGovernorReceiptSnapshotKeys;
+  readonly loadSnapshotEnvelopeKeysImpl?: typeof loadOwnCompactionEnvelopeKeys;
   /** False ⇒ --no-force-backfill; see the note on the call site below. */
   readonly forceBackfill?: boolean;
 }): Promise<RefreshCorestoreStateForSeedResult> {
@@ -805,6 +811,24 @@ export async function refreshCorestoreStateForSeed(inp: {
   // A full cut ships every block, so it needs no fresh snapshot. (seed-history-trim-2026-07-07 P-004.)
   if (inp.sparse) {
     const produce = inp.produceSnapshotImpl ?? produceLogSnapshot;
+    // Match the live head-snapshot path's dead-receipt policy. Capture the log
+    // boundary BEFORE the PG census so concurrent appends are always retained.
+    // If the census/key read fails, refuse this cut instead of shipping a fresh
+    // but unfiltered set. This loads existing epoch keys; it never mints one.
+    let loadReceiptKeys = inp.loadGovernorReceiptKeysImpl;
+    let loadEnvelopeKeys = inp.loadSnapshotEnvelopeKeysImpl;
+    if (!loadReceiptKeys || !loadEnvelopeKeys) {
+      const census = await import('@papercusp/operator-core/lib/sync/hyperbee/governor-receipt-snapshot-census');
+      loadReceiptKeys ??= census.loadLiveGovernorReceiptSnapshotKeys;
+      loadEnvelopeKeys ??= census.loadOwnCompactionEnvelopeKeys;
+    }
+    const maxSourceIndexExclusive = ownLog.length;
+    const liveQualifiedKeys = await loadReceiptKeys(
+      inp.workspaceId, pg,
+    );
+    const envelopeKeys = await loadEnvelopeKeys(
+      inp.workspaceId, inp.hive,
+    );
     // EI-20108164746219771 — same exclusion the LIVE operator applies in
     // servicePendingHeadSnapshot (boot.ts). This is the QUIESCED path (we hold the store
     // writable and append the snapshot ourselves); the no-outage path goes through the
@@ -814,6 +838,7 @@ export async function refreshCorestoreStateForSeed(inp: {
       now: Date.now(),
       schemaVersion: CURRENT_SCHEMA_VERSION,
       excludeTables: SEED_EXCLUDED_TABLES,
+      governorReceiptFilter: { maxSourceIndexExclusive, liveQualifiedKeys, envelopeKeys },
     });
     warn(
       `[cut-seed] sparse: appended fresh head snapshot ` +

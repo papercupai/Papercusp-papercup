@@ -23184,7 +23184,7 @@
           "POST"
         ]
       },
-      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision; op 'mint' launches a fresh confined reviewer. Required before a plan reaches awaiting-acceptance and at ship.",
+      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'mint' launches a confined reviewer; op 'resume' recovers that exact reviewer in place; op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision.",
       "capabilities": [
         "plans:write"
       ],
@@ -23203,7 +23203,7 @@
       "guidance": {
         "when": "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
         "notWhen": "Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.",
-        "chaining": "author: op 'mint' { howToRun }. reviewer: op 'brief' → run the product → op 'post' { gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance."
+        "chaining": "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance."
       }
     },
     {
@@ -23401,7 +23401,7 @@
           "POST"
         ]
       },
-      "description": "Spec-conformance writes on a plan. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm. op:'report' { statuses?, harness? } is the read-only conformance census across plans.",
+      "description": "Spec-conformance writes on a plan. op:'run' { slug, harness? } runs exactly one plan now through the maintained conformance runner, records its result and watermark, and returns its outcome. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm. op:'report' { statuses?, harness? } is the read-only conformance census across plans.",
       "capabilities": [
         "plans:write"
       ],
@@ -23984,7 +23984,7 @@
           "POST"
         ]
       },
-      "description": "Read canonical first-class spec clauses for one plan. Current revisions only by default; filter by stable spec id, source VAL alias, plan item, or exact revision, and opt into immutable history.",
+      "description": "Read canonical first-class spec clauses for one plan. Current revisions only by default; filter by stable spec id, source VAL alias, plan item, or exact revision, and opt into immutable history. For unchanged BAR projections, sourceBar.barSetHash/rubricRevision retain projection history. Check unchanged clause meaning and matching sourceBar.barHash against the current BAR; older aggregate stamps alone do not make a clause stale.",
       "capabilities": [
         "plans:read"
       ],

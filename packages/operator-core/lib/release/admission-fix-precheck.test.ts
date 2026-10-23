@@ -16,6 +16,7 @@ import {
   evaluateFixPrecheck,
   isTestFilePath,
   precheckPopulation,
+  defaultGitCommonDir,
   resolveCanonicalIntegrationRoot,
   ROUTER_EXIT_NOT_MEASURED,
   ROUTER_EXIT_TEMPFAIL,
@@ -558,7 +559,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     execFileSync('git', ['init', '--quiet', root]);
     const exec = vi.fn(async (_argv: readonly string[], _opts: ExecOptions) => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult));
     try {
-      expect(resolveCanonicalIntegrationRoot(toolingRoot)).toBe(root);
+      expect(await resolveCanonicalIntegrationRoot(toolingRoot)).toBe(root);
       const runner = createCheckpointTreeFixPrecheckRunner({
         ...base, integrationRoot: root, toolingRoot, exec,
         runLockHeld: () => ({ held: false, elapsedSec: null }),
@@ -833,23 +834,34 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
 });
 
 describe('resolveCanonicalIntegrationRoot (P-006 / R6)', () => {
-  it('a main worktree (its common dir is its own .git) resolves to itself', () => {
-    expect(resolveCanonicalIntegrationRoot('/w/papercusp', () => '/w/papercusp/.git')).toBe('/w/papercusp');
+  it('reads the common Git directory asynchronously and returns null when Git cannot classify a root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'admission-common-dir-'));
+    try {
+      execFileSync('git', ['init', '--quiet', root]);
+      await expect(defaultGitCommonDir(root)).resolves.toBe(join(root, '.git'));
+      await expect(defaultGitCommonDir(join(root, 'missing'))).resolves.toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  it('a LINKED worktree (papercusp-staging on :3170) resolves to the main worktree that owns the object store', () => {
+  it('a main worktree (its common dir is its own .git) resolves to itself', async () => {
+    expect(await resolveCanonicalIntegrationRoot('/w/papercusp', () => '/w/papercusp/.git')).toBe('/w/papercusp');
+  });
+
+  it('a LINKED worktree (papercusp-staging on :3170) resolves to the main worktree that owns the object store', async () => {
     // Measured 2026-09-11: the door handed the runner the linked worktree, setup-release-checkout
     // refused it (`-d .git` is false for a gitdir FILE), and the admission published unmeasured.
-    expect(resolveCanonicalIntegrationRoot('/w/papercusp-staging', () => '/w/papercusp/.git')).toBe('/w/papercusp');
+    expect(await resolveCanonicalIntegrationRoot('/w/papercusp-staging', () => '/w/papercusp/.git')).toBe('/w/papercusp');
   });
 
-  it('a relative common dir is resolved against the root', () => {
-    expect(resolveCanonicalIntegrationRoot('/w/papercusp', () => '.git')).toBe('/w/papercusp');
+  it('a relative common dir is resolved against the root', async () => {
+    expect(await resolveCanonicalIntegrationRoot('/w/papercusp', () => '.git')).toBe('/w/papercusp');
   });
 
-  it('a root git cannot classify is returned unchanged — the runner then fails loudly instead of guessing', () => {
-    expect(resolveCanonicalIntegrationRoot('/not-a-repo', () => null)).toBe('/not-a-repo');
-    expect(resolveCanonicalIntegrationRoot('/bare.git', () => '/bare.git')).toBe('/bare.git');
+  it('a root git cannot classify is returned unchanged — the runner then fails loudly instead of guessing', async () => {
+    expect(await resolveCanonicalIntegrationRoot('/not-a-repo', () => null)).toBe('/not-a-repo');
+    expect(await resolveCanonicalIntegrationRoot('/bare.git', () => '/bare.git')).toBe('/bare.git');
   });
 });
 

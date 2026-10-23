@@ -72,6 +72,9 @@ export type RecoveryKind =
  */
 export const RECALL_NOISE_FLOOR = 0.05;
 
+/** Read-only measurement of a selected drill, on the existing scorecard seam. */
+export const CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY = 'session:carry-drill-lifecycle';
+
 /** One recovery lookup the LIVE trace-extraction emits from a cold successor. */
 export interface RecoveryLookup {
   kind: RecoveryKind;

@@ -28,6 +28,7 @@ vi.mock('@papercusp/flags/server', async (original) => ({
 }));
 
 import {
+  AdmissionAuthorityRefused, AdmissionAuthorityUnavailable,
   admissionCredentialDigest, admissionReplayContext, authorizeAdmissionReplay, bindAdmissionAuthority,
 } from './work-item-admission-authority';
 import { installControlAnchorKernelResolver, readControlAnchorKernelState, setKernelEnforcementResolver } from './projected-tool-deps';
@@ -117,6 +118,24 @@ afterEach(async () => {
 });
 
 describe('admission replay policy fidelity', () => {
+  it.each(['preflight', 'enforce'] as const)('keeps a %s authority-reader failure retryable without authorizing it', async (phase) => {
+    setKernelEnforcementResolver(request => request.phase === phase
+      ? { decision: 'deny', code: 'policy-unavailable', reason: 'policy reader unavailable' }
+      : { decision: 'allow' });
+    await expect(authorize()).rejects.toBeInstanceOf(AdmissionAuthorityUnavailable);
+    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ decision: 'deny' }));
+
+    installControlAnchorKernelResolver();
+    await expect(authorize()).resolves.toBeUndefined();
+  });
+
+  it('keeps a revoked verdict terminal even when its prose mentions unavailable authority', async () => {
+    setKernelEnforcementResolver(() => ({
+      decision: 'deny', code: 'revoked', reason: 'current session authority could not be read',
+    }));
+    await expect(authorize()).rejects.toBeInstanceOf(AdmissionAuthorityRefused);
+  });
+
   it('does not persist the workspace-wide harness sentinel as a replay identity', () => {
     expect(bound({ harnessSlug: '*' })).toBeUndefined();
   });

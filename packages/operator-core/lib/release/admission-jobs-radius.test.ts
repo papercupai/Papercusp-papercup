@@ -166,8 +166,8 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
 });
 
 describe('immutablePrecheckPopulation with an ordinary admission (P-007)', () => {
-  it('adds the measured radius to the R6 population and refuses a newly red guarded file by leg', () => {
-    const result = executeAdmissionJob({ kind: 'precheck-population', input: {
+  it('adds the measured radius to the R6 population and refuses a newly red guarded file by leg', async () => {
+    const result = await executeAdmissionJob({ kind: 'precheck-population', input: {
       root, commit, signature: [{ kind: 'test-file', id: 'pkg-b/src/util.test.ts' }], admittedPaths: ['pkg-a/lib/core.ts'],
     } });
     if (!result.ok) throw new Error(result.detail);

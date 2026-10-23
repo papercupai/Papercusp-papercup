@@ -12,7 +12,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { harnessArg, harnessScopedCtx, isAllHarnessSentinel } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { readPlanBySlug } from './source';
 import { addDecisionOne } from './add-decision';
@@ -119,8 +119,8 @@ function productionDeviationDeps(ctx: UnifiedToolContext, harness: string | unde
 
 const argsSchema = z.object({
   harness: harnessArg,
-  op: z.enum(['propose-deviation', 'approve-deviation', 'report']),
-  slug: z.string().min(1).optional().describe('Plan slug (deviation ops).'),
+  op: z.enum(['propose-deviation', 'approve-deviation', 'report', 'run']),
+  slug: z.string().trim().min(1).optional().describe('Plan slug (run and deviation ops).'),
   requirement: z.string().regex(/^R-\d+$/, 'R-N form required').optional().describe('The requirement key under ## Requirements (deviation ops).'),
   statuses: z
     .array(z.string().min(1))
@@ -147,7 +147,7 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
 export default defineTool({
   name: 'plans:conformance',
   description:
-    "Spec-conformance writes on a plan. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm. op:'report' { statuses?, harness? } is the read-only conformance census across plans.",
+    "Spec-conformance writes on a plan. op:'run' { slug, harness? } runs exactly one plan now through the maintained conformance runner, records its result and watermark, and returns its outcome. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm. op:'report' { statuses?, harness? } is the read-only conformance census across plans.",
   guidance: {
     when: 'A plan requirement cannot or should no longer be met. Propose the deviation, then approve it with the right authority, instead of leaving the requirement red or editing it away.',
     notWhen: 'Changing what a requirement says (edit the plan). An ordinary ruling (plans:add-decision).',
@@ -159,6 +159,24 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    if (args.op === 'run') {
+      if (!args.slug) return text({ ok: false, error: 'invalid_args', message: "op:'run' requires slug" }, true);
+      const sctx = harnessScopedCtx(args.harness, ctx);
+      if (isAllHarnessSentinel(sctx.harnessSlug)) {
+        return text({ ok: false, error: 'invalid_args', message: "op:'run' requires one concrete harness" }, true);
+      }
+      const opts = await ctxToPlanSourceOpts(sctx);
+      const read = await readPlanBySlug(args.slug, opts);
+      if (!read) return text({ ok: false, error: 'plan_not_found', slug: args.slug }, true);
+      const target = { harnessSlug: read.row.harnessSlug, planSlug: args.slug };
+      const { productionSweepDeps, runSpecConformanceSweep } = await import('../../spec-conformance/sweep-action');
+      const outcome = await runSpecConformanceSweep({ target }, {
+        ...productionSweepDeps({ workspaceId: opts.workspaceId ?? activeWorkspaceId() }),
+        listPlans: async () => [{ ...target, content: read.row.content }],
+      });
+      const ok = outcome.ran.length === 1 && outcome.ran[0].ok;
+      return text({ ok, op: 'run', ...target, ...outcome }, !ok);
+    }
     if (args.op === 'report') {
       // R-22 census: read-only, so it needs no plan slug and writes nothing. A harness
       // filter applies only when the caller passed one explicitly.

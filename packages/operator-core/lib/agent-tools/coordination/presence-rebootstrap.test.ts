@@ -81,10 +81,10 @@ describe('renderPresenceRebootstrapBlock', () => {
     const snap: PresenceSnapshot = {
       as_of: '2026-06-15T02:00:00.000Z',
       scope: 'hive',
-      summary: { active: 2, stale: 0, federated: 1, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0 }, byContextPressure: { high: 0, critical: 0 } },
+      summary: { active: 2, stale: 0, federated: 1, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0, unknown: 1 }, byContextPressure: { high: 0, critical: 0 } },
       active: [
-        { ownerLabel: 'su · a', agentRole: 'su', intent: 'reviewing the fold', currentPlanSlug: 'presence-v2-2026-06-14' },
-        { ownerLabel: 'fed:42@box', intent: 'remote work' }, // no role/plan
+        { ownerLabel: 'su · a', agentRole: 'su', intent: 'reviewing the fold', currentPlanSlug: 'presence-v2-2026-06-14', sessionState: 'live' },
+        { ownerLabel: 'fed:42@box', intent: 'remote work', sessionState: null }, // no role/plan; liveness is unknown here
       ],
       etag: 'test-etag',
     };
@@ -92,7 +92,7 @@ describe('renderPresenceRebootstrapBlock', () => {
     expect(block).toContain('[presence ⟲ 2]');
     expect(block).toContain('as_of 2026-06-15T02:00:00.000Z');
     expect(block).toContain('su · a [su] reviewing the fold (presence-v2-2026-06-14)');
-    expect(block).toContain('fed:42@box [—] remote work');
+    expect(block).toContain('fed:42@box [—] remote work [liveness unknown]');
   });
 
   it('below the inline threshold (14 agents) still lists every row', () => {
@@ -100,11 +100,12 @@ describe('renderPresenceRebootstrapBlock', () => {
       ownerLabel: `su-${i}`,
       agentRole: 'su',
       intent: 'x',
+      sessionState: 'live',
     }));
     const block = renderPresenceRebootstrapBlock({
       as_of: '2026-06-15T02:00:00.000Z',
       scope: 'workspace',
-      summary: { active: 14, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 14, parked: 0, ended: 0, recorded: 0 }, byContextPressure: { high: 0, critical: 0 } },
+      summary: { active: 14, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 14, parked: 0, ended: 0, recorded: 0, unknown: 0 }, byContextPressure: { high: 0, critical: 0 } },
       active,
       etag: 'test-etag',
     });
@@ -119,18 +120,19 @@ describe('renderPresenceRebootstrapBlock', () => {
       ownerLabel: `su-${i}`,
       agentRole: 'su',
       intent: 'x',
+      sessionState: i < 50 ? 'live' : i < 54 ? 'parked' : null,
     }));
     const block = renderPresenceRebootstrapBlock({
       as_of: '2026-06-15T02:00:00.000Z',
       scope: 'workspace',
-      summary: { active: 55, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 50, parked: 5, ended: 0, recorded: 0 }, byContextPressure: { high: 0, critical: 0 } },
+      summary: { active: 55, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 50, parked: 4, ended: 0, recorded: 0, unknown: 1 }, byContextPressure: { high: 0, critical: 0 } },
       active,
       etag: 'test-etag',
     });
     expect(block).toContain('[presence ⟲ 55]');
     // No per-agent rows at all — none of the row labels may appear.
     for (let i = 0; i < 55; i++) expect(block).not.toContain(`su-${i} [su] x`);
-    expect(block).toContain('55 agents active (50 live, 5 parked)');
+    expect(block).toContain('55 agents active (50 live, 4 parked, 1 unknown liveness)');
     expect(block).toContain('not inlined');
     expect(block).toContain('coord:presence');
     // Exactly two lines: header + summary — not a 40+-line dump.

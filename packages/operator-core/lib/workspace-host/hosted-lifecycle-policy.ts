@@ -382,7 +382,11 @@ export function evaluateHostedIdleStop(
 ): HostedIdleStopDecision {
   if (workspace.state !== 'active') return { due: false, idleForMs: 0 };
   if (workspace.observedState !== 'running') return { due: false, idleForMs: 0 };
-  if (workspace.activeLifecycleJobs > 0) return { due: false, idleForMs: 0 };
+  // Only a measured zero proves no operation is in flight. Unknown or malformed
+  // counters must not make an otherwise idle workspace eligible for a stop.
+  if (!finiteInteger(workspace.activeLifecycleJobs) || workspace.activeLifecycleJobs > 0) {
+    return { due: false, idleForMs: 0 };
+  }
   if (workspace.activeWork && [workspace.activeWork.activeAgents, workspace.activeWork.pendingAgentStarts,
     workspace.activeWork.activeCommands].some(value => !finiteInteger(value) || value > 0)) {
     return { due: false, idleForMs: 0, hold: 'active-work' };

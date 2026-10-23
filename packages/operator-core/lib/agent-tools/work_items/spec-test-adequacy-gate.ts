@@ -35,6 +35,8 @@ import {
   type SourceBarRubricCache,
 } from '../plans/source-bar-test-requirements';
 import { evaluateMechanicalTestAdequacy } from '../plans/mechanical-test-adequacy';
+import type { RequirementClosureDeclaration } from '../../spec-conformance/closure-guard';
+import { resolveItemCloseContributions, type ContributionDeferralDeps, type DeferredContribution } from './item-close-contributions';
 
 export interface SpecAdequacyCompletionAttestation {
   classRef?: PlanClassRubricRef;
@@ -122,7 +124,7 @@ export interface FailedGradingAudit {
   auditedAt?: string;
 }
 
-export type SpecAdequacyCompletionGateResult =
+export type SpecAdequacyCompletionGateResult = (
   | { ok: true; applicable: false; checked: []; exempted?: string[]; impactReport?: string }
   | {
       ok: true;
@@ -159,7 +161,7 @@ export type SpecAdequacyCompletionGateResult =
        * `failedGradingAuditTargetIds` contract stays intact for current readers.
        */
       failedGradingAudits?: FailedGradingAudit[];
-    };
+    }) & { deferredContributions?: DeferredContribution[] };
 
 /**
  * P-016: `planStampOf` moved to the universal contract resolver, which is the more
@@ -529,6 +531,8 @@ export async function specTestAdequacyCompletionGate(
     attestation?: SpecAdequacyCompletionAttestation;
     /** Actual changed AND deleted paths from the completion, not prose in its title. */
     changedPaths?: readonly string[];
+    workspaceId?: string;
+    completion?: RequirementClosureDeclaration;
   },
   deps: {
     listClauses?: typeof listSpecClauses;
@@ -544,6 +548,7 @@ export async function specTestAdequacyCompletionGate(
     resolveSourceBarTestRequirements?: typeof resolveSourceBarTestRequirements;
     /** P-004: whether each clause's plan item resolves to a code deliverable. */
     readCodeDeliverables?: typeof readClauseCodeDeliverables;
+    contributionDeferral?: ContributionDeferralDeps;
   } = {},
 ): Promise<SpecAdequacyCompletionGateResult> {
   const listClauses = deps.listClauses ?? listSpecClauses;
@@ -569,6 +574,10 @@ export async function specTestAdequacyCompletionGate(
   const impactReport = advisoryImpactReport(contract);
   const withReport = <T extends object>(result: T): T & { impactReport?: string } =>
     impactReport ? { ...result, impactReport } : result;
+  if (input.completion?.contributesTo?.some((key) => input.completion?.discharges?.includes(key))) {
+    return withReport({ ok: false, applicable: true, retryable: true, checked: [],
+      reason: 'A requirement cannot be both discharged and contributed to in one completion.' });
+  }
 
   // WI-10002055: name a clause this gate excused, and why. See the `exempted` field
   // doc on SpecAdequacyCompletionGateResult — an empty `checked` could not previously
@@ -803,6 +812,14 @@ export async function specTestAdequacyCompletionGate(
     });
   }
 
+  const deferredContributions = await resolveItemCloseContributions({
+    workItem: input.workItem, workspaceId: input.workspaceId ?? '', completion: input.completion,
+    clauses: relevant, evidence, codeDeliverable: codeDeliverableOf,
+  }, deps.contributionDeferral);
+  const clauseKey = (clause: SpecClauseRevision) => `${clause.planSlug}/${clause.specId}@${clause.revision}:${clause.contentHash}`;
+  const deferredKeys = new Set(deferredContributions.map((entry) =>
+    `${entry.projection.planSlug}/${entry.projection.specId}@${entry.projection.revision}:${entry.projection.contentHash}`));
+  const proven = new Set<string>();
   const checked: string[] = [];
   const carriedAcrossEvaluatorRevision: CarriedAdequacyCard[] = [];
   const failures: string[] = [];
@@ -810,20 +827,31 @@ export async function specTestAdequacyCompletionGate(
   const failedGradingAuditTargetIds = new Set<string>();
   const failedGradingAudits: FailedGradingAudit[] = [];
   for (const clause of relevant) {
+    if (deferredKeys.has(clauseKey(clause))) continue;
+    const certificates = deferredContributions.filter(entry =>
+      `${entry.covering.planSlug}/${entry.covering.specId}@${entry.covering.revision}:${entry.covering.contentHash}` === clauseKey(clause));
+    if (new Set(certificates.map(entry => JSON.stringify(entry.proofCohort))).size > 1) {
+      failures.push(`${clause.specId}@${clause.revision}: contribution certificates disagree on the admitted proof cohort`);
+      continue;
+    }
+    // Grade exactly the independently certified immutable cohort. An inadequate
+    // row A may not borrow adequacy from an unreviewed row/cohort B.
+    const certifiedIds = certificates[0] && new Set(certificates[0].proofCohort.map(pin => pin.bindingId));
+    const clauseEvidence = certifiedIds ? evidence.filter(row => row.id != null && certifiedIds.has(row.id)) : evidence;
     const sourceBarTestRequirements = await resolvePinnedSourceBarTestRequirements(
       clause.sourceBar,
       sourceBarRubricCache,
     );
     const label = `${clause.specId}@${clause.revision}`;
-    const mechanical = evaluateMechanicalTestAdequacy({ clause, evidence, sourceBarTestRequirements });
+    const mechanical = evaluateMechanicalTestAdequacy({ clause, evidence: clauseEvidence, sourceBarTestRequirements });
     if (mechanical.applicable) {
-      if (mechanical.verdict === 'pass') checked.push(label);
+      if (mechanical.verdict === 'pass') { checked.push(label); proven.add(clauseKey(clause)); }
       else failures.push(`${label}: mechanical test adequacy failed — ${mechanical.gaps.join('; ')}`);
       continue;
     }
     const result = evaluateSpecTestAdequacy({
       clause,
-      evidence,
+      evidence: clauseEvidence,
       classRef: classFor(clause),
       harness: harnessSlug,
       workItemKind: input.workItem.kind,
@@ -853,7 +881,7 @@ export async function specTestAdequacyCompletionGate(
       subjectRef,
       limit: 20,
     });
-    if (!cards.some((card) => scorecardMatches(card, result, evidence))) {
+    if (!cards.some((card) => scorecardMatches(card, result, clauseEvidence))) {
       const failedAuditsForLabel: FailedGradingAudit[] = [];
       for (const card of cards) {
         const needsIdentityReopen = gradingAuditNeedsIdentityReopen(card);
@@ -898,7 +926,7 @@ export async function specTestAdequacyCompletionGate(
           : (() => {
               const movedCohort = cards.some((card) =>
                 card.rerunRecipe?.current.supplied && ratingVerdictsMatch(card, result) &&
-                !scorecardProofCohortMatches(card, result, evidence));
+                !scorecardProofCohortMatches(card, result, clauseEvidence));
               const detail = verdictChangeDetail(cards, result);
               return movedCohort
                 ? `${label}: audited scorecard proof cohort differs from current bound evidence; certify the current cohort and settle its independent audit`
@@ -909,7 +937,7 @@ export async function specTestAdequacyCompletionGate(
     }
     // Only an evaluator-minted card (it carries a rerun recipe) has a grading revision to
     // report; a recipe without the stamp predates it and reads as revision 1.
-    const admitting = cards.find((card) => scorecardMatches(card, result, evidence))!;
+    const admitting = cards.find((card) => scorecardMatches(card, result, clauseEvidence))!;
     const disposition = admitting.rerunRecipe
       ? adequacyCardRevisionDisposition({
           recordedRevision: admitting.rerunRecipe.evaluatorRevision,
@@ -926,6 +954,13 @@ export async function specTestAdequacyCompletionGate(
       });
     }
     checked.push(label);
+    proven.add(clauseKey(clause));
+  }
+  for (const entry of deferredContributions) {
+    const pin = entry.covering;
+    if (!proven.has(`${pin.planSlug}/${pin.specId}@${pin.revision}:${pin.contentHash}`)) {
+      failures.push(`${entry.projection.specId}@${entry.projection.revision}: covering item contract was not proven`);
+    }
   }
   if (failures.length) {
     return withReport({
@@ -945,6 +980,7 @@ export async function specTestAdequacyCompletionGate(
     applicable: true,
     checked,
     ...(exempted.length ? { exempted } : {}),
+    ...(deferredContributions.length ? { deferredContributions } : {}),
     ...(carriedAcrossEvaluatorRevision.length ? { carriedAcrossEvaluatorRevision } : {}),
   });
 }

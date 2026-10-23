@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -87,12 +87,13 @@ function runPcHeavy(command: string, retries: number): RunResult {
   // inherited and hoped about.
   const cleanEnv: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith('PC_HEAVY_')) cleanEnv[key] = value;
+    if (!/^_?PC_HEAVY_/.test(key)) cleanEnv[key] = value;
   }
 
   const env = {
     ...cleanEnv,
     PC_HEAVY_DIR: slotDir,
+    PC_HEAVY_SCRATCH_ROOT: join(slotDir, 'scratch'),
     PC_HEAVY_SLOTS: '4',
     // Neither the release-gate reserve nor the memory clamp may throttle this to a
     // single slot; they would make the test slow and load-dependent, not more correct.
@@ -101,21 +102,15 @@ function runPcHeavy(command: string, retries: number): RunResult {
     PC_HEAVY_RETRY_PREEMPTIONS: String(retries),
   };
 
-  try {
-    const stdout = execFileSync('bash', [SCRIPT, 'sh', '-c', command, 'lint:tsc'], {
-      encoding: 'utf-8',
-      timeout: 120_000,
-      // stdio 'pipe' is the point: a piped (non-TTY) stdout is what every machine
-      // consumer has, and it is the path that must be isolated.
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...pcHeavyFixtureOptions(slotDir, env),
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    return { stdout, stderr: '', status: 0 };
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string; status?: number };
-    return { stdout: err.stdout ?? '', stderr: err.stderr ?? '', status: err.status ?? -1 };
-  }
+  const result = spawnSync('bash', [SCRIPT, 'sh', '-c', command, 'lint:tsc'], {
+    encoding: 'utf-8',
+    timeout: 120_000,
+    // Keep successful-run stderr too: the retry banner is a positive control.
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...pcHeavyFixtureOptions(slotDir, env),
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  return { stdout: result.stdout ?? '', stderr: result.stderr ?? result.error?.message ?? '', status: result.status ?? -1 };
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -123,6 +118,26 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 describe('pc-heavy retry loop isolates each attempt\'s stdout (WI-42126)', () => {
+  it('re-enters the same self-copy after its temporary pathname is unlinked', () => {
+    const command = [
+      'marker="$PC_HEAVY_SCRATCH_ROOT/unlink-attempt"',
+      'if [ ! -f "$marker" ]; then',
+      '  for copy in "$PC_HEAVY_SCRATCH_ROOT"/self.*.sh; do',
+      '    if [ -f "$copy" ]; then rm -- "$copy" || exit 1; printf unlinked > "$marker"; fi',
+      '  done',
+      '  [ -f "$marker" ] || exit 73',
+      '  printf "%s\\n" "PC_HEAVY_RESULT status=preempted reason=exclusive-materializer" > "$PC_HEAVY_PREEMPT_RESULT_FILE"',
+      '  exit 75',
+      'fi',
+      'printf "%s\\n" SELF_COPY_SURVIVED',
+    ].join('\n');
+    const run = runPcHeavy(command, 1);
+    expect(readFileSync(join(slotDir, 'scratch', 'unlink-attempt'), 'utf8')).toBe('unlinked');
+    expect(countOccurrences(run.stderr, 'retrying after exclusive-materializer preemption')).toBe(1);
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout.trim()).toBe('SELF_COPY_SURVIVED');
+  });
+
   it('emits the wrapped command\'s output ONCE even though three attempts ran', () => {
     const run = runPcHeavy(PREEMPTING_COMMAND, 2);
 

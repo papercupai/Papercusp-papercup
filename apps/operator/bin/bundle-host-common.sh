@@ -154,6 +154,8 @@ HOST_COMMON_EXTERNALS=(
   --external:@opentelemetry/context-async-hooks
   --external:@opentelemetry/core
   --external:@opentelemetry/resources
+  # Keep the SDK and its CommonJS core dependency on the same runtime boundary.
+  --external:@opentelemetry/sdk-trace
   --external:@opentelemetry/sdk-trace-base
   --external:@opentelemetry/sdk-trace-node
   --external:@opentelemetry/sdk-logs
@@ -274,7 +276,20 @@ bundle_host_workers() {
     BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"
     [ -s "$source" ] || { echo "FATAL: missing runtime worker $source" >&2; return 1; }
     tmp="$out_dir/$output.new.$$"
-    cp "$source" "$tmp" && mv -f "$tmp" "$out_dir/$output" || return 1
+    if [ "$output" = "cpu-task-worker.script.mjs" ]; then
+      # Package the evidence guard's parser for installed sidecars as well as dev.
+      local -a cpu_meta_args=()
+      if [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ]; then
+        cpu_meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")
+      fi
+      bundle_host_run_step "worker-$output" bundle_host_esbuild "$repo_root" "$source" \
+        --bundle --platform=node --format=esm --target=node22 \
+        --banner:js="import{createRequire as __cpuRequire}from'node:module';import{fileURLToPath as __cpuFile}from'node:url';import{dirname as __cpuDir}from'node:path';const require=__cpuRequire(import.meta.url),__filename=__cpuFile(import.meta.url),__dirname=__cpuDir(__filename);" \
+        --outfile="$tmp" "${cpu_meta_args[@]}" || return 1
+      mv -f "$tmp" "$out_dir/$output" || return 1
+    else
+      cp "$source" "$tmp" && mv -f "$tmp" "$out_dir/$output" || return 1
+    fi
     # WI-10005745: bundle-host.sh's restricted-hold gate needs every input it published.
     if [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ]; then
       printf '%s\n' "$source" >> "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt" || {

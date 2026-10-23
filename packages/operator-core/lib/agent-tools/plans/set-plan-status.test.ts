@@ -13,7 +13,7 @@ import {
 } from './set-plan-status';
 import setPlanStatusTool from './set-plan-status';
 import { ACCEPTANCE_GRADING_SWEEP_ACTOR } from '../../acceptance-grader';
-import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
+import { dispatchNestedWithMcpDeadline } from '../../endpoint-route/routes/transport/_mcp-host';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -152,6 +152,39 @@ describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
     expect(preflightMocks.capture).not.toHaveBeenCalled();
   });
 
+  it('returns the recruitment receipt when reviewer startup exceeds the flat MCP deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      preflightMocks.acceptance.mockResolvedValue({ satisfied: false, code: 'acceptance_ungraded', message: 'Needs review.' });
+      preflightMocks.resolveGrader.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60_000));
+        return { state: 'settled', idempotencyKey: 'review-once', label: 'independent review' };
+      });
+      let delivered = false;
+      const pending = dispatchNestedWithMcpDeadline(setPlanStatusTool.name, setPlanStatusTool.timeoutSec, async () => ({
+        content: [{ type: 'text', text: JSON.stringify(await run({ dryRun: false, pendingDeliveryBarKeys: ['R-15'] })) }],
+      }), 55_000).then((result) => {
+        delivered = true;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(55_000);
+      expect(delivered).toBe(false);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+      expect(result.isError).not.toBe(true);
+      expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({
+        ok: false, error: 'acceptance_ungraded',
+        acceptanceGrader: { state: 'settled', idempotencyKey: 'review-once' },
+      });
+      expect(preflightMocks.resolveGrader).toHaveBeenCalledOnce();
+      expect(preflightMocks.write).not.toHaveBeenCalled();
+      expect(preflightMocks.capture).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     { status: 'ready' }, { expectedCurrent: 'shipped' }, { force: { reason: 'No review bypass.' } },
   ])('rejects a pending-delivery request outside review-only routing: %j', (overrides) => {
@@ -241,11 +274,9 @@ describe('set-plan-status idempotent-completion opt-in (EI-21122694679454626)', 
 });
 
 describe('set-plan-status acceptance-grader launch deadline', () => {
-  it('stays below the MCP transport cap so timeout outcomes remain structured', () => {
-    expect((setPlanStatusTool as { timeoutSec?: number }).timeoutSec).toBe(
-      Math.floor(FOREGROUND_TIMEOUT_CEILING_MS / 1000),
-    );
-    expect((setPlanStatusTool as { timeoutSec?: number }).timeoutSec! * 1000).toBeLessThan(55_000);
+  it('uses durable dispatch without holding an idle workspace transaction during recruitment', () => {
+    expect(setPlanStatusTool.timeoutSec! * 1000).toBeGreaterThan(55_000);
+    expect(setPlanStatusTool.skipWorkspaceTx).toBe(true);
   });
 });
 
