@@ -406,7 +406,8 @@ describe('scoped runs ask the shared typecheck service first (WI-10003415)', () 
     const raw = await handle(scopedArgs);
 
     expect(requests).toEqual([
-      { v: 1, root, project: join(root, 'tsconfig.json'), files: [join(root, 'src', 'target.ts')] },
+      { v: 1, requestId: expect.stringMatching(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i),
+        root, project: join(root, 'tsconfig.json'), files: [join(root, 'src', 'target.ts')] },
     ]);
     expect(childProcess.spawn).not.toHaveBeenCalled();
     expect(governedExecution.begin).not.toHaveBeenCalled();

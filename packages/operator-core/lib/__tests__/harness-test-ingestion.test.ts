@@ -93,7 +93,8 @@ describe('parseVitestJsonForHarnessRows', () => {
       ],
     }]), ROOT);
     expect(row.outputTail).toHaveLength(4_000);
-    expect(row.execution).toEqual({ passed: 1, failed: 2, skipped: 0, collectionFailed: false, failedCaseTitles: names });
+    expect(row.execution).toEqual({ passed: 1, failed: 2, skipped: 0, collectionFailed: false,
+      passedCaseTitles: ['suite > passes'], failedCaseTitles: names });
     const { sql, calls } = makeRecordingSql();
     expect(await persistHarnessTestRuns({
       root: ROOT, harnessSlug: 'papercusp', workspaceId: 'ws', rows: [row],

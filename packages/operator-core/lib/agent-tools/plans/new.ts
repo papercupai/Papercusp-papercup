@@ -419,7 +419,7 @@ export default defineTool({
     notWhen:
       'Existing plan: plans:set-content / set-now / add-decision / add-item.',
     chaining:
-      'Shape → reuse + libraries → R-N JSON + bar-to-work map + items → audit/spec quality → plans:start. Before a code item, run graph:query impact on the symbols it changes; pass anchors (code links).',
+      'Shape → reuse + libraries → R-N JSON + Bar-to-work map for this plan (R-N → P-NNN) + items → audit/spec quality → plans:start. Before a code item, run graph:query impact on the symbols it changes; pass anchors (code links).',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',

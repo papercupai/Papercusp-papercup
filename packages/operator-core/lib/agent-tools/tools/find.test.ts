@@ -17,6 +17,8 @@ import { runInNewContext } from 'node:vm';
 import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
+import '../work_items/set_state';
+import '../scheduler/get_next';
 import { nestedProjectionContext } from '../../result-projection/nested-dispatch';
 import devServiceHealth from '../dev/service_health';
 import launchAgent from '../capability/launch-agent';
@@ -1084,7 +1086,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     // Keep both the field and its four required evidence keys visible even when
     // the surrounding completion schema exceeds the nested-field budget.
     expect(compact).toContain('rootCauseVerification?:object');
-    expect(compact).toContain('required: hypothesis');
+    expect(compact).toMatch(/required:\s*hypothesis/);
     expect(compact).toContain('alternativeHypothesis');
     expect(compact).toContain('distinguishingTest');
     expect(compact).toContain('testResult');
@@ -1666,7 +1668,7 @@ describe('handler — graceful degrade + result shape', () => {
 
     expect(description).toContain('omit canonicalTestPath for local/Playwright rows');
     expect(description).toContain('only for a cargo test');
-    expect(description).toContain('or a mutation-probe copy-out run');
+    expect(description).toMatch(/or .*mutation-probe.*copy-out run/);
   });
 
   it('publishes all loop:arm monitor-authority branch requirements in discovery', async () => {

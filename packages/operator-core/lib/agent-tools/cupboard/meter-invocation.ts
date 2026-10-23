@@ -18,7 +18,7 @@
  * crossing the tool boundary: an agent names the unit, it never handles a key.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH } from '../../cupboard/identity-per-use-offer';
 
 const data = (payload: Record<string, unknown>) => ({ data: payload });
@@ -32,12 +32,8 @@ const args = z
       .enum(['reserve', 'settle', 'usage'])
       .describe('reserve before executing a billable unit; settle after it; usage to read the channel ledger.'),
     channelId: z.string().min(1).max(200).describe('The microcharge channel from the checkout preflight.'),
-    workspaceId: z
-      .string()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Workspace owning the signing hive key. Required for reserve and settle.'),
+    workspaceId: entityRef('workspace', { max: 200, describe: 'Workspace owning the signing hive key. Required for reserve and settle.' })
+      .optional(),
     hiveSlug: z
       .string()
       .min(1)

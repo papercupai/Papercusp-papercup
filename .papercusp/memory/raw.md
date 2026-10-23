@@ -1003,3 +1003,5 @@
 [2026-10-22T12:01:52Z] release-fixer WI-6554700010020243: Verify release:repair-queue target.installSlug on recovery transports: mcp-call fallback to :3070 can select operator-home despite --harness; :3170 preserved this drill target, and tools:invoke capability:edit captured hunks that native apply_patch missed.
 [2026-10-22T12:31:21.743050Z] release-fixer WI-6554700010020294: Scorecard tests that mock getRubric must also route readRubric through the same fixture; otherwise the failure-aware writer hits backing storage before the intended guard assertions.
 [2026-10-22T18:21:48Z] release-fixer WI-6554700010020691: A frozen admission precheck reporting matched=0 can be a native Vitest config rejected by committed-source-loader, not a missing path; reproduce via lint:as-committed --ref before changing tests or routing.
+
+[2026-10-23T20:37:11+00:00] release-fixer WI-6554700010025055: Recovery file locks default to the operator checkout even with --harness; for a delegated clone repair pass coordination_domain=<physical clone root> and inspect that domain before editing.

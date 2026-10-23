@@ -14,7 +14,10 @@ vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
   harnessScopedCtx: (_h: string | undefined, ctx: unknown) => ctx,
 }));
-vi.mock('./source', () => ({ listPlanIndexRows: vi.fn(async () => []) }));
+vi.mock('./source', () => ({
+  listPlanIndexRows: vi.fn(async () => []),
+  resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercusp' })),
+}));
 vi.mock('./revisions', () => ({
   planRevisionCapture: vi.fn(() => ({ recorded: { current: null }, afterWrite: vi.fn() })),
 }));

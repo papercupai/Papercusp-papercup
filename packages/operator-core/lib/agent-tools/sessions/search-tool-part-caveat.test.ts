@@ -162,6 +162,8 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
           source_kind: 'claude', session_id: 'sess-current', turn_idx: 3, speaker: 'assistant',
           owner: 'su-self', harness_slug: null, ts: '2026-08-01T00:00:00.000Z', text: 'a phrase that matches',
         }],
+        [{ source_kind: 'claude', session_id: 'sess-current', turn_idx: 3,
+          speaker: 'assistant', head: 'a phrase that matches', tail: 'a phrase that matches' }],
       ],
     );
 
