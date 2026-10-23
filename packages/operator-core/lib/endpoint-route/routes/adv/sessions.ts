@@ -15,6 +15,7 @@ import os from 'node:os';
 import type { PresenceRecord } from '../../../agent-tools/coordination/presence';
 import { createHash } from 'node:crypto';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { committedRouteResponse } from '../../route-stack';
 import { readCookie } from '../../cookies';
 import { SESSION_COOKIE } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -2430,7 +2431,10 @@ const sessionPortPrepare = defineTool({
         estimatedTokens: Number(prepared.port.metadata.estimatedTokens ?? null),
         idempotentReuse: prepared.reused,
       });
-      return json({
+      // Preparation has committed its token/artifact and lifecycle row. Preserve
+      // that receipt if the route deadline elapsed during source acquisition or
+      // persistence; a timeout here strands a valid port without its launcher.
+      return committedRouteResponse(json({
         ok: true,
         portId: prepared.port.id,
         attemptId: prepared.port.id,
@@ -2444,7 +2448,7 @@ const sessionPortPrepare = defineTool({
         hashes: prepared.summary.hashes,
         stats: prepared.summary.stats,
         summary: prepared.summary.summary,
-      });
+      }));
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 409);
     }

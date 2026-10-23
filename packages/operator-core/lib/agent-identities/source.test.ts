@@ -9,11 +9,55 @@ import * as blueprint from '@papercusp/orchestrator/blueprint';
 import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 import {
   bindSelectedIdentityOutputArtifact, bindSelectedIdentityOutputs, compileSelectedIdentityResources,
-  getSelectedModeCatalog, getSelectedModeDefinitions,
+  getSelectedModeCatalog, getSelectedModeDefinitions, listIdentitySources,
 } from './source';
 
 const scope = { workspace: 'ws-test', goal: 'goal-1', ownerId: 'su-goal-1' };
 const observedAt = '2026-09-24T13:00:00.000Z';
+
+describe('identity launch document preflight', () => {
+  it('keeps unlaunchable built-in lenses and the unresolved planner out of the launch picker', async () => {
+    const catalog = await listIdentitySources({ limit: 100 });
+    for (const id of ['scout.lens-analogical', 'scout.lens-constraint-removal',
+      'scout.lens-first-principles', 'scout.lens-reframing', 'su.specialist-planner']) {
+      const entry = catalog.identities.find((candidate) => candidate.id === id);
+      expect(entry, id).toBeDefined();
+      expect(entry!.launchCompatibility, id).toMatchObject({ eligible: false, reason: expect.any(String) });
+    }
+    expect(catalog.identities.find((entry) => entry.id === 'su.practice')?.launchCompatibility)
+      .toMatchObject({ eligible: false, reason: expect.stringContaining('producer') });
+  });
+
+  it('preflights fixed prompt declarations even when a fallback slot document exists', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'identity-launch-preflight-'));
+    const id = 'broken-fixed-practice';
+    const identityDir = join(root, '.papercusp', 'blueprints', id);
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
+        id, extends: 'base', version: '1.0.0', description: 'Broken declared prompt.',
+        slots: [{ slot: 'practice' }], contributions: [{ id: 'practice-text', purpose: 'prompt',
+          source: 'fixed', refresh: 'source-change', inputKind: 'prompt-file', ref: 'base:missing-launch-document' }],
+      }));
+      writeFileSync(join(identityDir, 'prompts', 'practice.md'), 'UNDECLARED FALLBACK\n');
+      const validId = 'aaa-valid-fixed-practice';
+      const validDir = join(root, '.papercusp', 'blueprints', validId);
+      mkdirSync(validDir, { recursive: true });
+      writeFileSync(join(validDir, 'blueprint.yaml'), stringifyYaml({
+        id: validId, extends: 'base', version: '1.0.0', description: 'Valid inherited fixed prompt.',
+        slots: [{ slot: 'practice' }], contributions: [{ id: 'practice-text', purpose: 'prompt',
+          source: 'fixed', refresh: 'source-change', inputKind: 'prompt-file', ref: 'base:su.practice' }],
+      }));
+      const catalog = await listIdentitySources({ repoDir: root, limit: 100 });
+      expect(catalog.identities.find((entry) => entry.id === id)?.launchCompatibility)
+        .toMatchObject({ eligible: false, reason: expect.stringContaining('missing-launch-document') });
+      expect(catalog.identities.find((entry) => entry.id === validId)?.launchCompatibility)
+        .toEqual({ eligible: true, reason: null });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('selected identity producer output binding', () => {
   it('reconciles every built-in SU contribution with the census and compiled provenance', async () => {

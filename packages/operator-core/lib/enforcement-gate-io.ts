@@ -20,7 +20,6 @@ import {
   type GateBoundary,
 } from './enforcement-gate';
 import type { CarryBrief } from './carry-brief';
-import { getWorkItem } from './work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
 import {
@@ -421,7 +420,13 @@ export type GetWorkItemStateFn = (
   harness?: string,
 ) => Promise<{ state: string } | null>;
 
-const defaultGetWorkItemState: GetWorkItemStateFn = (id, harness) => getWorkItem(id, harness);
+const defaultGetWorkItemState: GetWorkItemStateFn = async (id, harness) => {
+  // The unified work-items facade imports the full coordination/write graph.
+  // Only a missing/stale checkpoint tripwire needs this live state check, so
+  // keep that graph out of every ordinary flush-gate import and call path.
+  const { getWorkItem } = await import('./work-items');
+  return getWorkItem(id, harness);
+};
 
 interface TerminalHeldTripwireResult {
   tripwires: FlushTripwire[];

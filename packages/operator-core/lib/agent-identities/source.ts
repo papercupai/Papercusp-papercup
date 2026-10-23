@@ -1,7 +1,7 @@
 /** P-004: source identity views over the existing blueprint loader and file catalog. */
 import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 import {
   parseBlueprintSourceDocument,
   BlueprintSourceDocumentSchema,
@@ -64,6 +64,54 @@ export function identityLaunchCompatibility(
   return { eligible: true, reason: null };
 }
 
+/** Resolve authored fixed refs through the selected inheritance closure. */
+export function resolveIdentityFixedPromptFiles(
+  contributions: readonly { source: string; inputKind: string; ref: string }[] | undefined,
+  layers: readonly { id: string; sourcePath?: string | null }[],
+) {
+  return (contributions ?? []).filter((entry) =>
+    entry.source === 'fixed' && entry.inputKind === 'prompt-file').map((entry) => {
+    const parts = entry.ref.split(':');
+    const layerId = parts[0] === 'mode' ? parts[1]
+      : parts[0] === 'fixed' ? layers.at(-1)?.id : parts[0];
+    const fileName = parts.at(-1);
+    const layer = layers.find((candidate) => candidate.id === layerId);
+    if (!layer?.sourcePath || !fileName) {
+      throw new Error('identity fixed prompt has no resolved source: ' + entry.ref);
+    }
+    return { ref: entry.ref, path: join(dirname(layer.sourcePath), 'prompts', fileName + '.md') };
+  });
+}
+
+/** The picker and native launch read the same selected document. A declared
+ * fixed source is authoritative; a local slot file cannot replace it. */
+export async function readSelectedIdentityDocument(identity: {
+  identity: BlueprintSourceDocument;
+  sourcePath: string | null;
+  layers: readonly { id: string; sourcePath?: string | null }[];
+}, slot: string): Promise<{ text: string; sourcePath: string }> {
+  if (!identity.sourcePath || !identity.identity.slots?.some((entry) => entry.slot === slot)) {
+    throw new Error(`selected identity ${identity.identity.id} has no ${slot} document source`);
+  }
+  const fixed = resolveIdentityFixedPromptFiles(
+    identity.identity.contributions?.filter((entry) => entry.purpose === 'prompt'), identity.layers,
+  );
+  const matching = fixed.length > 1 ? fixed.filter((entry) => basename(entry.path) === `${slot}.md`) : fixed;
+  if (fixed.length && matching.length !== 1) {
+    throw new Error(`selected identity ${identity.identity.id} has ambiguous fixed prompts for ${slot}`);
+  }
+  const promptDir = join(dirname(identity.sourcePath), 'prompts');
+  const slotDocument = join(promptDir, `${slot}.md`);
+  const sourcePath = matching[0]?.path ?? (slot === 'domain' && !await stat(slotDocument).catch(() => null)
+    ? join(promptDir, 'agent-base-overlay.md') : slotDocument);
+  try {
+    return { text: await readFile(sourcePath, 'utf8'), sourcePath };
+  } catch (error) {
+    throw new Error(`selected identity ${identity.identity.id} is missing ${slot} document ${sourcePath}: ${
+      error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /** A composition selection pins its root and every inherited component. */
 export function identitySelectionRevision(source: {
   contentHash: string;
@@ -80,7 +128,7 @@ export function identitySelectionRevision(source: {
 
 /** Resolve a selected slotless library root through its authored role stack.
  * A composition marker never becomes a slot or an authority-bearing identity. */
-export async function resolveNamedIdentityCompositionSelection(id: string, repoDir: string) {
+export async function resolveNamedIdentityCompositionSelection(id: string, repoDir?: string) {
   const selected = await getIdentitySource(id, { repoDir });
   if (!selected.ok || !selected.sourcePath) throw new Error(`named identity ${id} is unavailable`);
   const authoredStack = selected.identity.roles?.find((role) => role.id === 'su')?.stack;
@@ -107,6 +155,7 @@ export async function resolveNamedIdentityCompositionSelection(id: string, repoD
     if (!component.ok || !component.identity.slots?.some((entry) => entry.slot === slot)) {
       throw new Error(`named identity ${id} component ${ref} is unavailable`);
     }
+    await readSelectedIdentityDocument(component, slot);
   }
   return { id, stack: [...stack], sourcePath: selected.sourcePath,
     sourceRevision: identitySelectionRevision(selected), layers: selected.layers };
@@ -645,20 +694,11 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
   if (selectedMode && !selectedPromptRef) {
     throw new Error(`selected mode ${selectedModeId} has no fixed definition contribution`);
   }
-  const fixedPrompts = (declarations ?? []).filter((entry) =>
-    entry.source === 'fixed' && entry.inputKind === 'prompt-file').map((entry) => {
-    const refParts = entry.ref.split(':');
-    const layerId = refParts[0] === 'mode' ? refParts[1]
-      : refParts[0] === 'fixed' ? source.layers.at(-1)?.id : refParts[0];
-    const fileName = refParts.at(-1);
-    const layer = source.layers.find((candidate) => candidate.id === layerId);
-    if (!layer?.sourcePath || !fileName) {
-      throw new Error('identity fixed prompt has no resolved source: ' + entry.ref);
-    }
-    return { ref: entry.ref, path: join(dirname(layer.sourcePath), 'prompts', fileName + '.md'),
-      ...(selectedMode && entry.ref === selectedPromptRef
-        ? { bytes: selectedMode.contract, contentHash: selectedMode.definitionHash } : {}) };
-  });
+  const fixedPrompts = resolveIdentityFixedPromptFiles(declarations, source.layers).map((entry) => ({
+    ...entry,
+    ...(selectedMode && entry.ref === selectedPromptRef
+      ? { bytes: selectedMode.contract, contentHash: selectedMode.definitionHash } : {}),
+  }));
   // The host chooses the delivery cadence; the identity cannot choose when its
   // own omission is acceptable. Other callers may still compile source only.
   const sink = input.scope.sink;
@@ -850,6 +890,19 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
         const effectiveSource = resolveBlueprintSource(raw, { sourcePath: entry.file,
           resolve: operatorResolveExtends({ localDirs: localDirs(opts.repoDir) }) });
         const effective = BlueprintSourceDocumentSchema.parse(effectiveSource.merged);
+        let launchCompatibility = identityLaunchCompatibility(effective, doc.slots,
+          doc.roles?.find((role) => role.id === 'su')?.stack);
+        if (launchCompatibility.eligible) {
+          try {
+            if (doc.slots.length) {
+              await Promise.all(doc.slots.map(({ slot }) => readSelectedIdentityDocument(selected, slot)));
+            } else {
+              await resolveNamedIdentityCompositionSelection(entry.id, opts.repoDir);
+            }
+          } catch (error) {
+            launchCompatibility = { eligible: false, reason: error instanceof Error ? error.message : String(error) };
+          }
+        }
         return {
           kind: 'identity' as const,
           value: {
@@ -858,8 +911,7 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
             tier: entry.tier,
             version: doc.version,
             sourceRevision: identitySelectionRevision(selected),
-            launchCompatibility: identityLaunchCompatibility(effective, doc.slots,
-              doc.roles?.find((role) => role.id === 'su')?.stack),
+            launchCompatibility,
             description: doc.description,
             // The slot registry is authoritative for cardinality. Identity files
             // may omit the optional restatement, but the UI still has to choose

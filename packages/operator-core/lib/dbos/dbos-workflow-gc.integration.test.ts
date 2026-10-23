@@ -184,7 +184,8 @@ if (isWorker) {
     const runId = await recordIsolatedIntegrationProof({ root, filePath,
       sourcePaths: [filePath, 'packages/operator-core/lib/dbos/dbos-workflow-gc.ts',
         'packages/operator-core/lib/dbos/in-process-periodic.ts', 'packages/operator-core/lib/alarm-attention.ts',
-        'packages/operator-core/lib/dbos/periodic-workflows.ts', 'packages/operator-core/test/_org-test-db.ts'],
+        'packages/operator-core/lib/dbos/periodic-workflows.ts', 'packages/operator-core/test/_org-test-db.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts'],
       execute: async (observe, evidenceDir) => {
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
           PAPERCUSP_TEST_RUN_GROUP: (process.env.PAPERCUSP_TEST_RUN_GROUP ?? '') + workerSuffix };

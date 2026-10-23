@@ -99,7 +99,7 @@ export const REVISION_SPINE_GUARD_AUTHOR = 'with-plan-lock:revision-spine-guard'
 
 class PromotedDependencyTransactionRequired extends Error {}
 
-/** Reconcile only the dependency subset owned by this plan's before/after body. */
+/** Apply this edit's dependency delta; explicit backfill owns pre-existing drift. */
 async function promotedDependencyMutations(
   tx: Sql,
   scope: { workspaceId: string; harnessSlug: string; slug: string },
@@ -145,16 +145,18 @@ async function promotedDependencyMutations(
       { kind: edge.blocker_kind, ref: edge.blocker_ref }), edge,
   ]));
   const mutations: WorkItemDependencyMutation[] = [];
+  const unresolved = (ids: readonly string[], items: typeof priorItems) => new Set(ids.filter((id) => {
+    const item = items.get(id);
+    return item && !['done', 'dropped', 'superseded'].includes(item.storedStatus);
+  }));
   for (const itemId of new Set([...priorItems.keys(), ...nextItems.keys()])) {
     const blocked = endpoints.get(itemId);
     if (!blocked) continue;
     const prior = priorItems.get(itemId)?.blockedBy ?? [];
     const next = nextItems.get(itemId)?.blockedBy ?? [];
-    const desired = new Set(next.filter((id) => {
-      const item = nextItems.get(id);
-      return item && !['done', 'dropped', 'superseded'].includes(item.storedStatus);
-    }));
-    for (const id of prior) {
+    const priorRequired = unresolved(prior, priorItems);
+    const desired = unresolved(next, nextItems);
+    for (const id of priorRequired) {
       const blocker = endpoints.get(id);
       if (!blocker || desired.has(id)) continue;
       const edge = existingByKey.get(edgeKey(blocked, blocker));
@@ -165,6 +167,10 @@ async function promotedDependencyMutations(
       }
     }
     for (const id of desired) {
+      // A status-only edit must not repair an older missing edge behind active
+      // work elsewhere in the plan. New declarations and reopened prerequisites
+      // still pass through the canonical dependency admission guard below.
+      if (priorRequired.has(id)) continue;
       const blocker = endpoints.get(id);
       if (!blocker) throw new Error(`promoted_plan_blocker_unresolved: ${scope.slug}#${itemId} requires ${id}; promote the blocker before changing this dependency`);
       // Idempotent add keeps existing authorship and SUCCESS satisfaction.

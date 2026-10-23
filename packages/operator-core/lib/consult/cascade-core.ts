@@ -276,16 +276,21 @@ export type CascadeDispatch = (opts: {
   onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
 }) => Promise<{ woke: number; answeringOwnerId?: string | null; pending?: boolean }>;
 
+/** Shared launch receipt, also committed atomically with initial selection. */
+export function pendingCascadeDispatch(opts: Parameters<CascadeDispatch>[0], cursor: number) {
+  return {
+    version: 1, responder: opts.responder, summary: opts.summary, body: opts.body,
+    ...(opts.evidence ? { evidence: opts.evidence } : {}), cursor, leaseToken: null, leaseUntil: null,
+  };
+}
+
 /** Accept a cascade delivery on the existing consult row. The cursor has
  * already moved, so the previous responder cannot replay their disposition.
  * Only the launch copy is queued; selection and expiry remain authoritative. */
 export async function queueCascadeDispatch(
   sql: Sql, workspaceId: string, opts: Parameters<CascadeDispatch>[0],
 ): Promise<boolean> {
-  const pending = {
-    version: 1, responder: opts.responder, summary: opts.summary, body: opts.body,
-    ...(opts.evidence ? { evidence: opts.evidence } : {}), leaseToken: null, leaseUntil: null,
-  };
+  const pending = pendingCascadeDispatch(opts, 0);
   const rows = await sql`
     UPDATE harness_shared.consult_state
        SET routing = jsonb_set(CASE WHEN jsonb_typeof(routing) = 'string' THEN (routing #>> '{}')::jsonb ELSE routing END, '{cascadeDispatch}',

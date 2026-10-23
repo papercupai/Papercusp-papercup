@@ -1,8 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TOKEN_ESTIMATOR, SESSION_PORT_TRANSFORM_VERSION } from '../../session-port/types';
-import { createRouteDiagnostics } from '../route-stack';
+import { createRouteDiagnostics, DEFAULT_ROUTE_STACK } from '../route-stack';
+import { registerRoute } from '../define-route';
+
+const preparePortMock = vi.hoisted(() => vi.fn());
+vi.mock('../../superuser-token', () => ({ readSuperuserToken: () => 'session-port-fixture-key' }));
 
 const state = vi.hoisted(() => ({
   sql: null as unknown,
@@ -38,6 +43,7 @@ vi.mock('../../model-context-budget.mjs', () => ({
 }));
 vi.mock('../../session-port/store', () => ({ assertSessionPortStorageReady: async () => {} }));
 vi.mock('../../session-port/service', async (importOriginal) => ({
+  prepareInspectedSessionPort: (...args: unknown[]) => preparePortMock(...args),
   resolveSessionPortTargetOwner: (await importOriginal<typeof import('../../session-port/service')>()).resolveSessionPortTargetOwner,
   acquireTrackedSessionSource: async (row: unknown, _deps: unknown, diagnostics?: { measure<T>(phase: string, work: () => T): Promise<T> }) => {
     state.acquiredRow = row;
@@ -81,6 +87,8 @@ vi.mock('../../session-port/telemetry', () => ({
   telemetryFromInspection: () => ({}),
   recordSessionPortTelemetry: async () => {},
 }));
+// This fixture owns source-index evidence, not the operator's invocation ledger.
+vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 type Route = { method: string; path: string; handler: (request: Request, context?: unknown) => Promise<Response> };
 const WS = 'evidence-span-ws';
@@ -104,6 +112,7 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 
 beforeEach(async () => {
+  preparePortMock.mockReset();
   state.sourceRow = {
     id: 41, workspaceId: WS, planSlug: null, agent: 'claude', role: null, sessionId: SESSION,
     coordOwnerId: 'su-source', cwd: '/repo', startedAt: '2026-09-23T08:00:00.000Z', endedAt: '2026-09-23T08:30:00.000Z',
@@ -238,6 +247,64 @@ describe('session-port evidence-span route (P-007)', () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('exact source session') });
     expect(state.inspectArgs).toBeNull();
+  });
+});
+
+describe('session-port preparation committed receipt (EI-26728335329243377)', () => {
+  async function prepareThroughStack(): Promise<{ response: Response; signal: AbortSignal }> {
+    const routes = (await import('../routes/adv/sessions')).default;
+    const route = routes.find((candidate) => candidate.method === 'POST' && candidate.path === '/adv/sessions/port/prepare') as Parameters<typeof registerRoute>[1];
+    if (!route) throw new Error('session-port preparation route was not registered');
+    const app = new Hono();
+    let signal: AbortSignal | undefined;
+    registerRoute(app, {
+      ...route,
+      timeoutSec: 0.001,
+      handler(request, context) {
+        signal = context.signal;
+        return route.handler(request, context);
+      },
+    }, DEFAULT_ROUTE_STACK.filter((step) => step.name === 'invoke'));
+    const response = await app.request(route.path, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        protocolVersion: SESSION_PORT_PROTOCOL_VERSION, transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+        workspace: WS, sourceAdvSessionId: 41, targetBackend: 'codex', targetOwnerId: 'su-answer-owner',
+        expectedSourceHash: 'a'.repeat(64),
+      }),
+    });
+    if (!signal) throw new Error('route did not receive its deadline signal');
+    return { response, signal };
+  }
+
+  it.each([false, true])('returns the durable preparation receipt after the deadline (reused=%s)', async (reused) => {
+    const portId = '22222222-2222-4222-8222-222222222222';
+    const token = `${portId}.${'b'.repeat(64)}`;
+    preparePortMock.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        port: { id: portId, status: 'prepared', metadata: { estimatedTokens: 7 }, retryOfPortId: null,
+          targetAdvSessionId: null, expiresAt: '2099-01-01T00:00:00.000Z' },
+        token, reused, summary: { fidelity: 'full', hashes: { source: 'a'.repeat(64) }, stats: {}, summary: null },
+      };
+    });
+    const { response, signal } = await prepareThroughStack();
+    expect(signal.aborted).toBe(true);
+    expect(preparePortMock).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, portId, token, reused, status: 'prepared' });
+  });
+
+  it('keeps the timeout refusal when preparation fails without a durable receipt', async () => {
+    preparePortMock.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      throw new Error('preparation did not commit');
+    });
+    const { response, signal } = await prepareThroughStack();
+    expect(signal.aborted).toBe(true);
+    expect(preparePortMock).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(408);
+    expect(await response.json()).toMatchObject({ error: { code: 'timeout' } });
   });
 });
 

@@ -37,7 +37,7 @@ import { withIterativeScan, type PgHandle } from '@papercusp/search';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
-import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
+import { advanceCascade, digestFromRow, makeDigestEntry, pendingCascadeDispatch, selectionFromRouting } from './cascade-core';
 import { selectConsultEvidenceSource } from './consult-dispatch';
 import { consultCurrentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
@@ -250,6 +250,9 @@ export interface GetFeedbackDeps {
       detail: string;
     };
   }>;
+  /** Start the existing leased delivery continuation after accepted selection
+   * commits its launch brief. The sweep recovers if this process stops first. */
+  resumeInitialDispatch?: (conversationId: string) => void;
   now?: () => Date;
 }
 
@@ -1491,6 +1494,49 @@ export async function getFeedbackCore(
       ).toISOString()
     : null;
   const provisionalWillWake = Boolean(finalChosen);
+  const briefFor = (candidate: RoutingCandidate, via: SelectionVia | null) => {
+    // consult-backed-parking D-013: a decision-review cascade uses the default consult copy.
+    const auditCopy = req.cascade?.flavor === 'grading-integrity' ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
+    const reviewCopy = consultCurrentReviewContext(req.policy);
+    return {
+      summary:
+        auditCopy?.summary ??
+        `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
+      // Keep the initial review context intact through process-loss recovery.
+      body: auditCopy?.body ?? (
+        `QUESTION: ${req.question}\n` +
+        (reviewCopy ? `${reviewCopy}\n` : '') +
+        (candidate.fallback === 'lexical'
+          ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
+            `Lexical evidence: ${evidenceLine(candidate)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
+          : via === 'minimum'
+          ? `Selected as BEST-AVAILABLE reviewer (relevance ${candidate.relevance.toFixed(2)}, sim ${candidate.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched peer exists, and this consult carries a minimum of ${minResponders}).\n` +
+            `This is a FIRST-PRINCIPLES review request, not a claim the transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n`
+          : `Routed by transcript relevance (relevance ${candidate.relevance.toFixed(2)}, sim ${candidate.signals.similarity.toFixed(2)}).\n` +
+            `Why this transcript: ${evidenceLine(candidate)} — sessions:read resolves the refs.\n` +
+            (reviewCopy ? '' : `Validate relevance FIRST; decline cheaply if the context doesn't cover it. Answer FROM the transcript, citing evidence.\n`)) +
+        consultResponderVerbMenu({
+          conversationId: opened.conversation_id,
+          ...(reviewCopy || via === 'minimum'
+            ? { evidenceNote: 'answer requires evidence — labeled first-principles reasoning is admissible here' }
+            : {}),
+          ...(candidate.fallback !== 'lexical' && via !== 'minimum'
+            ? { declineNote: "if it's not your area" }
+            : {}),
+        })),
+    };
+  };
+  // Selection and its launch obligation must commit together: request recovery
+  // deliberately never re-routes an already-selected row. Reuse the cascade's
+  // CAS lease and early answering-owner reservation for delivery recovery.
+  const deferredInitialDispatch = Boolean(deps.acceptedRequest && deps.resumeInitialDispatch && finalChosen);
+  const initialRouting = deferredInitialDispatch && finalChosen
+    ? { ...route.snapshot, cascadeDispatch: pendingCascadeDispatch({
+        responder: finalChosen.ownerId, conversationId: opened.conversation_id,
+        evidence: finalChosen.evidence, ...briefFor(finalChosen, finalChosenVia),
+      }, 0) }
+    : route.snapshot;
+
   // query_embedding is stored whenever the column exists (embeddingColumnOk —
   // proven by the archive probe) and this route produced a vector: every
   // consult forward-fills the P-006 retrieval cache, hit or miss.
@@ -1504,7 +1550,7 @@ export async function getFeedbackCore(
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
          ${finalChosen?.ownerId ?? null}, ${provisionalState}, ${req.question}, ${latency},
-         ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
+         ${originRef}, ${sql.json(initialRouting as never)}, ${provisionalExpiresAt},
          ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector,
          ${route.queryMode}, ${route.queryProfile!.profileId})
       ON CONFLICT (workspace_id, conversation_id) DO UPDATE SET
@@ -1526,7 +1572,7 @@ export async function getFeedbackCore(
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
          ${finalChosen?.ownerId ?? null}, ${provisionalState}, ${req.question}, ${latency},
-         ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
+         ${originRef}, ${sql.json(initialRouting as never)}, ${provisionalExpiresAt},
          ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
       ON CONFLICT (workspace_id, conversation_id) DO UPDATE SET
         responder_id = EXCLUDED.responder_id, state = EXCLUDED.state,
@@ -1585,42 +1631,9 @@ export async function getFeedbackCore(
   let queued = 0;
   let woke = 0;
   let pickupConfirmed = false;
-  const briefFor = (candidate: RoutingCandidate, via: SelectionVia | null) => {
-    // consult-backed-parking D-013: a decision-review cascade uses the default consult copy.
-    const auditCopy = req.cascade?.flavor === 'grading-integrity' ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
-    const reviewCopy = consultCurrentReviewContext(req.policy);
-    return {
-      summary:
-        auditCopy?.summary ??
-        `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
-      // The branch-specific PREAMBLE varies (why you were picked, and what standard of answer
-      // that implies); the verb menu does NOT. Keeping the menu out of the ternary is the point
-      // of EI-21761566265989000: three inline copies is how all three came to omit the READ door.
-      body: auditCopy?.body ?? (
-        `QUESTION: ${req.question}\n` +
-        (reviewCopy ? `${reviewCopy}\n` : '') +
-        (candidate.fallback === 'lexical'
-          ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
-            `Lexical evidence: ${evidenceLine(candidate)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
-          : via === 'minimum'
-          ? `Selected as BEST-AVAILABLE reviewer (relevance ${candidate.relevance.toFixed(2)}, sim ${candidate.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched peer exists, and this consult carries a minimum of ${minResponders}).\n` +
-            `This is a FIRST-PRINCIPLES review request, not a claim the transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n`
-          : `Routed by transcript relevance (relevance ${candidate.relevance.toFixed(2)}, sim ${candidate.signals.similarity.toFixed(2)}).\n` +
-            `Why this transcript: ${evidenceLine(candidate)} — sessions:read resolves the refs.\n` +
-            (reviewCopy ? '' : `Validate relevance FIRST; decline cheaply if the context doesn't cover it. Answer FROM the transcript, citing evidence.\n`)) +
-        consultResponderVerbMenu({
-          conversationId: opened.conversation_id,
-          ...(reviewCopy || via === 'minimum'
-            ? { evidenceNote: 'answer requires evidence — labeled first-principles reasoning is admissible here' }
-            : {}),
-          ...(candidate.fallback !== 'lexical' && via !== 'minimum'
-            ? { declineNote: "if it's not your area" }
-            : {}),
-        })),
-    };
-  };
+  if (deferredInitialDispatch) deps.resumeInitialDispatch!(opened.conversation_id);
 
-  if (willWake && finalChosen) {
+  if (willWake && finalChosen && !deferredInitialDispatch) {
     const r = await deps.reach({
       responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
@@ -1779,7 +1792,9 @@ export async function getFeedbackCore(
       ? ' ⚠ Semantic embedding was unavailable: this is a BOUNDED MANUAL-REVIEW pick from lexical text_tsv token matches, not a qualified semantic responder. Validate independently.'
       : '';
   const dispatchNote = renderDispatchProvenanceNote(dispatchProvenance);
-  const wakeNote = pickupConfirmed
+  const wakeNote = deferredInitialDispatch
+    ? `delivery queued durably for ${finalChosen?.ownerId}'s transcript; no answering session is confirmed yet`
+    : pickupConfirmed
     ? `answering session live for ${finalChosen?.ownerId}'s transcript`
     : `answering session launched for ${finalChosen?.ownerId}'s transcript; it is still booting — the cascade expiry guards the reply`;
   // EI-22180634511432554: closed_cant_help / a fully-declined menu are

@@ -635,6 +635,20 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
   // 2. The vm-release sidecar, built from the pinned tree. The environment is the one the r37 cut
   //    ran with (recorded in tool_invocations 2026-09-20 02:04Z); it is now code instead of a paste.
   if (needsSidecar) {
+    // source.ready only attests Git objects. The sidecar's package-cache helper
+    // imports workspace packages before it can generate anything, so prepare
+    // dependencies first, including on a resumed cut. Reuse setup's validated
+    // generation/cache rather than treating a marker as proof that links remain
+    // intact. Independent copies also support work directories on another disk.
+    await runStep('dependency-prepare', 'bash', [
+      join(plan.repoRoot, 'apps/operator/bin/release/setup-release-checkout.sh'),
+      '--ref', sourceSha,
+      '--integration', plan.repoRoot,
+      '--release', paths.source,
+      '--prepare-existing',
+      '--node-modules-copy', 'copy',
+      '--source-integrity', 'object-sourced',
+    ], { cwd: plan.repoRoot, logFile: logFor('dependency-prepare') });
     await rm(paths.sidecarTrust, { recursive: true, force: true });
     const env: NodeJS.ProcessEnv = {
       ...process.env,

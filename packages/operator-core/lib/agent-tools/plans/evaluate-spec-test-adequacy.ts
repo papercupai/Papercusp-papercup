@@ -1,4 +1,4 @@
-/** plans:evaluate-spec-test-adequacy — compile exact clause/evidence rows into scorecard drafts. */
+/** plans:evaluate-spec-test-adequacy — measure exact clause proof; draft cards only for judgment checks. */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
@@ -27,6 +27,7 @@ import {
   type PlanClassRubricRef,
 } from './spec-test-adequacy';
 import { resolveSourceBarTestRequirements, type SourceBarRubricCache } from './source-bar-test-requirements';
+import { evaluateMechanicalTestAdequacy, type MechanicalTestAdequacy } from './mechanical-test-adequacy';
 import { clauseDeliverableKey, readClauseCodeDeliverables } from '../../plan-verification-escape';
 import { getBuildInfo, type BuildInfo } from '../../build-info';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
@@ -39,9 +40,25 @@ import type { SpecTestAdequacyMeasurementEvidence } from '../../harness/improvem
 
 type MeasurementEvidenceSummary = SpecTestAdequacyMeasurementEvidence;
 
-type EvaluatedRow = ReturnType<typeof evaluateSpecTestAdequacy> & {
+type JudgmentEvaluatedRow = ReturnType<typeof evaluateSpecTestAdequacy> & {
+  evaluationMode: 'judgment';
   measurementEvidence: MeasurementEvidenceSummary;
 };
+
+type MechanicalEvaluatedRow = {
+  evaluationMode: 'mechanical';
+  planSlug: string;
+  specId: string;
+  specRevision: number;
+  specFingerprint: string;
+  planItemId: string;
+  verdict: 'pass' | 'fail';
+  wouldBlock: string[];
+  mechanicalProof: Extract<MechanicalTestAdequacy, { applicable: true }>;
+  measurementEvidence: MeasurementEvidenceSummary;
+};
+
+type EvaluatedRow = JudgmentEvaluatedRow | MechanicalEvaluatedRow;
 
 function summarizeMeasurementEvidence(
   evidence: Awaited<ReturnType<typeof listSpecEvidence>>,
@@ -155,7 +172,9 @@ function compactFailureEvidence(evidence: string): { evidence: string; truncated
  * so the emit refusal can retain the reason from this exact measurement.
  */
 function summaryRow(row: EvaluatedRow) {
+  if (row.evaluationMode === 'mechanical') return row;
   return {
+    evaluationMode: row.evaluationMode,
     planSlug: row.planSlug,
     specId: row.specId,
     specRevision: row.specRevision,
@@ -568,6 +587,7 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
       : entries;
   const projected = {
     ...evaluated,
+    evaluationMode: 'judgment' as const,
     ratings: pickCriteria(evaluated.ratings) as typeof evaluated.ratings,
     draggingBindingIds: pickCriteria(evaluated.draggingBindingIds) as typeof evaluated.draggingBindingIds,
     measurementEvidence: summarizeMeasurementEvidence(evidence),
@@ -655,9 +675,10 @@ export function certifyPassingRef(
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade affected current spec revisions against the reusable spec-test-adequacy rubric; read-only, never files a verdict. Resolves exact P-005 evidence bindings into per-clause verdicts with every would-block reason; detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. evidenceRefs must be exact evidence_ref values from plans:get-spec-evidence (a test_runs:<id> is not necessarily one); for a test-run cohort use workItemIds + specIds. bindingIds pins exact rows. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. scorecardId + slug replays a card as of its creation (historicalAuditOnly, never a current ship-read); with detail:"full" it needs exactly one criteria value.',
+    'Measure affected current spec revisions; read-only, never files a verdict. Test-checked requirements use current named ledger runs and a calibrated caught mutant, returning evaluationMode:"mechanical" and mechanicalProof in both detail levels without judgment ratings or a scorecardDraft. Other checks use the spec-test-adequacy rubric; detail:"full" adds criterion evidence and emit-compatible drafts. evidenceRefs must be persisted evidence_ref values from plans:get-spec-evidence; for a test-run cohort use workItemIds + specIds. bindingIds pins exact rows. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. This preserves the judgment model for card replay and is non-governing. scorecardId + slug replays a card as of its creation (historicalAuditOnly, never a current ship-read); detail:"full" needs exactly one criteria value.',
   guidance: {
     returns:
+      'Live test-checked rows have evaluationMode:"mechanical", mechanicalProof { applicable, verdict, requiredFiles, passingTestBindingIds, caughtMutantBindingIds, gaps } and measurementEvidence in both detail levels; they have no judgment ratings, scorecardDraft or certifyPassing referral. Judgment rows follow the detail and criteria contract below. ' +
       'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full", where each criterion text sits once, in the draft (rows[].ratings[c].evidenceAt points there). To learn why a clause fails, follow nonPassingDetail (present when any criterion is not pass/not-applicable): the same re-call narrowed by criteria to the non-passing ones, without the draft. When a live evaluation has passing rows, certifyPassing is the ready plans:certify-spec-clauses call that files those cards.',
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing passing cards — plans:certify-spec-clauses (certifyPassing), not a full read plus hand scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
@@ -1251,7 +1272,7 @@ export default defineTool({
     const codeDeliverables = harnessSlug
       ? await readClauseCodeDeliverables({ harnessSlug, clauses: eligible }).catch(() => new Map<string, boolean>())
       : new Map<string, boolean>();
-    const rows = await timePhase('evaluation', () => Promise.all(eligible.map(async (clause) => {
+    const rows: EvaluatedRow[] = await timePhase('evaluation', () => Promise.all(eligible.map(async (clause): Promise<EvaluatedRow> => {
       const sourceBarTestRequirements = await resolveSourceBarTestRequirements(
         clause.sourceBar,
         sourceBarRubricCache,
@@ -1268,6 +1289,25 @@ export default defineTool({
         row.specRevision === clause.revision &&
         row.specFingerprint === clause.contentHash,
       );
+      // Current test-checked clauses use the same ledger proof as the BAR snapshot
+      // and completion gate. An immutable scorecard replay retains its judgment
+      // model so old cards remain reproducible; it is never a current ship read.
+      const mechanical = args.replaySnapshot === true ? { applicable: false as const }
+        : evaluateMechanicalTestAdequacy({ clause, evidence: clauseEvidence, sourceBarTestRequirements });
+      if (mechanical.applicable) {
+        return {
+          evaluationMode: 'mechanical',
+          planSlug: clause.planSlug,
+          specId: clause.specId,
+          specRevision: clause.revision,
+          specFingerprint: clause.contentHash,
+          planItemId: clause.planItemId,
+          verdict: mechanical.verdict,
+          wouldBlock: mechanical.verdict === 'pass' ? [] : ['mechanical-test-adequacy'],
+          mechanicalProof: mechanical,
+          measurementEvidence: summarizeMeasurementEvidence(clauseEvidence),
+        };
+      }
       const latestClauseEvidence = new Set(latestLogicalEvidence(clauseEvidence));
       const evaluated = evaluateSpecTestAdequacy({
         clause,
@@ -1304,6 +1344,7 @@ export default defineTool({
       const measurementEvidence = summarizeMeasurementEvidence(selectedMeasurementRows);
       return {
         ...evaluated,
+        evaluationMode: 'judgment',
         scorecardDraft: {
           ...evaluated.scorecardDraft,
           rerunRecipe: {
@@ -1320,8 +1361,10 @@ export default defineTool({
     // pass 7/0/0 and an unscoped gate 1/7 are BOTH correct readings of different questions.
     // Measured 2026-09-16 on green-gate-zero-wait-convergence-2026-09-08 (WI-10001661 ledger 2).
     // The label rides on the result so the number can never be quoted without its scope.
-    const governing = !bindingSelection;
-    const governingNote = governing
+    const governing = !bindingSelection && args.replaySnapshot !== true;
+    const governingNote = args.replaySnapshot === true
+      ? 'IMMUTABLE JUDGMENT REPLAY — this preserves the scorecard model and is not the current ship verdict. Omit replaySnapshot and the immutable clause pin to measure the live proof model; read plans:get { slug, shipReadiness:true } for the governing per-bar state.'
+      : governing
       ? null
       : 'DIAGNOSTIC READ — the evidence cohort is PINNED (workItemIds/evidenceRefs/bindingIds). The ship gate evaluates every binding of each clause UNSCOPED, so a pass here is not the ship verdict; read plans:get { slug, shipReadiness:true } for the governing per-bar state.';
     const evaluatorBuildDriftNote = evaluatorBuildDrift
@@ -1341,7 +1384,7 @@ export default defineTool({
     ];
     const scorecardRows =
       scorecardEvidenceNotes.length > 0
-        ? rows.map((row) => ({
+        ? rows.map((row): EvaluatedRow => row.evaluationMode === 'mechanical' ? row : ({
             ...row,
             scorecardDraft: {
               ...row.scorecardDraft,
@@ -1353,7 +1396,7 @@ export default defineTool({
                     evidence: [rating.evidence, ...scorecardEvidenceNotes].join('\n\n'),
                   },
                 ]),
-              ),
+              ) as JudgmentEvaluatedRow['scorecardDraft']['ratings'],
             },
           }))
         : rows;
@@ -1370,12 +1413,12 @@ export default defineTool({
         ? Object.fromEntries(Object.entries(entries).filter(([criterion]) => criteriaFilter.has(criterion)))
         : entries;
     // Generic so the scorecardRows variant (its draft carries the evidence notes) keeps its type.
-    const filterRow = <R extends Pick<EvaluatedRow, 'ratings' | 'draggingBindingIds'>>(row: R): R =>
-      criteriaFilter
+    const filterRow = <R extends EvaluatedRow>(row: R): R =>
+      criteriaFilter && row.evaluationMode === 'judgment'
         ? {
             ...row,
-            ratings: pickCriteria(row.ratings) as R['ratings'],
-            draggingBindingIds: pickCriteria(row.draggingBindingIds) as R['draggingBindingIds'],
+            ratings: pickCriteria(row.ratings) as JudgmentEvaluatedRow['ratings'],
+            draggingBindingIds: pickCriteria(row.draggingBindingIds) as JudgmentEvaluatedRow['draggingBindingIds'],
           }
         : row;
     // P-006 (WI-6554700010009314): without criteria every full row carried each criterion's
@@ -1385,7 +1428,7 @@ export default defineTool({
     // full reads in 12h overflowed the result cap. The draft stays intact (callers pass it to
     // scorecards:emit); the row copy points at it, and only when the draft text provably
     // contains it, so no text is lost.
-    const pointRowEvidenceAtDraft = <R extends (typeof scorecardRows)[number]>(row: R): R => ({
+    const pointRowEvidenceAtDraft = (row: EvaluatedRow): EvaluatedRow => row.evaluationMode === 'mechanical' ? row : ({
       ...row,
       ratings: Object.fromEntries(
         Object.entries(row.ratings).map(([criterion, entry]) => {
@@ -1397,10 +1440,11 @@ export default defineTool({
           const { evidence: _inDraft, ...rest } = entry;
           return [criterion, { ...rest, evidenceAt: `scorecardDraft.ratings['${criterion}'].evidence` }];
         }),
-      ) as R['ratings'],
+      ) as JudgmentEvaluatedRow['ratings'],
     });
     const fullRows = criteriaFilter
       ? scorecardRows.map((row) => {
+          if (row.evaluationMode === 'mechanical') return row;
           const { scorecardDraft: _omittedDraft, ...rest } = filterRow(row);
           return { ...rest, scorecardDraftOmitted: 'criteria filter: a partial draft cannot be emitted; omit criteria for it' };
         })
@@ -1408,7 +1452,7 @@ export default defineTool({
     const nonPassingCriteria = [
       ...new Set(
         rows.flatMap((row) =>
-          Object.entries(filterRow(row).ratings)
+          Object.entries(row.evaluationMode === 'judgment' ? filterRow(row).ratings : {})
             .filter(([, entry]) => !PASS_LIKE.has(entry.rating))
             .map(([criterion]) => criterion),
         ),
@@ -1429,7 +1473,7 @@ export default defineTool({
     const certifyPassing = certifyPassingRef(args, {
       classRef,
       classRefSource: classResolution.source,
-      passingCount: rows.filter((row) => row.verdict === 'pass').length,
+      passingCount: rows.filter((row) => row.evaluationMode === 'judgment' && row.verdict === 'pass').length,
     });
     phaseMs.totalBeforeResponse = Math.max(0, Date.now() - evaluatorStartedAt);
     ctx.metadata?.({

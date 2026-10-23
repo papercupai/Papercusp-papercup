@@ -1908,10 +1908,10 @@ export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 // ptool's flat 30s deadline.
 export const PTOOL_GIT_EVIDENCE_TIMEOUT_MS = 70_000;
 
-// EI-26107428212758754: release:cut reclaim previews declare a 120s handler budget
-// because their authored-work scan can exceed the flat MCP transport floor under host
-// pressure. Keep ptool beyond the 125s effective MCP deadline (+5s settlement) so the
-// structured dry-run result wins instead of an upstream-died/outcome-unknown transport error.
+// release:cut declares a 120s handler budget for every operation. Root resolution
+// can exceed the ordinary client deadline before preflight or launch, too. Keep
+// the historical reclaim-named export for compatibility and allow the complete
+// 125s server deadline (+5s settlement) for every release-cut call.
 export const PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS = 130_000;
 
 // dev:pg_hot_queries accepts a 600s sample and declares a 660s handler budget;
@@ -2464,15 +2464,9 @@ export function timeoutForTool(toolName, callArgs) {
   if (effectiveToolName === 'work_items:list' && effectiveArgs?.prDeliveryAudit) {
     return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
   }
-  // EI-25376635449301072 / EI-26107428212758754: an unconfirmed release:cut reclaim is a
-  // read-only preview. Its handler declares 120s because the authored-work scan can exceed
-  // the transport floor; keep the client beyond the effective 125s server deadline. Confirmed
-  // reclamation and unrelated release:cut operations retain the normal limit.
-  if (
-    effectiveToolName === 'release:cut' &&
-    effectiveArgs?.op === 'reclaim' &&
-    effectiveArgs?.confirm !== true
-  ) {
+  // The declared handler deadline also covers preflight, root resolution and
+  // confirmed operations. A shorter client deadline loses their typed result.
+  if (effectiveToolName === 'release:cut') {
     return PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS;
   }
   if (

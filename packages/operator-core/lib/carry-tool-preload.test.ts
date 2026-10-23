@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { compactInputSchema, summaryGuidanceDescription } from '@papercusp/tooldef';
-import { __resetSessionSurfaces, activateSessionTools, applyCompactTier, filterListingsByAllowlist, getSessionSurface, getSessionUsedTools, restoreSessionTools, sessionToolSurfaceKey } from './endpoint-route/routes/transport/tool-allowlist';
+import { __resetSessionSurfaces, activateSessionTools, applyCompactTier, filterListingsByAllowlist, getSessionSurface, getSessionUsedTools, recordSessionToolUse, restoreSessionTools, sessionToolSurfaceKey } from './endpoint-route/routes/transport/tool-allowlist';
 
 const sql = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -91,6 +91,18 @@ describe('D-058 actual-use detail promotion', () => {
   const compact = new Set(listings.map(tool => tool.name));
   const project = () => applyCompactTier(listings, compact, compactInputSchema,
     summaryGuidanceDescription, getSessionUsedTools(input.sessionKey));
+
+  it('records direct and nested use in memory without widening the seeded surface or reading the ledger', () => {
+    const aliasSeed = new Set(['mcp__papercusp-su__plans_get', 'tools:invoke']);
+    const key = sessionToolSurfaceKey('su-lineage', 'workspace-a')!;
+    getSessionSurface(key, aliasSeed);
+
+    expect(recordSessionToolUse(key, ['plans:get', 'tools:invoke', 'retired:tool'])).toBe(true);
+    expect([...getSessionUsedTools(key)!]).toEqual(['plans:get', 'tools:invoke']);
+    expect(recordSessionToolUse(key, ['plans:get', 'tools:invoke'])).toBe(false);
+    expect(getSessionSurface(key, aliasSeed)?.has('retired:tool')).toBe(false);
+    expect(sql).not.toHaveBeenCalled();
+  });
 
   it('signals a change for first actual use of an already-advertised tool, not discovery or repeated use', async () => {
     const readUsedTools = vi.fn().mockResolvedValueOnce([])

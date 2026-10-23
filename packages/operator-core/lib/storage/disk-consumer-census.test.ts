@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createTextCollector } from '../child-output.js';
 import { inspectRetentionTrees, measureDocker, resolveCensusSudo, type CensusSpawn } from './disk-consumer-census';
 
 vi.mock('node:http', async (importOriginal) => ({
@@ -23,7 +24,8 @@ vi.mock('node:http', async (importOriginal) => ({
 const isRoot = process.getuid?.() === 0;
 
 describe('streaming retention census evidence', () => {
-  it('compacts capped native file metadata without changing allocation, boundaries or build evidence', async () => {
+  it.each(['capped', 'uncapped'])('compacts %s native file metadata without changing allocation, boundaries or build evidence', async (mode) => {
+    const includeRecent = mode === 'capped';
     const root = mkdtempSync(join(tmpdir(), 'retention-compact-capped-'));
     try {
       const tree = join(root, 'tree'); await fsp.mkdir(tree);
@@ -34,13 +36,13 @@ describe('streaming retention census evidence', () => {
       await fsp.link(join(tree, 'file-0'), join(root, 'shared-sibling'));
       const protectedTree = join(root, 'protected'); await fsp.mkdir(protectedTree);
       await fsp.symlink('/never-follow-retention-link', join(protectedTree, 'link'));
-      const options = { retainAfterMs: Infinity, includeRecent: true, collectBuildDirs: true };
+      const options = { retainAfterMs: Infinity, includeRecent, collectBuildDirs: true };
       const expected = await inspectRetentionTrees(root, options);
-      let wire = '';
+      const wire = createTextCollector();
       const native = ((_: string, args: string[]) => {
         // Exercise the real privileged supervisor/timeout as our fixture uid.
         const child = spawnProcess(args[2]!, args.slice(3), { stdio: ['ignore', 'pipe', 'pipe'] });
-        child.stdout.on('data', (chunk: Buffer) => { wire += chunk.toString(); });
+        wire.attach(child.stdout);
         return child;
       }) as CensusSpawn;
       const compact = await inspectRetentionTrees(root, { ...options, sudo: '/usr/bin/sudo', spawn: native,
@@ -51,7 +53,7 @@ describe('streaming retention census evidence', () => {
       expect(compact.error).toBeUndefined();
       expect(ordered(compact)).toEqual(ordered(expected));
       expect(compact.inspectedNodes).toBeGreaterThan(512);
-      expect(wire.split('\0').length / 9).toBeLessThan(compact.inspectedNodes / 4);
+      expect(wire.text().split('\0').length / 9).toBeLessThan(compact.inspectedNodes / 4);
       expect(compact.entries.find(entry => entry.path === tree)?.hardlinks?.[0]?.paths).toHaveLength(2);
       expect(compact.entries.find(entry => entry.path === tree)?.buildDirs).toContainEqual(expect.objectContaining({ path: modules }));
       expect(compact.retained).toContainEqual(expect.objectContaining({ path: protectedTree, reason: 'symlink boundary' }));
@@ -352,7 +354,59 @@ os.open = race_open
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it.each(['advancing', 'stalled', 'noise', 'ceiling'])('supervises elevated metadata progress inside the privilege boundary (%s)', async (mode) => {
+  it('renews the elevated progress deadline across advancing records with controlled native time', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-privileged-advancing-'));
+    const info = await fsp.lstat(root);
+    const diagnostics = createTextCollector();
+    let signalAttempts = 0;
+    const spawn = ((_command: string, args: string[]) => {
+      const worker = args[args.indexOf('-c') + 1]!;
+      const python = args[args.indexOf('-I') - 1]!;
+      // Execute the production Python supervisor, controlling only its input
+      // and clock. Five valid records span more than one inactivity window;
+      // missing deadline renewal fails without depending on host scheduling.
+      const fixture = `import atexit, os, selectors, subprocess, sys, time
+clock = [0.0]
+root, dev = sys.argv[2], ${JSON.stringify(String(info.dev))}
+chunks = [b'\\0'.join([b'f', dev.encode(), str(i + 1).encode(), b'1.0', b'1.0', b'1', str(os.getuid()).encode(), b'1', os.fsencode(root + '/entry-' + str(i))]) + b'\\0' for i in range(5)] + [b'']
+class Pipe:
+    def fileno(self): return 42
+class Child:
+    stdout = Pipe()
+    def poll(self): return 0
+    def wait(self): return 0
+    def kill(self): pass
+class Selector:
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def register(self, *args): pass
+    def select(self, timeout):
+        clock[0] += min(timeout, 0.75)
+        return [(None, None)] if timeout >= 0.75 else []
+time.monotonic = lambda: clock[0]
+selectors.DefaultSelector = Selector
+subprocess.Popen = lambda *args, **kwargs: Child()
+os.read = lambda *args: chunks.pop(0)
+atexit.register(lambda: print('fixture-clock=' + str(clock[0]), file=sys.stderr))
+`;
+      const child = spawnProcess(python, ['-I', '-c', fixture + worker, '1000', root, 'compact', 'fixture-find'],
+        { stdio: ['ignore', 'pipe', 'pipe'] });
+      diagnostics.attach(child.stderr);
+      child.kill = () => { signalAttempts++; return false; };
+      return child;
+    }) as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), sudo: '/usr/bin/sudo', spawn,
+        includeRecent: true, progressTimeoutMs: 1000 });
+      expect(census.error).toBeUndefined();
+      expect(census.entries).toHaveLength(5);
+      expect(census.timing?.timeoutKind).toBeNull();
+      expect(diagnostics.text()).toContain('fixture-clock=4.5');
+      expect(signalAttempts).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['stalled', 'noise', 'ceiling'])('supervises elevated metadata progress inside the privilege boundary (%s)', async (mode) => {
     const root = mkdtempSync(join(tmpdir(), 'retention-privileged-progress-'));
     const info = await fsp.lstat(root);
     let signalAttempts = 0;
@@ -363,11 +417,11 @@ os.open = race_open
       const find = args.indexOf('find'); expect(find).toBeGreaterThan(0);
       const producer = `import os, sys, time
 root, dev, mode = sys.argv[1:]
-for i in range(5 if mode == 'advancing' else 30):
+for i in range(30):
     row = [b'f', dev.encode(), str(i + 1).encode(), b'1.0', b'1.0', b'1', str(os.getuid()).encode(), b'1', os.fsencode(root + '/entry-' + str(i))]
     sys.stdout.buffer.write(b'x' if mode == 'noise' else b'\\0'.join(row) + b'\\0')
     sys.stdout.buffer.flush()
-    time.sleep(0.25 if mode == 'advancing' else 5 if mode == 'stalled' else 0.05)
+    time.sleep(5 if mode == 'stalled' else 0.05)
 `;
       const child = spawnProcess(args[2]!, [...args.slice(3, find), '/usr/bin/python3', '-I', '-c', producer, root, String(info.dev), mode],
         { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -376,15 +430,10 @@ for i in range(5 if mode == 'advancing' else 30):
     }) as CensusSpawn;
     try {
       const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), sudo: '/usr/bin/sudo', spawn,
-        includeRecent: true, progressTimeoutMs: mode === 'advancing' || mode === 'ceiling' ? 1000 : 200, timeoutMs: mode === 'ceiling' ? 750 : 3000 });
+        includeRecent: true, progressTimeoutMs: mode === 'ceiling' ? 1000 : 200, timeoutMs: mode === 'ceiling' ? 750 : 3000 });
       expect(signalAttempts).toBe(0);
-      if (mode === 'advancing') {
-        expect(census.error).toBeUndefined(); expect(census.entries).toHaveLength(5);
-        expect(census.timing?.timeoutKind).toBeNull();
-      } else {
-        expect(census.error).toBe('retention native census timed out'); expect(census.entries).toEqual([]);
-        expect(census.timing?.timeoutKind).toBe(mode === 'ceiling' ? 'absolute' : 'progress');
-      }
+      expect(census.error).toBe('retention native census timed out'); expect(census.entries).toEqual([]);
+      expect(census.timing?.timeoutKind).toBe(mode === 'ceiling' ? 'absolute' : 'progress');
       expect(census.timing?.elapsedMs).toBeGreaterThan(0);
       expect(census.timing?.lastProgressAfterMs === null).toBe(mode === 'noise');
       expect(census.timing?.lastChildPath === null).toBe(mode === 'noise');

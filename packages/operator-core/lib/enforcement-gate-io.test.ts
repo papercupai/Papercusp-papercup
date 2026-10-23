@@ -4,10 +4,7 @@ const refusalMarks = vi.hoisted(() => new Map<string, number>());
 const autoCheckpointStaleHeldItems = vi.hoisted(() => vi.fn(async () => [] as Array<{ id: string; mechanical: true }>));
 vi.mock('./turn-end-tracking-io', () => ({ autoCheckpointStaleHeldItems }));
 const setLoopCarryNote = vi.hoisted(() => vi.fn());
-vi.mock('./carry-note', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./carry-note')>()),
-  setLoopCarryNote,
-}));
+vi.mock('./carry-note', () => ({ setLoopCarryNote }));
 vi.mock('./flush-refusal-marker', () => ({
   REFUSAL_MARKER_TTL_MS: 10 * 60_000,
   wasRecentlyRefused: async (boundary: string, ownerId: string, nowMs = Date.now()) =>
@@ -269,6 +266,23 @@ function coldLoopBrief(over: Partial<NonNullable<CarryBrief['loop']>> = {}): Car
 }
 
 describe('runFlushGate — cold-successor-no-progress wiring', () => {
+  it('reads Next action content without including following carry-note sections', async () => {
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold-section-boundary',
+      workspaceId: '*',
+      sessionId: 'su-cold-section-boundary',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief({
+        carryNote: '## Did\nEarlier work.\n\n## Next action\nRun the exact test.\n\n## Walls\nOwner approval is pending.',
+      }),
+      nowMs: NOW,
+      countAgentToolCallsFn: async () => 0,
+    });
+    expect(out.tripwires[0]?.detail).toContain('Run the exact test.');
+    expect(out.tripwires[0]?.detail).not.toContain('Owner approval is pending.');
+  });
+
   it('logs the active and completed phases when the bounded compaction gate times out', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -538,6 +552,27 @@ describe('runFlushGate — cold-successor-no-progress wiring', () => {
 // missing/stale-checkpoint subjects right before refusing and drops any that are
 // already terminal, so a dead-end refusal is never issued for them.
 describe('runFlushGate — terminal-held-item race guard', () => {
+  it('loads the default item-state reader lazily when a held-item tripwire needs rechecking', async () => {
+    const getWorkItem = vi.fn(async (_id: string, _harness?: string) => ({ state: 'done' }));
+    vi.doMock('./work-items', () => ({ getWorkItem }));
+    try {
+      const out = await runFlushGate({
+        boundary: 'compaction',
+        ownerId: 'su-lazy-item-read',
+        workspaceId: '*',
+        sessionId: 'su-lazy-item-read',
+        sinceIso: new Date(NOW).toISOString(),
+        brief: unflushedBrief(),
+        nowMs: NOW,
+      });
+      expect(getWorkItem).toHaveBeenCalledExactlyOnceWith('WI-7', 'papercusp');
+      expect(out.verdict).toBe('clear');
+      expect(out.tripwires).toEqual([]);
+    } finally {
+      vi.doUnmock('./work-items');
+    }
+  });
+
   it('clears (no refusal) when the ONLY tripwire subject already went terminal', async () => {
     const out = await runFlushGate({
       boundary: 'compaction',

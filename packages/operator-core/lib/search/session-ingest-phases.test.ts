@@ -10,6 +10,9 @@ const probe = vi.hoisted(() => ({
   ownerParams: [] as string[][],
   queries: [] as string[],
   statePaths: [] as string[][],
+  flagWait: null as Promise<void> | null,
+  ownerWait: null as Promise<void> | null,
+  ownerEntered: null as (() => void) | null,
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
@@ -26,6 +29,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     if (query.includes('UPDATE harness_shared.session_turns AS turns')) {
       probe.ownerParams = values.slice(0, 2) as string[][];
       if (probe.failOwners) return Promise.reject(new Error('injected owner backfill failure'));
+      probe.ownerEntered?.();
+      if (probe.ownerWait) return probe.ownerWait.then(() => Object.assign([], { count: 3 }));
       return Promise.resolve(Object.assign([], { count: 3 }));
     }
     if (query.includes('UPDATE harness_shared.adv_sessions AS sessions')) {
@@ -50,7 +55,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...actual, getOrgPg: () => ({ sql }) };
 });
 vi.mock('@papercusp/flags/server', () => ({
-  getFlag: async () => { probe.clock += 2; return true; },
+  getFlag: async () => { if (probe.flagWait) await probe.flagWait; probe.clock += 2; return true; },
 }));
 vi.mock('../bash-substitution/registry', () => ({
   getSubstitutionRows: async () => { probe.clock += 3; return []; },
@@ -99,6 +104,9 @@ beforeEach(async () => {
   probe.failInsert = false;
   probe.failOwners = false;
   probe.ownerParams = [];
+  probe.flagWait = null;
+  probe.ownerWait = null;
+  probe.ownerEntered = null;
   vi.spyOn(performance, 'now').mockImplementation(() => probe.clock);
 });
 
@@ -109,6 +117,46 @@ afterEach(async () => {
 });
 
 describe('ingestion phase attribution', () => {
+  it('reports a pending setup await through the existing single-flight tick without claiming ingestion progress', async () => {
+    let release!: () => void;
+    probe.flagWait = new Promise<void>((resolve) => { release = resolve; });
+    const running = runSessionIngestOnce();
+    try {
+      probe.clock = 6500;
+      const skipped = await runSessionIngestOnce();
+      expect(skipped).toMatchObject({ skipped: 'already_running', filesIngested: 0, turnsInserted: 0,
+        activeSweep: { phase: 'setup', elapsedMs: 6500, phaseElapsedMs: 6500 } });
+      expect(sessionIngestLogLine(skipped)).toContain('still running');
+      expect(sessionIngestLogLine(skipped)).toContain('"phase":"setup"');
+      expect(sessionIngestLogLine(skipped)).not.toContain('+0 turn(s)');
+      expect(sessionIngestLogLine({ ...skipped,
+        activeSweep: { ...skipped.activeSweep!, elapsedMs: 4999 } })).toBeNull();
+    } finally { release(); await running; probe.flagWait = null; }
+    expect((await runSessionIngestOnce()).skipped).toBeUndefined();
+  });
+
+  it('identifies a blocked adapter repair and clears its phase when the sweep finishes', async () => {
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { probe.ownerEntered = resolve; });
+    probe.ownerWait = new Promise<void>((resolve) => { release = resolve; });
+    const running = runSessionIngestOnce();
+    try {
+      await entered;
+      probe.clock += 6500;
+      const skipped = await runSessionIngestOnce();
+      expect(skipped.activeSweep).toMatchObject({ phase: 'metadataBackfill', sourceKind: 'codex',
+        operation: 'sessionOwners', phaseElapsedMs: 6507 });
+      const line = sessionIngestLogLine(skipped)!;
+      expect(line).toContain('"sourceKind":"codex"');
+      expect(line).toContain('"operation":"sessionOwners"');
+      expect(line).not.toContain(root);
+      expect(line).not.toContain('phase-owner');
+    } finally { release(); await running; probe.ownerWait = null; probe.ownerEntered = null; }
+    const next = await runSessionIngestOnce();
+    expect(next.skipped).toBeUndefined();
+    expect(next.activeSweep).toBeUndefined();
+  });
+
   it('loads cursor state only for discovered files while preserving unchanged-file offsets', async () => {
     const stats = await runSessionIngestOnce();
     expect(probe.statePaths).toHaveLength(1);

@@ -79,6 +79,29 @@ describe('exact independently verified item-close contribution relations', () =>
       ['implementer', 'contract-author', 'implementer'], 'protocol-rollout');
   });
 
+  it('preserves distinct requirement certificates citing the same proof receipt', async () => {
+    const w = world();
+    w.review.evidenceRef = w.proof.evidenceRef;
+    const projection = { ...structuredClone(w.projection), specId: 'AUTO-BAR-R-1-P-002',
+      contentHash: 'r1-projection', sourceBar: { ...w.projection.sourceBar!, barKey: 'R-1', barHash: 'r1hash' } };
+    const review = { ...structuredClone(w.review), id: 12, details: { itemCloseContribution: {
+      ...structuredClone(w.relation), requirementKey: 'R-1', barHash: 'r1hash',
+      projection: { ...w.relation.projection, specId: projection.specId, contentHash: projection.contentHash },
+    } } };
+    w.input.clauses.push(projection);
+    w.input.evidence.push(review);
+    w.input.completion.contributesTo.push('R-1');
+    expect((await w.run()).map(row => [row.requirementKey, row.verificationBindingId]))
+      .toEqual([['R-9', 11], ['R-1', 12]]);
+  });
+
+  it('refuses repeated certificates even when they cite the same evidence reference', async () => {
+    const w = world();
+    w.review.evidenceRef = w.proof.evidenceRef;
+    w.input.evidence.push({ ...structuredClone(w.review), id: 12 });
+    expect(await w.run()).toEqual([]);
+  });
+
   it.each(['omitted', 'discharge', 'conflict'] as const)('does not defer %s declarations', async (mode) => {
     const w = world();
     if (mode === 'omitted') w.input.completion.contributesTo = [];

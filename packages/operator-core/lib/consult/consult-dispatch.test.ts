@@ -49,6 +49,7 @@ import {
   SOURCE_LAUNCH_FAILURE_THRESHOLD,
   sourceCooldownFrom,
   answerFailureRecordEntry,
+  resolveConsultBackendAvailability,
   type ConsultDispatchContext,
   type ConsultDispatchDeps,
   type ConsultDispatchRecordInput,
@@ -631,6 +632,49 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(r).toMatchObject({ dispatched: false, answeringOwnerId: null });
     expect(r.attempts).toMatchObject([{ outcome: 'skipped', reason: 'consult-closed' }]);
     expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('skips a consult that closes while the headless launch waits to create its process', async () => {
+    let consultOpen = true;
+    const { deps, calls } = makeFakes({ isConsultOpen: async () => consultOpen });
+    const spawn = deps.spawnHeadless!;
+    deps.spawnHeadless = async (options) => {
+      consultOpen = false;
+      expect(options.beforeSpawn).toBeTypeOf('function');
+      if (await options.beforeSpawn?.() === false) {
+        return { status: 'error', code: 409, error: 'launch cancelled', cancelled: true };
+      }
+      return spawn(options);
+    };
+
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+
+    expect(result).toMatchObject({ dispatched: false, answeringOwnerId: null });
+    expect(result.attempts).toMatchObject([{ outcome: 'skipped', reason: 'consult-closed' }]);
+    expect(calls.spawn).toHaveLength(0);
+    expect(calls.verify).toHaveLength(0);
+    expect(calls.stopped).toHaveLength(0);
+    expect(calls.logReads).toHaveLength(0);
+  });
+
+  it('preserves a responder that answers and closes the consult during kickoff proof', async () => {
+    let consultOpen = true;
+    const { deps, calls } = makeFakes({ isConsultOpen: async () => consultOpen });
+    const spawn = deps.spawnHeadless!;
+    deps.spawnHeadless = async (options) => {
+      expect(options.beforeSpawn).toBeTypeOf('function');
+      expect(await options.beforeSpawn?.()).toBe(true);
+      // The OS child now exists and its first reply closes the consult while
+      // spawnHeadless is still waiting for that child's kickoff receipt.
+      consultOpen = false;
+      return spawn(options);
+    };
+
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+
+    expect(result).toMatchObject({ dispatched: true, answeringOwnerId: 'su-answer-1' });
+    expect(calls.spawn).toHaveLength(1);
+    expect(calls.stopped).toHaveLength(0);
   });
 
   it('does not launch a responder when persisting its participant identity fails', async () => {
@@ -2289,5 +2333,70 @@ describe('renderCitedTurnsBlock (P-002 brief evidence)', () => {
     expect(out).not.toContain('x'.repeat(BRIEF_TURN_TEXT_MAX + 1));
     expect(out).toContain('brief cap');
     expect(out.length).toBeLessThan(BRIEF_TOTAL_TEXT_MAX + 2_000);
+  });
+});
+
+describe('consult backend account-route preflight', () => {
+  it('uses the default system route only for a confirmed gateway-off or empty-pool state', () => {
+    expect(resolveConsultBackendAvailability('codex', {
+      gatewayOn: false, poolAccountCount: null, poolHasHeadroom: null,
+    })).toMatchObject({ available: true, accountRoute: 'default', routeReason: 'codex inference gateway is disabled' });
+    expect(resolveConsultBackendAvailability('claude', {
+      gatewayOn: true, poolAccountCount: 0, poolHasHeadroom: null,
+    })).toMatchObject({ available: true, accountRoute: 'default', routeReason: 'claude provider pool is empty' });
+  });
+
+  it('uses auto only with a measured nonempty pool, and keeps measured account walls distinct', () => {
+    expect(resolveConsultBackendAvailability('codex', {
+      gatewayOn: true, poolAccountCount: 3, poolHasHeadroom: true,
+    })).toMatchObject({ available: true, accountRoute: 'auto' });
+    expect(resolveConsultBackendAvailability('claude', {
+      gatewayOn: true, poolAccountCount: 2, poolHasHeadroom: false,
+    })).toMatchObject({ available: false, accountRoute: 'auto', failureReason: 'account-walled' });
+  });
+
+  it('rejects an unknown gateway or pool preflight before any answering-session launch', async () => {
+    const route = resolveConsultBackendAvailability('codex', {
+      gatewayOn: null, poolAccountCount: null, poolHasHeadroom: null,
+    });
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'codex', model: 'sol' }],
+      probeBackendAvailable: async () => route,
+    });
+
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+
+    expect(result).toMatchObject({
+      dispatched: false,
+      attempts: [{ outcome: 'skipped', reason: 'account-routing-unavailable' }],
+    });
+    expect(calls.spawn).toHaveLength(0);
+    expect(calls.recorded[0]!.result.attempts[0]!.detail).toContain('automatic launch was not attempted');
+  });
+
+  it('routes through the system account and persists the reason when auto routing is confirmed unavailable', async () => {
+    const route = resolveConsultBackendAvailability('codex', {
+      gatewayOn: false, poolAccountCount: null, poolHasHeadroom: null,
+    });
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'codex', model: 'sol' }],
+      probeBackendAvailable: async () => route,
+    });
+
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+
+    expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--account=default');
+    expect(result.attempts[0]).toMatchObject({
+      accountRoute: 'default',
+      accountRouteReason: 'codex inference gateway is disabled',
+    });
+    const entry = dispatchRecordEntry(calls.recorded[0]!, new Date(NOW_MS).toISOString()) as {
+      attempts: Array<Record<string, unknown>>;
+    };
+    expect(entry.attempts[0]).toMatchObject({
+      accountRoute: 'default',
+      accountRouteReason: 'codex inference gateway is disabled',
+    });
   });
 });

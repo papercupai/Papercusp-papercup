@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
     openConversation: vi.fn(),
     routeConsult: vi.fn(async (_params: unknown, _deps: unknown) => ({ verdict: 'no_qualified_responder' })),
     makeConsultReachDispatcher: vi.fn((_context: unknown, _deps: unknown) => async () => ({})),
+    continueCascadeDispatchProd: vi.fn(async (_workspace: string, _conversation: string, _context: unknown, _options: unknown) => true),
     observeNativeConsultSource: vi.fn(async (_candidate: unknown, _constraint: unknown) => ({})),
     readConsultExpertRoutingSettings: vi.fn(async () => routingSettings),
   };
@@ -51,6 +52,7 @@ vi.mock('../agent-tools/coordination/liveness-oracle', () => ({ resolveSessionSt
 vi.mock('../harness/routines/release-pause-ttl', () => ({ listLoopStanddownOwners: h.listLoopStanddownOwners }));
 vi.mock('../agent-tools/coordination/conversations', () => ({ openConversation: h.openConversation }));
 vi.mock('./consult-dispatch', () => ({ makeConsultReachDispatcher: h.makeConsultReachDispatcher,
+  continueCascadeDispatchProd: h.continueCascadeDispatchProd,
   observeNativeConsultSource: h.observeNativeConsultSource }));
 vi.mock('./expert-routing-settings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./expert-routing-settings')>();
@@ -93,6 +95,22 @@ describe('getFeedbackProd expert-routing settings', () => {
   });
 
   beforeEach(() => vi.clearAllMocks());
+
+  it('starts accepted initial delivery through the leased continuation under the saved requester', async () => {
+    await getFeedbackProd({ workspaceId: 'saved-workspace', requesterId: 'saved-requester', question: 'saved question' },
+      { ownerId: 'saved-requester' } as never, { harnessSlug: 'saved-harness',
+        acceptedRequest: { conversation_id: 'saved-conversation', thread_id: 'thr-saved-conversation', leaseToken: 'lease' } });
+    const deps = h.getFeedbackCore.mock.calls[0]![1] as { resumeInitialDispatch: (id: string) => void };
+    expect(h.continueCascadeDispatchProd).not.toHaveBeenCalled();
+    deps.resumeInitialDispatch('saved-conversation');
+    expect(h.continueCascadeDispatchProd).toHaveBeenCalledWith('saved-workspace', 'saved-conversation', {
+      workspaceId: 'saved-workspace', harnessSlug: 'saved-harness', launchedBy: 'saved-requester',
+    }, { loadRanks: expect.any(Function) });
+    const options = h.continueCascadeDispatchProd.mock.calls[0]![3] as {
+      loadRanks: (workspace: string) => Promise<readonly unknown[]>;
+    };
+    await expect(options.loadRanks('saved-workspace')).resolves.toEqual(h.routingSettings.allowlist);
+  });
 
   it('persists and returns acceptance before embedder/settings acquisition, then resumes the same identity', async () => {
     const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',

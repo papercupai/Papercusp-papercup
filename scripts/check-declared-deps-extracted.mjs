@@ -607,6 +607,7 @@ export function findUnusableRuntimeDeps({
   probeSpecifiers,
   deps = {},
 } = {}) {
+  repoRoot = resolve(repoRoot);
   const specifiers =
     probeSpecifiers ??
     resolveRuntimeContentProbes(repoRoot, RUNTIME_CONTENT_PROBES, deps);

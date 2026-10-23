@@ -52,6 +52,7 @@ import {
   type TsTree,
 } from './typescript-service.ts';
 import { compilerDiscovery, compilerTraversal, traversalSourceFiles } from './first-party-traversal.ts';
+import { measureCodeHealth, type HealthSnapshot } from './code-health.ts';
 
 /** ripgrep glob for every extension the program takes (typescript-service TS_TREE_EXTENSIONS). */
 export const FIRST_PARTY_SOURCE_GLOB = '*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}';
@@ -82,6 +83,8 @@ export interface FirstPartyCallersAttribution {
 export interface FirstPartyCallersAnswer extends CodeIntelAnswer {
   readonly attribution: FirstPartyCallersAttribution | null;
   readonly interfaces?: CompilerInterfaceEvidence;
+  /** Scoped symbol/context metrics reuse this query's full compiler source files. */
+  readonly codeHealth?: HealthSnapshot;
 }
 
 export interface CompilerInterfaceEvidence {
@@ -782,6 +785,16 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
         truncation: { truncated: interfaces.truncated, totalAvailable: sites.length, continuation: null } };
     }
     const withInterfaces = (result: FirstPartyCallersAnswer): FirstPartyCallersAnswer => {
+      if (!result.error && (op === 'context' || op === 'symbol')) {
+        const snapshots = program.getSourceFiles().filter(sf => tree.rootFiles.has(sf.fileName))
+          .map(sf => measureCodeHealth(q.ts, sf, posix(relative(q.root, sf.fileName))));
+        const functions = snapshots.flatMap(snapshot => snapshot.functions).filter(fn =>
+          fn.name.split('.').includes(q.name) && (!definingPath || fn.path === definingPath)
+          && (q.line1 === undefined || fn.line1 === q.line1));
+        result = { ...result, codeHealth: { metricVersion: 'compiler/complexity-v1', compilerVersion: q.ts.version,
+          status: snapshots.every(snapshot => snapshot.status === 'measured') ? 'measured' : 'unknown',
+          functions: functions.slice(0, limit), limitations: functions.length > limit ? ['Function result cap reached.'] : [] } };
+      }
       if (!q.includeInterfaces) return result;
       const interfaces = compilerInterfaceEvidence(q.ts, program, q.root, limit);
       if (!result.evidence || result.error) return { ...result, interfaces: { ...interfaces, status: 'unknown' } };

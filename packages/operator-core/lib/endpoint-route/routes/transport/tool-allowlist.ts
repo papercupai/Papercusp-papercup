@@ -346,6 +346,38 @@ export function getSessionUsedTools(sessionKey: string | null | undefined): Read
   return sessionKey ? sessionSurfaces.get(sessionKey)?.used ?? null : null;
 }
 
+/**
+ * Record a tool that just completed against the already-seeded in-memory
+ * surface. This is the fast path for direct and nested MCP calls; it avoids a
+ * telemetry flush plus an owner-wide invocation-ledger scan just to learn the
+ * name of the call that is currently returning.
+ *
+ * Only names already admitted on this session's surface are marked. This
+ * changes detail promotion, never the callable/listed set.
+ */
+export function recordSessionToolUse(
+  sessionKey: string | null | undefined,
+  toolNames: readonly string[],
+  nowMs: number = Date.now(),
+): boolean {
+  if (!sessionKey || toolNames.length === 0) return false;
+  const entry = sessionSurfaces.get(sessionKey);
+  if (!entry) return false;
+
+  const normalizedAllowed = new Set([...entry.tools].map(normalizeMcpName));
+  let changed = false;
+  for (const rawName of toolNames) {
+    const name = rawName.trim();
+    if (!name) continue;
+    if (!entry.tools.has(name) && !normalizedAllowed.has(normalizeMcpName(name))) continue;
+    if (entry.used.has(name)) continue;
+    entry.used.add(name);
+    changed = true;
+  }
+  if (changed) entry.touched = nowMs;
+  return changed;
+}
+
 /** Restore the stable owner's used tools from the existing invocation ledger.
  * CLI respawns and operator restarts lose discovery state, while this ledger
  * already records direct and nested dispatch under their canonical tool names.

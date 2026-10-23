@@ -43,6 +43,7 @@ import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, WORKSPACE_QUOTA_BYTES, type ScratchWriteTimings } from '../../scratch-gc';
 import { parseScratchReference } from '../../scratch-reference';
+import { __resetSessionSurfaces, getSessionSurface, getSessionUsedTools, sessionToolSurfaceKey } from '../routes/transport/tool-allowlist';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
 const h = vi.hoisted(() => {
@@ -784,6 +785,51 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     expect(h.progressCalls).toBe(1);
     expect(h.invocations).toHaveLength(1);
     expect(h.resultDoorCalls).toBe(1);
+  });
+
+  it('returns a completed tool result while the seeded-surface notification remains pending', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '9a812cdc-73db-4f9f-a02e-2cad05ad22c8';
+    const owner = 'su-seeded-surface-test';
+    const seed = new Set(['deadlinetest:progress']);
+    const surfaceKey = sessionToolSurfaceKey(owner, 'ws-test')!;
+    __resetSessionSurfaces();
+    getSessionSurface(surfaceKey, seed);
+
+    let releaseNotification!: () => void;
+    let enteredNotification!: () => void;
+    const notificationGate = new Promise<void>((resolve) => { releaseNotification = resolve; });
+    const notificationEntered = new Promise<void>((resolve) => { enteredNotification = resolve; });
+
+    const extra = superuserExtra(
+      `&workspace=ws-test&client=${owner}&tools=deadlinetest:progress`,
+      { [MCP_REQUEST_TRACE_HEADER]: traceId },
+    );
+    (extra as Record<string, unknown>).sendNotification = async () => {
+      enteredNotification();
+      await notificationGate;
+    };
+
+    try {
+      const result = await callTool('deadlinetest:progress', {}, extra);
+      expect(result.isError).not.toBe(true);
+      expect(textOf(result)).toContain('synthetic-progress-fixture');
+      expect(h.progressCalls).toBe(1);
+      expect(getSessionUsedTools(surfaceKey)?.has('deadlinetest:progress')).toBe(true);
+
+      // The response is already delivered while the list_changed notification
+      // is deliberately held open.
+      await waitForSignal(notificationEntered, 'nonblocking list_changed notification');
+      const events = traceEvents(info.mock.calls);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ traceId, stage: 'inner_dispatch_settled', outcome: 'success' }),
+      ]));
+      expect(events.some((event) => event.traceId === traceId && event.stage === 'deadline')).toBe(false);
+    } finally {
+      releaseNotification();
+      __resetSessionSurfaces();
+      info.mockRestore();
+    }
   });
 
   it('forwards synthetic scratch progress to MCP clients that supplied a progress token', async () => {

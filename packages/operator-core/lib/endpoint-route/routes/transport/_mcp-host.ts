@@ -208,6 +208,7 @@ import {
   getSessionSurface,
   getSessionUsedTools,
   sessionToolSurfaceKey,
+  recordSessionToolUse,
   restoreSessionTools,
   activateSessionTools,
   rememberSessionToolRegistryRevision,
@@ -3605,9 +3606,59 @@ async function identityAdmittedListings(
  * generation that moved during dispatch, while the pre-call check prevents a
  * known-stale or unknown session from dispatching in the first place.
  */
+type SeededSurfaceRefresh = (
+  extra: unknown,
+  seed: Set<string>,
+  sendNotification: (notification: { method: string; params: Record<string, unknown> }) => Promise<void>,
+) => Promise<void>;
+
+async function refreshSeededSessionSurfaceFromLedger(
+  extra: unknown,
+  seed: Set<string>,
+  sendNotification: (notification: { method: string; params: Record<string, unknown> }) => Promise<void>,
+): Promise<void> {
+  const startedAtMs = Date.now();
+  const phaseTimingsMs: Record<string, number> = {};
+  let outcome: 'success' | 'error' = 'success';
+  const measure = async <T>(phase: string, work: () => Promise<T>): Promise<T> => {
+    const phaseStartedAtMs = Date.now();
+    try {
+      return await work();
+    } finally {
+      phaseTimingsMs[phase] = Math.max(0, Date.now() - phaseStartedAtMs);
+    }
+  };
+  try {
+    const spawn = await measure('spawnContext', () => tryBuildSpawnContext(extra));
+    if (spawn.kind !== 'ok' || !spawn.ctx.uiClientId) return;
+    await measure('telemetryFlush', () => flushPendingTelemetry());
+    const changed = await measure('restoreSessionTools', () => restoreSessionTools({
+      sessionKey: sessionToolSurfaceKey(spawn.ctx.uiClientId, spawn.ctx.workspaceId),
+      seed,
+      ownerId: resolveAgentIdentity(spawn.ctx).ownerId,
+      workspaceId: spawn.ctx.workspaceId,
+    }));
+    if (changed) await measure('notification', () => sendNotification({ method: 'notifications/tools/list_changed', params: {} }));
+  } catch (error) {
+    outcome = 'error';
+    throw error;
+  } finally {
+    const elapsedMs = Math.max(0, Date.now() - startedAtMs);
+    if (elapsedMs >= 1_000) {
+      console.info('[mcp-session-surface-refresh] ' + JSON.stringify({
+        traceId: resolveMcpRequestTraceId(extra),
+        elapsedMs,
+        outcome,
+        phaseTimingsMs,
+      }));
+    }
+  }
+}
+
 function withMcpSessionSurfaceRecheck<Req, Res>(
   handler: (req: Req, extra: unknown) => Promise<Res>,
   readGeneration: () => Promise<ServingGeneration> = readServingGeneration,
+  refreshSeededSurface: SeededSurfaceRefresh = refreshSeededSessionSurfaceFromLedger,
 ): (req: Req, extra: unknown) => Promise<Res> {
   return async (req, extra) => {
     const checkStartedAt = Date.now();
@@ -3630,26 +3681,20 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       const url = urlFromExtra(extra);
       const seed = parseToolsAllowlist(url?.searchParams.get('tools'));
       if (seed && sendNotification) {
-        try {
-          const spawn = await tryBuildSpawnContext(extra);
-          if (spawn.kind === 'ok' && spawn.ctx.uiClientId) {
-            await flushPendingTelemetry();
-            const changed = await restoreSessionTools({
-              sessionKey: sessionToolSurfaceKey(spawn.ctx.uiClientId, spawn.ctx.workspaceId),
-              seed,
-              ownerId: resolveAgentIdentity(spawn.ctx).ownerId,
-              workspaceId: spawn.ctx.workspaceId,
+        // The result is already settled. Telemetry flush + ledger restoration
+        // are bookkeeping for the next tools/list, so keep them off this
+        // response path. Direct/nested dispatch records its current name in
+        // memory before result shaping; this background pass reconciles other
+        // uses (for example tools invoked inside code:run).
+        setImmediate(() => {
+          void Promise.resolve()
+            .then(() => refreshSeededSurface(extra, seed, sendNotification))
+            .catch((err: unknown) => {
+              // The next tools/list remains the recovery boundary if this read
+              // fails; never turn an already-settled tool result into a timeout.
+              console.warn(`[mcp-host] used tool definition refresh failed: ${err instanceof Error ? err.message : String(err)}`);
             });
-            if (changed && !listChangedSent) {
-              await sendNotification({ method: 'notifications/tools/list_changed', params: {} });
-              listChangedSent = true;
-            }
-          }
-        } catch (err) {
-          // The tool already settled. Keep restoration retryable on tools/list
-          // and report refresh failure without claiming the tool did not run.
-          console.warn(`[mcp-host] used tool definition refresh failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
+        });
       }
       return result;
     };
@@ -3729,8 +3774,9 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
 export function __withMcpSessionSurfaceRecheckForTests<Req, Res>(
   handler: (req: Req, extra: unknown) => Promise<Res>,
   readGeneration: () => Promise<ServingGeneration>,
+  refreshSeededSurface: SeededSurfaceRefresh = refreshSeededSessionSurfaceFromLedger,
 ): (req: Req, extra: unknown) => Promise<Res> {
-  return withMcpSessionSurfaceRecheck(handler, readGeneration);
+  return withMcpSessionSurfaceRecheck(handler, readGeneration, refreshSeededSurface);
 }
 
 /**
@@ -5298,6 +5344,26 @@ export function registerMcpHost(server: McpServer): void {
                   return runLocalTarget();
                 },
               }).then((result) => {
+                const usedToolNames = nestedTargetToolName && nestedTargetToolName !== toolName
+                  ? [toolName, nestedTargetToolName]
+                  : [toolName];
+                const hasSeededSurface = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools')) !== null;
+                const surfaceChanged = hasSeededSurface && recordSessionToolUse(
+                  sessionToolSurfaceKey(dispatchSpawnCtx.uiClientId, dispatchSpawnCtx.workspaceId),
+                  usedToolNames,
+                );
+                const sendNotification = (extra as {
+                  sendNotification?: (notification: { method: string; params: Record<string, unknown> }) => Promise<void>;
+                } | undefined)?.sendNotification;
+                // Notification is a hint; it must never hold up a result whose
+                // actual use has already been recorded in the in-memory surface.
+                if (surfaceChanged && !usedToolNames.includes('tools:find') && typeof sendNotification === 'function') {
+                  void Promise.resolve()
+                    .then(() => sendNotification({ method: 'notifications/tools/list_changed', params: {} }))
+                    .catch((err: unknown) => {
+                      console.warn(`[mcp-host] used tool definition notification failed: ${err instanceof Error ? err.message : String(err)}`);
+                    });
+                }
                 raced.postDispatchStartedAtMs = Date.now();
                 return result;
               }),

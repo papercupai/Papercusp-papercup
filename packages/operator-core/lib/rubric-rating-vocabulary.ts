@@ -254,8 +254,13 @@ function parseDirectiveTarget(input: string, directive: string): ParsedDirective
   }
 
   const afterToken = rest.slice(matched.length).trimStart();
+  // A colon directly attached to an identifier continues a qualified name
+  // (for example `code:run`); it is not a punctuation boundary for a rating.
+  const qualifiedNameContinuation = /^:[A-Za-z0-9][A-Za-z0-9_./-]*/.test(afterToken);
   const explicitBoundary =
-    afterToken.length === 0 || /^[,;:.!?)]/.test(afterToken) || EXPLICIT_FOLLOWING_WORD_RE.test(afterToken);
+    afterToken.length === 0 ||
+    (!qualifiedNameContinuation && /^[,;:.!?)]/.test(afterToken)) ||
+    EXPLICIT_FOLLOWING_WORD_RE.test(afterToken);
   if (!explicitBoundary) return null;
 
   return {

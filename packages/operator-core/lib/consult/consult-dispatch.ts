@@ -320,6 +320,7 @@ export type DispatchSkipReason =
   | 'source-session-untracked'
   | 'convert-needs-live-source-identity'
   | 'account-walled'
+  | 'account-routing-unavailable'
   | 'source-context-critical'
   | 'source-transcript-poisoned'
   | 'evidence-span-unavailable'
@@ -339,6 +340,8 @@ export interface ConsultDispatchAttempt {
   operation: DispatchOperation | null;
   outcome: 'dispatched' | 'skipped' | 'failed';
   reason?: DispatchSkipReason;
+  accountRoute?: ConsultAccountRoute;
+  accountRouteReason?: string;
   detail: string;
   /**
    * The launcher's own words for a spawned rank that did not survive, read from
@@ -386,6 +389,76 @@ export interface ConsultDispatchContext {
 export interface BackendAvailability {
   available: boolean;
   detail: string;
+  accountRoute?: ConsultAccountRoute;
+  routeReason?: string;
+  failureReason?: 'account-walled' | 'account-routing-unavailable';
+}
+
+export type ConsultAccountRoute = 'auto' | 'default';
+
+export interface ConsultAccountRoutingProbe {
+  gatewayOn: boolean | null;
+  poolAccountCount: number | null;
+  poolHasHeadroom: boolean | null;
+}
+
+/** Pure launch-route decision, shared by the live pool probe and its tests. */
+export function resolveConsultBackendAvailability(
+  provider: 'claude' | 'codex',
+  probe: ConsultAccountRoutingProbe,
+): BackendAvailability {
+  if (probe.gatewayOn === false) {
+    const routeReason = provider + ' inference gateway is disabled';
+    return {
+      available: true,
+      accountRoute: 'default',
+      routeReason,
+      detail: routeReason + '; selecting the system/CLI login route',
+    };
+  }
+  if (probe.gatewayOn !== true || probe.poolAccountCount === null ||
+      !Number.isSafeInteger(probe.poolAccountCount) || probe.poolAccountCount < 0) {
+    const routeReason = provider + ' account-routing preflight could not confirm gateway and pool state';
+    return {
+      available: false,
+      failureReason: 'account-routing-unavailable',
+      routeReason,
+      detail: routeReason + '; automatic launch was not attempted',
+    };
+  }
+  if (probe.poolAccountCount === 0) {
+    const routeReason = provider + ' provider pool is empty';
+    return {
+      available: true,
+      accountRoute: 'default',
+      routeReason,
+      detail: routeReason + '; selecting the system/CLI login route',
+    };
+  }
+  if (probe.poolHasHeadroom !== true && probe.poolHasHeadroom !== false) {
+    const routeReason = provider + ' provider-pool headroom could not be measured';
+    return {
+      available: false,
+      failureReason: 'account-routing-unavailable',
+      routeReason,
+      detail: routeReason + '; automatic launch was not attempted',
+    };
+  }
+  if (!probe.poolHasHeadroom) {
+    const routeReason = 'every ' + provider + ' provider account reads full or paused';
+    return {
+      available: false,
+      accountRoute: 'auto',
+      failureReason: 'account-walled',
+      routeReason,
+      detail: routeReason + '; automatic launch was not attempted',
+    };
+  }
+  return {
+    available: true,
+    accountRoute: 'auto',
+    detail: provider + ' pool has headroom (' + probe.poolAccountCount + ' account(s))',
+  };
 }
 
 /** Injectable seams — unit tests pass fakes; production omits (real impls). */
@@ -554,6 +627,8 @@ export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: s
       operation: a.operation,
       outcome: a.outcome,
       ...(a.reason ? { reason: a.reason } : {}),
+      ...(a.accountRoute ? { accountRoute: a.accountRoute } : {}),
+      ...(a.accountRouteReason ? { accountRouteReason: clip(a.accountRouteReason) } : {}),
       detail: clip(a.detail),
       ...(a.launchError ? { launchError: clip(a.launchError, 300) } : {}),
       ...(a.launchLogPath ? { launchLogPath: clip(a.launchLogPath) } : {}),
@@ -981,11 +1056,11 @@ function providerForBackend(agent: ExpertBackend): 'claude' | 'codex' | null {
  *
  * Deliberately the cheap PROJECTION read, not `accounts:probe-capacity` — the
  * upstream probe costs one request per account and this runs on the requester's
- * critical path for every rank. A stale projection can only cost one wasted
- * launch attempt, which the walk already treats as a step rather than a stop.
- * An unreadable pool reports AVAILABLE: a failed measurement is not evidence of
- * a wall, and failing closed here would turn a settings/DB hiccup into
- * "no expert is reachable".
+ * critical path for every rank. A stale projection can affect one ranked decision;
+ * the walk records the route or skip reason and continues its configured ranks.
+ * A confirmed gateway-off or empty-pool state selects the existing system/CLI
+ * account route. Unknown preflight state is recorded as routing-unavailable,
+ * before consuming an expert launch attempt.
  */
 async function defaultProbeBackendAvailable(
   agent: ExpertBackend,
@@ -993,23 +1068,43 @@ async function defaultProbeBackendAvailable(
 ): Promise<BackendAvailability> {
   const provider = providerForBackend(agent);
   if (!provider) return { available: true, detail: `${agent} is not a pooled subscription — no wall to probe` };
+  let gatewayOn: boolean | null = null;
   try {
-    const [{ loadAccountPool }, { anyAccountAvailable, poolForProvider }] = await Promise.all([
+    const [{ loadAccountPool }, { anyAccountAvailable, poolForProvider }, { getFlag }, { FLAGS }] = await Promise.all([
       import('../deployment/account-pool-store'),
       import('../deployment/account-pool'),
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
     ]);
+    gatewayOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
+    if (gatewayOn === false) {
+      return resolveConsultBackendAvailability(provider, {
+        gatewayOn: false,
+        poolAccountCount: null,
+        poolHasHeadroom: null,
+      });
+    }
+    if (gatewayOn !== true) {
+      return resolveConsultBackendAvailability(provider, {
+        gatewayOn: null,
+        poolAccountCount: null,
+        poolHasHeadroom: null,
+      });
+    }
     const pool = poolForProvider(await loadAccountPool(workspaceId), provider);
-    const available = anyAccountAvailable(pool, Date.now());
-    return {
-      available,
-      detail: available
-        ? `${provider} pool has headroom (${pool.accounts.length} account(s))`
-        : `every ${provider} account reads full/paused (${pool.accounts.length} account(s))`,
-    };
+    return resolveConsultBackendAvailability(provider, {
+      gatewayOn: true,
+      poolAccountCount: pool.accounts.length,
+      poolHasHeadroom: pool.accounts.length > 0 ? anyAccountAvailable(pool, Date.now()) : null,
+    });
   } catch (e) {
     return {
-      available: true,
-      detail: `${provider} capacity unreadable (${(e as Error)?.message ?? String(e)}) — not treated as a wall`,
+      available: false,
+      failureReason: 'account-routing-unavailable',
+      routeReason: provider + ' gateway/pool preflight failed',
+      detail: provider + ' account-routing preflight failed (' +
+        ((e as Error)?.message ?? String(e)) + '); automatic launch was not attempted' +
+        (gatewayOn === false ? '; system/CLI route remains available' : ''),
     };
   }
 }
@@ -1451,11 +1546,14 @@ async function walkConsultDispatch(
           model: rank.model,
           operation,
           outcome: 'skipped',
-          reason: 'account-walled',
+          reason: capacity.failureReason ?? 'account-walled',
+          ...(capacity.accountRoute ? { accountRoute: capacity.accountRoute } : {}),
+          ...(capacity.routeReason ? { accountRouteReason: capacity.routeReason } : {}),
           detail: capacity.detail,
         });
         continue;
       }
+      const accountRoute = capacity.accountRoute ?? (providerForBackend(rank.agent) ? 'auto' : 'default');
 
       if (operation === 'convert') {
         if (!portTranscript) {
@@ -1475,6 +1573,8 @@ async function walkConsultDispatch(
 
       const { attempt, replaced } = await launchAnsweringSessionWithProviderRetry({
         ...opts,
+        accountRoute,
+        ...(capacity.routeReason ? { accountRouteReason: capacity.routeReason } : {}),
         ...(evidenceSource ? { evidenceSource } : {}),
       }, ctx, d, launchTarget, rank, operation);
       attempts.push(...replaced, attempt.record);
@@ -1541,13 +1641,23 @@ async function walkConsultDispatch(
       }
       const capacity = await d.probeBackendAvailable(rank.agent, ctx.workspaceId);
       if (!capacity.available) {
-        attempts.push({ ...base, outcome: 'skipped', reason: 'account-walled', detail: capacity.detail });
+        attempts.push({
+          ...base,
+          outcome: 'skipped',
+          reason: capacity.failureReason ?? 'account-walled',
+          ...(capacity.accountRoute ? { accountRoute: capacity.accountRoute } : {}),
+          ...(capacity.routeReason ? { accountRouteReason: capacity.routeReason } : {}),
+          detail: capacity.detail,
+        });
         continue;
       }
+      const accountRoute = capacity.accountRoute ?? (providerForBackend(rank.agent) ? 'auto' : 'default');
       const { attempt, replaced } = await launchAnsweringSessionWithProviderRetry({
         ...opts,
         evidenceSource,
         citedTurns,
+        accountRoute,
+        ...(capacity.routeReason ? { accountRouteReason: capacity.routeReason } : {}),
       }, ctx, d, target, rank, 'brief');
       attempts.push(...replaced, attempt.record);
       if (attempt.record.reason === 'consult-closed') return give(attempt.record.detail);
@@ -1611,6 +1721,8 @@ async function launchAnsweringSession(
     sourceOwnerId: string;
     conversationId: string;
     evidenceSource?: ConsultEvidenceSource;
+    accountRoute?: ConsultAccountRoute;
+    accountRouteReason?: string;
     /** `brief` only: the cited turns quoted into the fresh session's kickoff. */
     citedTurns?: CitedTranscriptTurn[];
     brief: string | ((operation: DispatchOperation) => string);
@@ -1622,7 +1734,16 @@ async function launchAnsweringSession(
   rank: AllowedExpertModel,
   operation: DispatchOperation,
 ): Promise<{ record: ConsultDispatchAttempt; answeringOwnerId: string | null; verified: boolean | null }> {
-  const base = { rank: rank.rank, agent: rank.agent, model: rank.model, operation } as const;
+  const base = {
+    rank: rank.rank,
+    agent: rank.agent,
+    model: rank.model,
+    operation,
+    ...(opts.accountRouteReason ? {
+      accountRoute: opts.accountRoute ?? (providerForBackend(rank.agent) ? 'auto' : 'default'),
+      accountRouteReason: opts.accountRouteReason,
+    } : {}),
+  } as const;
   const failed = (reason: DispatchSkipReason, detail: string) => ({
     record: { ...base, outcome: 'failed' as const, reason, detail },
     answeringOwnerId: null,
@@ -1659,7 +1780,7 @@ async function launchAnsweringSession(
           model: rank.model,
           modelSource: 'explicit',
           headless: true,
-          account: providerForBackend(rank.agent) ? 'auto' : 'default',
+          account: opts.accountRoute ?? (providerForBackend(rank.agent) ? 'auto' : 'default'),
           ownerId: answeringOwnerId,
         })
       : d.buildAgentLaunchCommand({
@@ -1676,7 +1797,7 @@ async function launchAnsweringSession(
       headless: true,
       // The wall probe measures the provider pool. Route pooled Claude/Codex
       // launches through that same pool so another account's headroom is usable.
-      account: providerForBackend(rank.agent) ? 'auto' : 'default',
+      account: opts.accountRoute ?? (providerForBackend(rank.agent) ? 'auto' : 'default'),
       ownerId: answeringOwnerId,
     });
   } catch (e) {
@@ -1790,8 +1911,10 @@ async function launchAnsweringSession(
       },
     },
     kickoffProof: true,
+    beforeSpawn: () => d.isConsultOpen(ctx.workspaceId, opts.conversationId),
   });
   if (spawn.status !== 'ok') {
+    if (spawn.cancelled) return consultClosed();
     const launchError = await d.readLaunchLogReason(spawn.logPath);
     const result = failed(
       'launch-failed',
@@ -2187,11 +2310,18 @@ export function makeDeferredConsultReachDispatcher(ctx: ConsultDispatchContext, 
 
 export async function continueCascadeDispatchProd(
   workspaceId: string, conversationId: string, context?: ConsultDispatchContext,
+  options: Pick<Partial<ConsultDispatchDeps>, 'loadRanks'> = {},
 ): Promise<boolean> {
   const [{ getOrgPg }, { continueCascadeDispatchCore }] = await Promise.all([
     import('@papercusp/db-org'), import('./cascade-core'),
   ]);
   const sql = getOrgPg().sql;
+  // Initial delivery carries the same settings snapshot used for routing.
+  // A recovered delivery has no closure: restore the persisted workspace
+  // policy rather than silently falling back to the hardcoded seed models.
+  const loadRanks = options.loadRanks ?? (await import('./expert-routing-settings')
+    .then(async ({ readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings }) =>
+      bindConsultExpertRoutingSettings(await readConsultExpertRoutingSettings(workspaceId)).loadRanks));
   const [conversation] = await sql<Array<{ harness_slug: string | null }>>`
     SELECT harness_slug FROM harness_shared.coord_conversations
      WHERE workspace_id = ${workspaceId} AND id = ${conversationId}`;
@@ -2199,7 +2329,7 @@ export async function continueCascadeDispatchProd(
     getSql: () => sql,
     dispatch: (isCurrent) => makeConsultReachDispatcher(context ?? {
       workspaceId, harnessSlug: conversation?.harness_slug ?? null, launchedBy: 'system:consult-expiry-sweep',
-    }, { isConsultOpen: isCurrent }),
+    }, { isConsultOpen: isCurrent, loadRanks }),
   });
 }
 

@@ -34,7 +34,6 @@
  *   - "armed COLD loop without loop:checkpoint" → 'armed-loop-no-carry-note'.
  */
 import type { CarryBrief } from './carry-brief';
-import { parseCarryNote } from './carry-note';
 
 /** A held item's last recorded progress materially newer than its checkpoint is
  *  STALE — that item-scoped work cannot be represented by the checkpoint across
@@ -200,6 +199,30 @@ export function carryNoteStartsWithDeferredFutureAction(next: string): boolean {
 }
 
 /**
+ * Read only the canonical Next action section needed by this pure detector.
+ * carry-note.ts also owns persistence and imports the full storage graph; this
+ * small parser keeps the flush gate independent of that runtime module.
+ */
+function nextActionFromCarryNote(text: string): string | undefined {
+  const recognized = new Set(['did', 'left', 'key insight', 'next action', 'checks', 'walls']);
+  let readingNext = false;
+  let body: string[] = [];
+  let next: string | undefined;
+  for (const line of (text ?? '').split('\n')) {
+    const heading = /^##\s+(.+?)\s*$/.exec(line)?.[1]?.toLowerCase();
+    if (heading && recognized.has(heading)) {
+      if (readingNext) next = body.join('\n').trim() || undefined;
+      readingNext = heading === 'next action';
+      body = [];
+    } else if (readingNext) {
+      body.push(line);
+    }
+  }
+  if (readingNext) next = body.join('\n').trim() || undefined;
+  return next;
+}
+
+/**
  * A carry writer that landed immediately before this boundary is positive
  * evidence that the owner did productive work even when the post-note tool
  * ledger is zero. The ledger deliberately excludes `loop:checkpoint` and
@@ -315,7 +338,7 @@ export function detectFlushTripwires(
     brief.awaits.length === 0 &&
     agentToolCallsSinceNote === 0
   ) {
-    const next = parseCarryNote(brief.loop.carryNote ?? '').next?.trim();
+    const next = nextActionFromCarryNote(brief.loop.carryNote ?? '');
     const currentCompactionIsNextAction =
       boundary === 'compaction' && next && carryNoteStartsWithSelfCompaction(next);
     const currentCompactionIsDeferredFutureAction =

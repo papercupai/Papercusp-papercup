@@ -7,7 +7,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { parsePlan } from '@papercusp/plan-parser';
+import { parsePlan, resolveEffectiveStatus } from '@papercusp/plan-parser';
 import setItemBlockedByTool from '../set-item-blocked-by';
 import { withPlanLock } from '../with-plan-lock';
 import { mutateWorkItemDependencies, mutateWorkItemDependenciesInTransaction } from '../../../dbos/work-item-deps-store';
@@ -249,6 +249,51 @@ describe('withPlanLock candidate dependency admission — structured writer', ()
     const data = await runSetBlockedBy('P-002', ['P-001']);
     expect(data.counts).toEqual({ ok: 0, failed: 1 });
     expect(await livePlan()).toEqual(before);
+    expect(await liveEdges()).toHaveLength(0);
+  }, 60_000);
+
+  it('does not backfill an unchanged dependency behind active work during a status-only edit', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready', { p2BlockedBy: ['P-001'] }));
+    await seedPromotedItems();
+    await admin`UPDATE harness_shared.work_items SET status = 'wip', taken_by = 'active-agent'
+      WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND feature_id = ${workId('P-002')}`;
+
+    const result = await withPlanLock(makeCtx(), {
+      harnessSlug: HARNESS, workspaceId: wsId, slug: SLUG, intent: 'record unrelated source progress',
+    }, async (body) => ({ newBody: body!.replace('`todo` first', '`wip` first'), value: true }));
+
+    expect(result.kind).toBe('applied');
+    expect(parsePlan((await livePlan()).content).items[0]?.storedStatus).toBe('wip');
+    expect(parsePlan((await livePlan()).content).items[1]?.blockedBy).toEqual(['P-001']);
+    expect(resolveEffectiveStatus(parsePlan((await livePlan()).content)).items[1]?.effectiveStatus).toBe('blocked');
+    expect(await liveEdges()).toHaveLength(0);
+  }, 60_000);
+
+  it('removes a completed prerequisite without backfilling an unchanged sibling prerequisite', async () => {
+    const body = planBody('ready', { p2BlockedBy: ['P-001', 'P-003'] }) + '- **P-003** `todo` third\n';
+    await seedPlan(admin, wsId, HARNESS, SLUG, body);
+    await seedPromotedItems();
+    await admin`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts, payload)
+      VALUES (${wsId}, ${HARNESS}, ${workId('P-003')}, 'feature', 'third', 'open', 0, 0,
+        ${JSON.stringify({ plan_item: { plan_slug: SLUG, item_id: 'P-003', harness_slug: HARNESS } })}::text::jsonb)`;
+    await seedEdge('P-002', 'P-001');
+    await admin`UPDATE harness_shared.work_items SET status = 'done', authority = 'committed'
+      WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND feature_id = ${workId('P-001')}`;
+    await admin`UPDATE harness_shared.work_items SET status = 'wip', taken_by = 'active-agent'
+      WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND feature_id = ${workId('P-002')}`;
+
+    const result = await withPlanLock(makeCtx(), {
+      harnessSlug: HARNESS, workspaceId: wsId, slug: SLUG, intent: 'reflect completed source prerequisite',
+    }, async (current) => ({ newBody: current!.replace('`todo` first', '`done` first'), value: true }));
+
+    expect(result.kind).toBe('applied');
+    const items = parsePlan((await livePlan()).content).items;
+    expect(items[0]?.storedStatus).toBe('done');
+    expect(items[1]?.blockedBy).toEqual(['P-001', 'P-003']);
+    expect(items[2]?.storedStatus).toBe('todo');
+    expect(resolveEffectiveStatus(parsePlan((await livePlan()).content)).items[1]?.unresolvedBlockers).toEqual(['P-003']);
+    expect(resolveEffectiveStatus(parsePlan((await livePlan()).content)).items[1]?.effectiveStatus).toBe('blocked');
     expect(await liveEdges()).toHaveLength(0);
   }, 60_000);
 

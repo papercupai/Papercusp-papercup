@@ -23,11 +23,11 @@ import type { AwaitRow } from './types';
 
 /** The re-arm nudge carried in a timeout wake's `summary` (one human line). */
 export const TIMEOUT_WAKE_SUMMARY =
-  'await deadline passed WITHOUT the event firing — re-orient (coord:orient), check whether the thing you awaited already happened, and re-arm the await if it still matters. Do not assume it will never come.';
+  'await deadline passed without the event firing; it may have fired since. Re-orient (coord:orient), check events:status for its current state, and re-arm only if the thing you awaited still matters.';
 
 /** The structured guidance carried in a timeout wake's `payload.guidance`. */
 export const TIMEOUT_WAKE_GUIDANCE =
-  'Your await timed out — the event never fired within the window. This is a FALLBACK wake, not the event. Re-orient with coord:orient, reconcile whether the awaited state already changed (a missed / never-emitted event, a dead emitter, or a mistyped key), and if your work is still blocked on it, RE-ARM the await (or take another path). Do not give up silently. ' +
+  'Your await timed out — the event was not observed by its deadline; it may have fired since. This is a FALLBACK wake, not confirmation of current state. Re-orient with coord:orient, check events:status for the exact key, reconcile whether the awaited state already changed, and if your work is still blocked on it, RE-ARM the await (or take another path). Do not give up silently. ' +
   // EI-21925527092611786: a stale/delayed delivery of an EARLIER, already-retired timeout on the
   // SAME key can surface here even though a re-armed registration on that key is still live and
   // not yet expired. Guard the re-arm behind a mechanical check rather than trusting this wake.
@@ -139,8 +139,8 @@ export function payloadIsTimeout(payload: unknown): boolean {
  */
 export function wakeSummaryHeadline(eventKey: string, payload: unknown): string {
   return payloadIsTimeout(payload)
-    ? `[await-event] ${eventKey} TIMED OUT (fired_reason: timeout — your deadline elapsed; ` +
-      'the event did NOT fire and the awaited source did NOT complete)'
+    ? `[await-event] ${eventKey} TIMED OUT (fired_reason: timeout — the event was not observed by its deadline; ` +
+      'it may have fired since. Check events:status for its current state)'
     : `[await-event] ${eventKey} fired`;
 }
 

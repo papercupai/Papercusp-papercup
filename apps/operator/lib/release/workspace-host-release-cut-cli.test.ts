@@ -100,6 +100,73 @@ describe('workspace host model source preflight', () => {
   });
 });
 
+describe('workspace host source dependency preparation', () => {
+  function fixture(failPreparation: boolean) {
+    const repoRoot = join(workDir, 'producer');
+    const source = join(workDir, 'source');
+    const cache = join(workDir, 'models');
+    for (const model of ['harrier-oss-v1-0.6b-ONNX', 'embeddinggemma-300m-ONNX']) {
+      const dir = join(cache, 'onnx-community', model, 'onnx');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'model.onnx'), 'model fixture');
+    }
+    vi.stubEnv('PAPERCUSP_TRANSFORMERS_MODEL_CACHE', cache);
+    const modelVerifier = join(repoRoot, 'papercusp-desktop/bin/lib');
+    mkdirSync(modelVerifier, { recursive: true });
+    writeFileSync(join(modelVerifier, 'transformers-models.sh'), 'exit 0\n');
+    const setup = join(repoRoot, 'apps/operator/bin/release');
+    mkdirSync(setup, { recursive: true });
+    writeFileSync(join(setup, 'setup-release-checkout.sh'), [
+      'set -eu',
+      'release=; mode=; copy=',
+      'while [ "$#" -gt 0 ]; do',
+      ' case "$1" in',
+      '  --release) release="$2"; shift 2 ;;',
+      '  --prepare-existing) mode=prepare; shift ;;',
+      '  --node-modules-copy) copy="$2"; shift 2 ;;',
+      '  --ref|--integration|--source-integrity) shift 2 ;;',
+      '  *) exit 21 ;;',
+      ' esac',
+      'done',
+      'test "$mode" = prepare && test "$copy" = copy || exit 22',
+      failPreparation ? 'exit 23' : 'printf prepared > "$release/dependencies-prepared"',
+      '',
+    ].join('\n'));
+    mkdirSync(join(source, 'papercusp-desktop/bin'), { recursive: true });
+    writeFileSync(join(source, 'unchanged-source'), 'pinned source');
+    writeFileSync(join(workDir, 'source.ready.json'), JSON.stringify({ sourceSha: SHA }));
+    writeFileSync(join(source, 'papercusp-desktop/bin/build-desktop-sidecar.sh'), [
+      'test -f "$REPO_ROOT/dependencies-prepared" || exit 42',
+      'echo SIDECAR_SAW_PREPARED_DEPENDENCIES',
+      'exit 41',
+      '',
+    ].join('\n'));
+    const envFile = join(workDir, 'identity.env');
+    writeFileSync(envFile, '');
+    return { source, plan: { workDir, repoRoot, identity: { sourceSha: SHA },
+      desktopVersion: VERSION, releaseIdentityEnvFile: envFile } as Parameters<typeof buildWorkspaceHostBundle>[0] };
+  }
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('prepares copied dependencies before a sidecar can start, retaining the pinned source', async () => {
+    const { source, plan } = fixture(false);
+    // Stop at the deliberately incomplete sidecar: this test measures producer ordering.
+    await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'sidecar-build' });
+    expect(readFileSync(join(source, 'dependencies-prepared'), 'utf8')).toBe('prepared');
+    expect(readFileSync(join(workDir, 'logs/sidecar-build.log'), 'utf8')).toContain('SIDECAR_SAW_PREPARED_DEPENDENCIES');
+    expect(readFileSync(join(source, 'unchanged-source'), 'utf8')).toBe('pinned source');
+  });
+
+  it('refuses the build before invoking the sidecar when dependency preparation fails', async () => {
+    const { source, plan } = fixture(true);
+    await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'dependency-prepare', gating: false });
+    expect(existsSync(join(workDir, 'logs/sidecar-build.log'))).toBe(false);
+    expect(existsSync(join(workDir, 'sidecar.ready.json'))).toBe(false);
+    expect(readFileSync(join(source, 'unchanged-source'), 'utf8')).toBe('pinned source');
+  });
+});
+
 let workDir: string;
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), 'wh-cut-'));

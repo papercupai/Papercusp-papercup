@@ -1920,6 +1920,45 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     }
   });
 
+  it('honors the declared fixed prompt of an explicitly selected built-in practice', async () => {
+    const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
+    const baseDir = dirname(builtinBlueprintPath('base'));
+    resolvePromptFilesMock.mockReturnValueOnce([join(baseDir, 'prompts', 'su.md')]);
+    await buildLaunchSpec({ ...su, stack: ['practice:su.practice'] });
+    const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
+    expect(rendered.baseText).toContain(readFileSync(join(baseDir, 'prompts', 'su.practice.md'), 'utf8').trim());
+  });
+
+  it('honors a fixed prompt in the selected parent layer instead of a local slot decoy', async () => {
+    const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
+    const root = mkdtempSync(join(tmpdir(), 'su-fixed-parent-'));
+    const parentDir = join(root, '.papercusp', 'blueprints', 'fixed-parent');
+    const identityDir = join(root, '.papercusp', 'blueprints', 'fixed-child');
+    try {
+      mkdirSync(join(parentDir, 'prompts'), { recursive: true });
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      writeFileSync(join(parentDir, 'blueprint.yaml'), [
+        'id: fixed-parent', 'extends: base', 'version: 1.0.0', 'description: Shared prompt parent.', '',
+      ].join('\n'));
+      writeFileSync(join(parentDir, 'prompts', 'shared.md'), 'DECLARED PARENT PRACTICE\n');
+      writeFileSync(join(identityDir, 'blueprint.yaml'), [
+        'id: fixed-child', 'extends: fixed-parent', 'version: 1.0.0', 'description: Selected practice.',
+        'slots:', '  - slot: practice', 'contributions:', '  - id: practice-text', '    purpose: prompt',
+        '    source: fixed', '    refresh: source-change', '    inputKind: prompt-file',
+        '    ref: fixed-parent:shared', '',
+      ].join('\n'));
+      writeFileSync(join(identityDir, 'prompts', 'practice.md'), 'UNDECLARED LOCAL DECOY\n');
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(root);
+      resolvePromptFilesMock.mockReturnValueOnce([join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md')]);
+      await buildLaunchSpec({ ...su, harnessSlug: 'fixture', stack: ['practice:fixed-child'] });
+      const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
+      expect(rendered.baseText).toContain('DECLARED PARENT PRACTICE');
+      expect(rendered.baseText).not.toContain('UNDECLARED LOCAL DECOY');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses an explicitly selected local practice document when its id also exists in the built-in SU stack', async () => {
     const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
     const dir = mkdtempSync(join(tmpdir(), 'su-selected-practice-'));

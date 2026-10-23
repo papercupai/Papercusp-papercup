@@ -468,7 +468,7 @@ async function roleStackDocuments(input: {
   promptFile?: string | null;
   stack: readonly string[];
 }): Promise<StackDocument[]> {
-  const [{ stackBindingFromRefs, slotSpec }, { getIdentitySource }] = await Promise.all([
+  const [{ stackBindingFromRefs, slotSpec }, { getIdentitySource, readSelectedIdentityDocument }] = await Promise.all([
     import('@papercusp/orchestrator/blueprint'),
     import('./agent-identities/source'),
   ]);
@@ -486,16 +486,12 @@ async function roleStackDocuments(input: {
     if (!spec || !identity.sourcePath) {
       throw new Error(`launch stack identity ${JSON.stringify(layer.id)} has no resolvable ${layer.slot} document source`);
     }
-    const documentPath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
-    if (!fsSync.existsSync(documentPath)) {
-      throw new Error(`launch stack identity ${JSON.stringify(layer.id)} is missing ${documentPath}`);
-    }
+    const document = await readSelectedIdentityDocument(identity, layer.slot);
     documents.push({
       id: layer.id,
       layer: spec.layer,
       slot: layer.slot,
-      text: fsSync.readFileSync(documentPath, 'utf8'),
-      sourcePath: documentPath,
+      ...document,
     });
   }
   documents.push({
@@ -530,7 +526,8 @@ async function selectedLaunchCompositionSource(
 ) : Promise<EffectiveLaunchSource> {
   const [{ BlueprintSourceDocumentSchema, layerSourceDocument, mergeByRules, replayAgentSpecification,
     resolveBlueprint, resolveBlueprintSource, slotSpec, stackBindingFromRefs },
-    { getIdentitySource, identityRefusal, localDirs, resolveNamedIdentityCompositionSelection }, { operatorResolveExtends }] =
+    { getIdentitySource, identityRefusal, localDirs, resolveNamedIdentityCompositionSelection,
+      resolveIdentityFixedPromptFiles }, { operatorResolveExtends }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
       import('./agent-identities/source'),
@@ -650,12 +647,7 @@ async function selectedLaunchCompositionSource(
       }
       usedBindings.add(layer.id);
     }
-    for (const entry of contributions.filter((candidate) => candidate.source === 'fixed')) {
-      const fileName = entry.ref.split(':').at(-1);
-      if (!fileName) throw new Error(`launch stack identity ${JSON.stringify(layer.id)} has no fixed prompt source for ${entry.ref}`);
-      pinnedFixedPromptFiles.push({ ref: entry.ref,
-        path: path.join(path.dirname(identity.sourcePath), 'prompts', `${fileName}.md`) });
-    }
+    pinnedFixedPromptFiles.push(...resolveIdentityFixedPromptFiles(contributions, identity.layers));
     const alias = `__launch_identity_${index}__`;
     // A named root composes its own selected stack; an implied layer is never part
     // of that root, so it always joins as a peer parent.
@@ -1521,7 +1513,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
           // Loaded lazily, like the flags above: the blueprint barrel pulls the loader (and its
           // harness-path resolution) which this module otherwise never needs at import time.
           const { composeSuStackSource, isSuTilingError, normalizeStackBinding, slotSpec, SU_SOURCE_REL, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
-          const { getIdentitySource } = await import('./agent-identities/source');
+          const { getIdentitySource, readSelectedIdentityDocument } = await import('./agent-identities/source');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
           // P-012 / P-021: the launch-time stack binding — the fleet posture the session
           // launches into and the definition identity of each mode it launches with — is
@@ -1538,19 +1530,10 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
             }
             const spec = slotSpec(layer.slot);
             if (!spec) throw new Error(`selected SU identity ${layer.id} has unknown slot ${layer.slot}`);
-            const promptDir = path.join(path.dirname(identity.sourcePath), 'prompts');
-            const slotDocument = path.join(promptDir, `${layer.slot}.md`);
-            // The canonical papercusp-engineer domain is published as the
-            // blueprint's agent-base-overlay.md; authored domains use domain.md.
-            const sourcePath = layer.slot === 'domain' && !fsSync.existsSync(slotDocument)
-              ? path.join(promptDir, 'agent-base-overlay.md')
-              : slotDocument;
-            if (!fsSync.existsSync(sourcePath)) {
-              throw new Error(`selected SU identity ${layer.id} is missing ${layer.slot} document`);
-            }
+            const document = await readSelectedIdentityDocument(identity, layer.slot);
             selectedLayerDocs.set(`${layer.slot}:${layer.id}`, {
               id: layer.id, layer: spec.layer, slot: layer.slot,
-              text: await fs.readFile(sourcePath, 'utf8'), sourcePath,
+              ...document,
             });
           }
           if (modeCatalog) {

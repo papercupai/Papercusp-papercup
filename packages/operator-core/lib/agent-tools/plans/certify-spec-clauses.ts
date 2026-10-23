@@ -1,6 +1,7 @@
 /**
  * plans:certify-spec-clauses — evaluate spec-test adequacy and file a terminal card for
- * every PASSING clause, in one call.
+ * every passing judgment clause, in one call. Test-checked clauses return their
+ * mechanical ledger proof with card.status='not-required'; no card or audit is created.
  *
  * review-system-rework-reduction-2026-09-23 P-005 (absorbs P-006, D-005). This promotes the
  * hand-run recipe `evaluate-spec-test-adequacy-and-emit-terminal-scorecards-when-all-clauses-pass`
@@ -36,6 +37,7 @@ import { GRADING_AUDIT_RESERVATION_TTL_MS } from '../../grading-integrity';
 import { getWorkItem } from '../../work-items';
 import { specTestAdequacyCompletionGate } from '../work_items/spec-test-adequacy-gate';
 import type { SpecTestAdequacyMeasurementEvidence } from '../../harness/improvements/observation-types';
+import type { MechanicalTestAdequacy } from './mechanical-test-adequacy';
 
 // Share the existing host-wide lease used by audit repair so coordinated restart
 // drains the full evaluation and every serial filing, including exact replays.
@@ -63,6 +65,8 @@ const argsSchema = z.object({
 });
 
 type EvaluatorRow = {
+  evaluationMode?: 'mechanical' | 'judgment';
+  mechanicalProof?: Extract<MechanicalTestAdequacy, { applicable: true }>;
   specId?: unknown;
   specRevision?: unknown;
   verdict?: unknown;
@@ -79,10 +83,12 @@ type ClauseOutcome = {
   verdict: string;
   wouldBlock: string[];
   measurementEvidence?: SpecTestAdequacyMeasurementEvidence;
+  mechanicalProof?: Extract<MechanicalTestAdequacy, { applicable: true }>;
   card:
     | { status: 'filed' | 'unchanged'; issueId: string | null }
     | { status: 'would-file' }
     | { status: 'not-passing' }
+    | { status: 'not-required'; reason: 'mechanical-test-adequacy' }
     | { status: 'refused'; code: string | null; error: string };
   /** The build-stranded pending card this clause's new card superseded (or, under dryRun, would). */
   strandedSuperseded?: StrandedCard;
@@ -136,14 +142,14 @@ async function findBuildStrandedPendingCard(
 export default defineTool({
   name: 'plans:certify-spec-clauses',
   description:
-    "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. Select a cohort with workItemIds and specIds; evidenceRefs must be exact persisted evidence_ref values returned by plans:get-spec-evidence, not test-run table IDs such as test_runs:<id>. If you start from test-run IDs, use workItemIds + specIds or read the bound evidence refs first. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
+    "Evaluate spec-test adequacy on server-measured evidence. Passing test-checked clauses return mechanicalProof and card.status='not-required' without scorecard emission or audit; counts.mechanicallyVerified records these clauses. Passing judgment clauses file the evaluator's unedited draft through scorecards:emit and its exact-replay gate. Non-passing clauses report wouldBlock and are never filed. Select with workItemIds and specIds; evidenceRefs must be persisted evidence_ref values from plans:get-spec-evidence, not test-run IDs. limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
   guidance: {
     when: 'Certifying spec-covered work before work_items:complete, instead of evaluating and then emitting each draft by hand.',
     notWhen:
       "Reading one clause's ratings without filing — plans:evaluate-spec-test-adequacy. Filing any other rubric — scorecards:emit.",
     chaining: 'plans:bind-spec-evidence → plans:certify-spec-clauses → work_items:complete.',
     returns:
-      '{ ok, dryRun, counts, clauses, evaluatorBuild } — ok is true only when the evaluation succeeded and no passing clause was refused. counts = { clauses, passing, filed, unchanged, refused, notPassing }. Each clause row carries specId, specRevision, verdict, wouldBlock, the evaluator measurementEvidence (including unavailable binding reasons), and card.status (filed | unchanged | would-file | not-passing | refused, with code and error when refused). A row also carries strandedSuperseded { issueId, evaluatorBuild } when its card superseded a pending card whose audit no host can dispatch (recorded on a different evaluator build, no live reservation). When the evaluator itself refuses, ok is false and `evaluator` carries its reply (error, remedy) unchanged.',
+      '{ ok, dryRun, counts, clauses, evaluatorBuild } — ok means evaluation succeeded and no passing clause was refused; non-passing clauses remain explicit. counts = { clauses, passing, filed, unchanged, refused, notPassing, mechanicallyVerified? }. Each row carries specId, specRevision, verdict, wouldBlock, measurementEvidence and card.status (filed | unchanged | would-file | not-required | not-passing | refused). Mechanical rows also carry mechanicalProof; not-required means ledger verification, with no scorecard or grading audit. Refused rows carry code and error. strandedSuperseded { issueId, evaluatorBuild } records superseding a build-stranded pending card with no live audit reservation. If evaluation refuses, ok:false and evaluator carries its reply unchanged.',
     seeAlso: ['plans:evaluate-spec-test-adequacy', 'scorecards:emit'],
   },
   capability: 'coord:write',
@@ -167,6 +173,7 @@ export default defineTool({
           unchanged: z.number().int(),
           refused: z.number().int(),
           notPassing: z.number().int(),
+          mechanicallyVerified: z.number().int().optional(),
         })
         .optional(),
       clauses: z.array(z.record(z.string(), z.unknown())).optional(),
@@ -260,9 +267,15 @@ export default defineTool({
           verdict,
           wouldBlock,
           ...(row.measurementEvidence ? { measurementEvidence: row.measurementEvidence } : {}),
+          ...(row.mechanicalProof ? { mechanicalProof: row.mechanicalProof } : {}),
         };
         if (verdict !== 'pass' || wouldBlock.length > 0) {
           clauses.push({ ...base, card: { status: 'not-passing' } });
+          continue;
+        }
+        if (row.evaluationMode === 'mechanical' && row.mechanicalProof?.applicable === true &&
+          row.mechanicalProof.verdict === 'pass' && row.mechanicalProof.gaps.length === 0) {
+          clauses.push({ ...base, card: { status: 'not-required', reason: 'mechanical-test-adequacy' } });
           continue;
         }
         const draft =
@@ -355,6 +368,8 @@ export default defineTool({
         unchanged: count('unchanged'),
         refused: count('refused'),
         notPassing: count('not-passing'),
+        ...(clauses.some((clause) => clause.mechanicalProof)
+          ? { mechanicallyVerified: count('not-required') } : {}),
       };
       return {
         data: {

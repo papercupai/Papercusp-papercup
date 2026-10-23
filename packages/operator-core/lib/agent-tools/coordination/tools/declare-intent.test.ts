@@ -110,6 +110,7 @@ vi.mock('../../../code-intelligence/push-channel', async (importOriginal) => ({
 
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 
 // SUT imported AFTER the seams are wired.
 import declareIntentTool from './declare-intent';
@@ -205,6 +206,21 @@ describe('coord:declare-intent resumes an explicit inbox park', () => {
     const res = parse(await tool.handler({ intent: 'resume owned work' }, ctx));
     expect(res.ok).toBe(true);
     expect(res.inboxWakePark).toEqual({ cleared: false, warning: expect.stringContaining('database unavailable') });
+  });
+
+  it('reports the measured 1.5s admin-pool acquisition deadline without claiming the park resumed', async () => {
+    const deadline = new DbCallDeadlineError('boundedOrgTxn:begin(admin)', 1_500, 1_502, 'org-admin');
+    clearExplicitInboxWakePark.mockRejectedValueOnce(deadline);
+
+    const res = parse(await tool.handler({ intent: 'resume owned work' }, ctx));
+
+    expect(res.ok).toBe(true);
+    expect(res.inboxWakePark).toEqual({
+      cleared: false,
+      warning: expect.stringContaining(deadline.message),
+    });
+    expect(String((res.inboxWakePark as { warning: string }).warning)).toContain('boundedOrgTxn:begin(admin)');
+    expect(String((res.inboxWakePark as { warning: string }).warning)).toContain('1500ms');
   });
 });
 
@@ -724,7 +740,19 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
 
   async function runWith(cheap: boolean, embedImpl: (t: string) => Promise<number[]>, nextIntent = LONG_B) {
     vi.resetModules();
-    const embed = vi.fn(embedImpl);
+    let resolveFirstEmbed!: () => void;
+    const firstEmbedSettled = new Promise<void>((resolve) => { resolveFirstEmbed = resolve; });
+    let firstEmbedFinished = false;
+    const embed = vi.fn(async (text: string) => {
+      try {
+        return await embedImpl(text);
+      } finally {
+        if (!firstEmbedFinished) {
+          firstEmbedFinished = true;
+          resolveFirstEmbed();
+        }
+      }
+    });
     vi.doMock('../../../memory/embed-sidecar-wiring', () => ({ isLocalEmbedAcquisitionCheap: () => cheap }));
     vi.doMock('../../../search/embed-backfill', () => ({
       resolveBackfillEmbedder: async () => ({ mode: 'local', embed }),
@@ -742,8 +770,10 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const first = parse(await t.handler({ intent: nextIntent }, ctx));
-      // Let the background warm-up settle before the second call.
-      await new Promise((r) => setTimeout(r, 0));
+      // Wait for the actual background warm-up to settle; a zero-delay timer
+      // races the lazy module imports and lets the second call observe a partly
+      // warmed process depending on transform-cache timing.
+      if (cheap && nextIntent === LONG_B) await firstEmbedSettled;
       const second = parse(await t.handler({ intent: nextIntent }, ctx));
       return { first, second, embed, detect, warnings: warnSpy.mock.calls.map((c) => String(c[0])) };
     } finally {

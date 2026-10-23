@@ -141,12 +141,18 @@ describe('recordTimeoutFires — edge-triggered dead-drop warning', () => {
 });
 
 describe('timeout-wake guidance strings (P-004)', () => {
-  it('the summary tells the woken agent to re-orient and re-arm', () => {
+  it('the summary bounds the timeout to its deadline and tells the agent to check current state', () => {
+    expect(TIMEOUT_WAKE_SUMMARY).toMatch(/deadline passed without the event firing/i);
+    expect(TIMEOUT_WAKE_SUMMARY).toMatch(/may have fired since/i);
+    expect(TIMEOUT_WAKE_SUMMARY).toMatch(/events:status/i);
     expect(TIMEOUT_WAKE_SUMMARY).toMatch(/re-orient/i);
     expect(TIMEOUT_WAKE_SUMMARY).toMatch(/re-arm/i);
   });
 
   it('the structured guidance frames the wake as a FALLBACK, not the event', () => {
+    expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/not observed by its deadline/i);
+    expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/may have fired since/i);
+    expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/events:status/i);
     expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/fallback/i);
     expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/re-orient/i);
     expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/re-arm/i);

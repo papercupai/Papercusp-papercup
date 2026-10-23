@@ -72,7 +72,7 @@ export async function getFeedbackProd(
   const [
     { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs },
     { resolveProseProfileSelection },
-    { resolveSessionStates }, { listLoopStanddownOwners }, conversations, { makeConsultReachDispatcher },
+    { resolveSessionStates }, { listLoopStanddownOwners }, conversations, { makeConsultReachDispatcher, continueCascadeDispatchProd },
     { readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings },
   ] = await Promise.all([
     import('@papercusp/db-org'), import('./get-feedback-core'), import('./relevance-router'),
@@ -102,6 +102,13 @@ export async function getFeedbackProd(
     : null;
   return getFeedbackCore({ ...request, allowDispatch: !dispatchDisabled }, {
     ...(options.acceptedRequest ? { acceptedRequest: options.acceptedRequest } : {}),
+    resumeInitialDispatch: (conversationId) => {
+      void continueCascadeDispatchProd(request.workspaceId, conversationId, {
+        workspaceId: request.workspaceId,
+        harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,
+        launchedBy: identity.ownerId,
+      }, { loadRanks: expertRouting.loadRanks }).catch(() => {});
+    },
     getSql: () => getOrgPg().sql,
     route: async (params) => {
       const routed = await routeConsult({

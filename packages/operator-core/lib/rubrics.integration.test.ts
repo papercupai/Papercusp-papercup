@@ -4336,6 +4336,47 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(preview?.approverEligibility).toBeDefined();
   });
 
+  it.each([
+    { code: 'bar_snapshot_source_unavailable', source: 'evidence', detail: 'canonical evidence read failed', truncated: false },
+    { code: 'bar_snapshot_source_truncated', source: 'lineage', detail: 'lineage read reached its 500-row contract limit', truncated: true },
+  ] as const)('names the $source source when a dry-run refuses $code without writing', async (problem) => {
+    const seeded = await seedBarContract(`preview-${problem.source}-incomplete`, { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const readPlans = () => db.adminSql`SELECT plan_slug, content, version, template_data
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+        AND harness_slug='papercusp' AND plan_slug=ANY(${[seeded.rubricSlug, seeded.subject]}::text[])
+      ORDER BY plan_slug`;
+    const plansBefore = await readPlans();
+    const snapshots = await import('./acceptance-bar-contract-snapshot');
+    const complete = await snapshots.readAcceptanceBarContractSnapshot(seeded.subject, {}, { harnessSlug: 'papercusp' });
+    const reader = vi.spyOn(snapshots, 'readAcceptanceBarContractSnapshot').mockResolvedValueOnce({
+      ...complete,
+      completeness: {
+        complete: false,
+        truncated: problem.truncated,
+        problems: [{ code: problem.code, source: problem.source, severity: 'error', detail: problem.detail }],
+      },
+    });
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      criteria: before.criteria,
+      actorId: 'preview-requester',
+      reason: 'Diagnose an incomplete canonical source without changing the source gate.',
+    };
+    try {
+      await expect(rubrics.previewAcceptanceBarAmendment(amendment)).rejects.toThrow(
+        `acceptance_bar_amendment_preview_source_incomplete:${problem.code}: ${problem.source}: ${problem.detail}`,
+      );
+      expect(reader).toHaveBeenCalledOnce();
+    } finally {
+      reader.mockRestore();
+    }
+    expect(await readPlans()).toEqual(plansBefore);
+    // Complete sources remain previewable; diagnostics must not force an unconditional refusal.
+    expect(await rubrics.previewAcceptanceBarAmendment(amendment)).not.toBeNull();
+    expect(await readPlans()).toEqual(plansBefore);
+  });
+
   it('refuses a dry-run when a generated projection conflict would make apply fail', async () => {
     const seeded = await seedBarContract('dry-run-projection-conflict', { authorMethods: true });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;

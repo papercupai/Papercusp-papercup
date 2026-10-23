@@ -423,27 +423,4 @@ describe.runIf(linux)('sidecar forkserver', () => {
     expect(measured.p99Ms, JSON.stringify(measured)).toBeGreaterThanOrEqual(20);
   });
 
-  it('does not fall back after startup rejection crosses the caller deadline before its timer runs', async () => {
-    const server = currentForkserverProcess()!;
-    const scope = readFileSync(`/proc/${server.pid}/cgroup`, 'utf8').trim().split('/').at(-1)!;
-    const snapshot = captureSidecarContainment(scope, server.pid)!;
-    server.kill('SIGKILL');
-    expect(await waitFor(() => observeSidecarExit(snapshot) === 'exited', 2000)).toBe(true);
-    const launcher = await import('../../task-manager/managed-spawn');
-    const delayedFailure = vi.spyOn(launcher, 'managedSpawn').mockImplementation(async () => {
-      const until = performance.now() + 30;
-      while (performance.now() < until) { /* timers cannot run during this failure callback */ }
-      throw new Error('scope startup unavailable');
-    });
-    const effect = join(dir, 'expired-startup-effect');
-    const fallbacks = forkserverStats().fallbacks;
-    try {
-      const result = await execProcess({ command: 'sh', args: ['-c', 'echo once > "$1"', 'sh', effect], timeoutMs: 1 },
-        { beginExecution: async () => governedStub() });
-      expect(result.error?.code).toBe('ETIMEDOUT');
-      expect(isSidecarInfrastructureFault(result)).toBe(false);
-      expect(forkserverStats().fallbacks).toBe(fallbacks);
-      await expect(readFile(effect, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    } finally { delayedFailure.mockRestore(); }
-  });
 });

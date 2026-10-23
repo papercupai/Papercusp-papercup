@@ -392,6 +392,38 @@ describe('MCP session tool-contract revision notifications', () => {
       expect(sent).toEqual([]);
     });
 
+    it('returns the settled handler result while the seeded-surface refresh is still pending', async () => {
+      __resetSessionSurfaces();
+      const { sendNotification } = recordingSendNotification();
+      let releaseRefresh!: () => void;
+      let startRefresh!: () => void;
+      const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+      const refreshStarted = new Promise<void>((resolve) => { startRefresh = resolve; });
+      const refresh = vi.fn(async () => {
+        startRefresh();
+        await refreshGate;
+      });
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => ({ isError: false }),
+        async () => knownGeneration('generation-1'),
+        refresh,
+      );
+      const extra = {
+        requestInfo: { url: 'http://127.0.0.1:3070/api/mcp?tools=coord%3Awhoami' },
+        sendNotification,
+      };
+
+      try {
+        const result = await call({ params: { name: 'coord:whoami' } }, extra);
+        expect(result).toEqual({ isError: false });
+        await refreshStarted;
+        expect(refresh).toHaveBeenCalledOnce();
+      } finally {
+        releaseRefresh();
+        __resetSessionSurfaces();
+      }
+    });
+
     it('admits a call whose declared generation matches the live one', async () => {
       __resetSessionSurfaces();
       let dispatchCount = 0;

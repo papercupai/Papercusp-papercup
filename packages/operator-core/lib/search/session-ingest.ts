@@ -241,6 +241,16 @@ export interface IngestStats {
   /** Exclusive wall-time buckets, including await/scheduling time, not CPU time.
    * `other` covers sweep bookkeeping outside the measured operations. */
   phaseMs?: Record<'setup' | 'history' | 'discovery' | 'state' | 'metadata' | 'decode' | 'writes' | 'metadataBackfill' | 'chats' | 'other', number>;
+  /** Snapshot of the existing sweep when a tick is skipped by single-flight.
+   * Elapsed spans include await/scheduling time; they are not CPU measurements.
+   * No transcript paths, session IDs, owners or SQL are retained. */
+  activeSweep?: {
+    phase: keyof NonNullable<IngestStats['phaseMs']>;
+    sourceKind?: SourceKind;
+    operation?: string;
+    elapsedMs: number;
+    phaseElapsedMs: number;
+  };
   /** One receipt per nonempty adapter/repair operation, not per file or row.
    * Wall spans include database and scheduling waits; they do not measure CPU.
    * Counts/spans and input hashes identify the operation without retaining
@@ -264,6 +274,9 @@ export interface IngestStats {
 /** Keep slow, empty sweeps observable as well as useful or failed sweeps. */
 export function sessionIngestLogLine(stats: IngestStats): string | null {
   const parts = stats.partsInserted ?? 0;
+  if (stats.skipped === 'already_running' && stats.activeSweep && stats.activeSweep.elapsedMs >= 5000) {
+    return `[session-ingest] sweep still running active=${JSON.stringify(stats.activeSweep)}`;
+  }
   if (stats.skipped || (stats.turnsInserted === 0 && parts === 0 && stats.errors === 0 && stats.durationMs < 5000)) {
     return null;
   }
@@ -3654,7 +3667,17 @@ export async function pruneSessionTurnsOnce(
 // Pinned through @papercusp/module-singleton rather than a hand-rolled
 // `globalThis[Symbol.for(...)]` pair, so the pin stays visible to
 // listModuleDuplications() (EI-19479108855357092).
-interface SweepState { running: boolean; last: IngestStats | null }
+interface SweepState {
+  running: boolean;
+  last: IngestStats | null;
+  active?: {
+    started: number;
+    phaseStarted: number;
+    phase: keyof NonNullable<IngestStats['phaseMs']>;
+    sourceKind?: SourceKind;
+    operation?: string;
+  } | null;
+}
 const __sweep = pinModuleState<SweepState>(
   '@papercusp/operator-core.sessionIngestState',
   () => ({ running: false, last: null }),
@@ -3672,15 +3695,26 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     partsBackfillFiles: 0,
     errors: 0, durationMs: 0,
   };
-  if (__sweep.running) return { ...stats, skipped: 'already_running' };
+  if (__sweep.running) {
+    const active = __sweep.active;
+    return { ...stats, skipped: 'already_running', ...(active ? { activeSweep: {
+      phase: active.phase,
+      ...(active.sourceKind ? { sourceKind: active.sourceKind } : {}),
+      ...(active.operation ? { operation: active.operation } : {}),
+      elapsedMs: Math.round(started - active.started),
+      phaseElapsedMs: Math.round(started - active.phaseStarted),
+    } } : {}) };
+  }
   const phaseMs: NonNullable<IngestStats['phaseMs']> = {
     setup: 0, history: 0, discovery: 0, state: 0, metadata: 0,
     decode: 0, writes: 0, metadataBackfill: 0, chats: 0, other: 0,
   };
   // Measure at existing operation boundaries: no new timer or per-file async hop.
   // finally retains the cost of failed work without changing its error contract.
-  async function measure<T>(phase: keyof typeof phaseMs, work: () => Promise<T>): Promise<T> {
+  let sourceKind: SourceKind | undefined;
+  async function measure<T>(phase: keyof typeof phaseMs, work: () => Promise<T>, operation?: string): Promise<T> {
     const began = performance.now();
+    __sweep.active = { started, phaseStarted: began, phase, sourceKind, operation };
     try { return await work(); }
     finally { phaseMs[phase] += performance.now() - began; }
   }
@@ -3697,7 +3731,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       sourceKind, operation, requested, startedAtMs, durationMs: 0, status: 'failed',
     };
     try {
-      receipt.updated = await measure('metadataBackfill', () => work(receipt));
+      receipt.updated = await measure('metadataBackfill', () => work(receipt), operation);
       receipt.status = 'completed';
     } catch (err) {
       // Metadata repair must not discard successful tail/offset progress or
@@ -3726,13 +3760,13 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
 
     const { sql } = getOrgPg();
     try {
-      stats.partsBackfillFiles = await measure('history', () => backfillHistoricalParts(sql));
+      stats.partsBackfillFiles = await measure('history', () => backfillHistoricalParts(sql), 'parts');
     } catch (err) {
       stats.errors += 1;
       console.warn(`[session-ingest] historical parts backfill skipped (non-fatal): ${(err as Error).message}`);
     }
     try {
-      stats.countBackfillFiles = await measure('history', () => backfillHistoricalCounts(sql));
+      stats.countBackfillFiles = await measure('history', () => backfillHistoricalCounts(sql), 'counts');
     } catch (err) {
       stats.errors += 1;
       console.warn(`[session-ingest] historical count backfill skipped (non-fatal): ${(err as Error).message}`);
@@ -3765,6 +3799,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
 
     for (const adapter of FILE_ADAPTERS) {
       if (budget.turns <= 0) break;
+      sourceKind = adapter.sourceKind;
       let candidates: Array<{ path: string; size: number; mtimeMs: number }> = [];
       try {
         candidates = await measure('discovery', () => listCandidateFiles(adapter, sinceMs));
@@ -3967,6 +4002,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     }
 
     if (budget.turns > 0) {
+      sourceKind = 'agent_chat';
       try {
         stats.chatsIngested = await measure('chats', () => syncAgentChats(sql, budget));
       } catch (err) {
@@ -3985,5 +4021,6 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     return stats;
   } finally {
     __sweep.running = false;
+    __sweep.active = null;
   }
 }

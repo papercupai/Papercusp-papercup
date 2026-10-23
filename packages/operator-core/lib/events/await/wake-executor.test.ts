@@ -1857,7 +1857,10 @@ describe('wakeTurnText', () => {
   it('marks a timeout wake loudly', () => {
     const t = wakeTurnText(work({ payload: { timeout: true } }));
     expect(t).toContain('TIMEOUT');
-    expect(t).toContain('did NOT fire');
+    expect(t).toContain('not observed by your deadline');
+    expect(t).toContain('may have fired since');
+    expect(t).toContain('events:status');
+    expect(t).not.toContain('awaited source did NOT complete');
     // EI-20489286325396940: name the authoritative column so the reader never has
     // to open events:status to learn WHY the wake fired.
     expect(t).toContain('fired_reason: timeout');
@@ -1880,7 +1883,10 @@ describe('wakeTurnText', () => {
       expect(s).toContain('fired_reason: timeout');
       // The whole defect: the completion inference. `<key> fired` must not appear.
       expect(s).not.toContain(`${DONE_KEY} fired`);
-      expect(s).toContain('did NOT complete');
+      expect(s).toContain('not observed by its deadline');
+      expect(s).toContain('may have fired since');
+      expect(s).toContain('events:status');
+      expect(s).not.toContain('did NOT complete');
     });
 
     it('leaves a genuine event fire byte-identical', () => {
@@ -2116,7 +2122,8 @@ describe('wakeTurnText', () => {
     // ...yet the wake turn still warns the agent the event TIMED OUT.
     const t = wakeTurnText(coalesced);
     expect(t).toMatch(/TIMEOUT/);
-    expect(t).toContain('did NOT fire');
+    expect(t).toContain('not observed by your deadline');
+    expect(t).toContain('may have fired since');
   });
 
   it('coalesced timeout in a FOLDED sibling (not the headline) also surfaces [TIMEOUT]', async () => {

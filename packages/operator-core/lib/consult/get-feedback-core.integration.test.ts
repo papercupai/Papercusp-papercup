@@ -51,7 +51,7 @@ import { peersKnowLookup } from './peers-know';
 import { readRoutingHealthRows } from './consult-routing-health';
 import { consultReplyCore, consultDeclineCore } from './consult-verbs-core';
 import { sweepExpiredConsults } from './consult-expiry-core';
-import { advanceCascade } from './cascade-core';
+import { advanceCascade, continueCascadeDispatchCore, selectionFromRouting } from './cascade-core';
 import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit } from '../grading-audit-routing';
 import { dispatchPendingGradingAudits, type DispatchPendingGradingAuditsInput } from '../grading-integrity';
 import { specQualitySubjectRef } from '../agent-tools/plans/spec-quality';
@@ -1234,6 +1234,74 @@ describe('recoverable interactive feedback requests', () => {
     })).rejects.toThrow('consult-request-lease-lost');
     expect(fixture.reached).toHaveLength(0);
     expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: { leaseToken: 'new-worker' } });
+  });
+
+  it('recovers initial delivery after process loss at selected-row commit without re-routing or duplicate launch', async () => {
+    const fixture = makeDeps(routeOf([cand('durable-initial-expert')]));
+    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'durable-initial' }, fixture.deps);
+    const execute = vi.fn((payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
+      getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context,
+        resumeInitialDispatch: () => { throw new Error('process stopped before initial continuation'); } }));
+    const requestDeps = { getSql: () => rootSql, now: () => NOW, execute };
+    await expect(continueFeedbackRequestCore(WS, accepted.conversation_id, requestDeps)).rejects.toThrow('process stopped');
+    const selected = await stateRow(accepted.conversation_id);
+    expect(selected.state).toBe('awaiting_responder');
+    expect(selected.routing).toMatchObject({ cascadeDispatch: {
+      version: 1, cursor: 0, responder: 'durable-initial-expert', leaseToken: null, leaseUntil: null,
+      body: expect.stringContaining(baseReq.question),
+    } });
+    expect(fixture.reached).toHaveLength(0);
+    expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, requestDeps)).toBe(false);
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const dispatch = vi.fn(async (opts: Parameters<GetFeedbackDeps['reach']>[0]) => {
+      expect(opts.body).toContain(baseReq.question);
+      await opts.onAnsweringOwner?.('durable-initial-answerer');
+      entered();
+      await held;
+      return { woke: 1, answeringOwnerId: 'durable-initial-answerer' };
+    });
+    const recovery = { getSql: () => rootSql, now: () => NOW, dispatch: () => dispatch };
+    const first = continueCascadeDispatchCore(WS, accepted.conversation_id, recovery);
+    await started;
+    // A concurrent sweep, and a sweep after the lease expires, both respect
+    // the early reservation even if the first process never returns.
+    expect(await continueCascadeDispatchCore(WS, accepted.conversation_id, recovery)).toBe(false);
+    expect(await continueCascadeDispatchCore(WS, accepted.conversation_id, {
+      ...recovery, now: () => new Date(NOW.getTime() + 120_001),
+    })).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(selectionFromRouting((await stateRow(accepted.conversation_id)).routing)[0])
+      .toMatchObject({ answeringOwnerId: 'durable-initial-answerer' });
+  });
+
+  it.each(['routed', 'retrieval', 'empty'] as const)('reports accepted initial %s delivery without inventing a launch', async kind => {
+    const fixture = makeDeps(routeOf(kind === 'empty' ? [] : [cand(`durable-${kind}`)]));
+    const request = { ...baseReq, requestKey: `durable-${kind}`, allowDispatch: kind !== 'retrieval', minResponders: 0 };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    const resumeInitialDispatch = vi.fn();
+    let result: GetFeedbackResult | GetFeedbackError | undefined;
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      execute: async (payload, acceptedRequest) => {
+        result = await getFeedbackCore(payload, { ...fixture.deps, acceptedRequest, resumeInitialDispatch });
+        return result;
+      },
+    });
+    expect(fixture.reached).toHaveLength(0);
+    expect(result).toMatchObject({
+      verdict: kind === 'routed' ? 'routed' : kind === 'retrieval' ? 'retrieval_only' : 'no_qualified_responder',
+      wake: { queued: 0, woke: 0, pickupConfirmed: false },
+    });
+    expect(resumeInitialDispatch).toHaveBeenCalledTimes(kind === 'routed' ? 1 : 0);
+    if (kind === 'routed') expect(result).toMatchObject({ hint: expect.stringContaining('no answering session is confirmed yet') });
+    else expect((await stateRow(accepted.conversation_id)).routing).not.toHaveProperty('cascadeDispatch');
   });
 
   it('does not replay dispatch after losing the response beyond the selected-row commit', async () => {

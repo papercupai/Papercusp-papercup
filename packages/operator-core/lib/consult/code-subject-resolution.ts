@@ -117,7 +117,10 @@ type GrepOutcome = { kind: 'matched'; stdout: string } | { kind: 'no-match' } | 
 
 function runGitGrep(cwd: string, flag: '-P' | '-E', pattern: string, timeoutMs: number): Promise<GrepOutcome> {
   return new Promise((resolve) => {
-    execFile('git', ['grep', '-o', '-I', '--full-name', flag, '-e', pattern, '--', ...TOP_SOURCE_PATHSPECS], {
+    // Git's automatic worker count adds enough startup/coordination overhead on
+    // large hosts to consume this lookup's deadline. Bound it per invocation;
+    // command-level config also overrides inherited repository thread settings.
+    execFile('git', ['-c', 'grep.threads=8', 'grep', '-o', '-I', '--full-name', flag, '-e', pattern, '--', ...TOP_SOURCE_PATHSPECS], {
       cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024, encoding: 'utf8',
     }, (err, stdout, stderr) => {
       if (!err) return resolve({ kind: 'matched', stdout: String(stdout ?? '') });

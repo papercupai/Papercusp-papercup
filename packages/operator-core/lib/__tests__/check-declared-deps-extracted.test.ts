@@ -33,7 +33,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
 import { RUNTIME_CONTENT_PROBES, declaredVersionRange, findIncompleteWorkspacePackages, findIncompleteWorkspacePackagesWithRetry, findInvalidWorkspacePackageVersions, findInvalidWorkspacePackageVersionsWithRetry, findUnextractedDeps, findUnextractedDepsWithRetry, findUnsatisfiedDeclaredDepRanges, findUnsatisfiedDeclaredDepRangesWithRetry, findUnusableRuntimeDeps, findUnusableRuntimeDepsWithRetry, isDirectCliInvocation, resolveRuntimeContentProbes, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
@@ -771,6 +771,32 @@ describe('runtime-content probes catch partial packages that directory checks ca
     ]);
     writeFileSync(join(dir, 'lib/index.mjs'), 'export const IconBase = {};');
     expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
+  });
+
+  it('checks CSS assets from relative repository roots without reporting healthy packages as damaged', () => {
+    const root = fixture({ packages: { 'apps/ui': {} }, extracted: { '': ['@blocknote/core'] } });
+    const target = join(root, 'node_modules/@blocknote/core');
+    mkdirSync(join(target, 'src/fonts'), { recursive: true });
+    writeFileSync(join(target, 'package.json'), JSON.stringify({
+      name: '@blocknote/core', version: '1.0.0',
+      exports: { './fonts/inter.css': './src/fonts/inter.css' },
+    }));
+    writeFileSync(join(target, 'src/fonts/inter.css'), '@font-face { src: url("./inter.woff2") format("woff2"); }');
+    const font = join(target, 'src/fonts/inter.woff2');
+    writeFileSync(font, 'font payload');
+    const probeSpecifiers = [{ specifier: '@blocknote/core/fonts/inter.css', css: true }];
+    const roots = [root, relative(process.cwd(), root)];
+    for (const repoRoot of roots) {
+      expect(findUnusableRuntimeDeps({ repoRoot, probeSpecifiers })).toEqual([]);
+    }
+
+    rmSync(font);
+    for (const repoRoot of roots) {
+      expect(findUnusableRuntimeDeps({ repoRoot, probeSpecifiers })).toEqual([
+        expect.objectContaining({ specifier: '@blocknote/core/fonts/inter.css',
+          code: 'ERR_MODULE_NOT_FOUND', missingPath: font }),
+      ]);
+    }
   });
 
   it('retries a real import so a filesystem-settle race does not become a false failure', async () => {

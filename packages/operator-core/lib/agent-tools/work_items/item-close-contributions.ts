@@ -84,7 +84,10 @@ export async function resolveItemCloseContributions(input: {
       contributions.some((key) => discharges.has(key))) return [];
   const [itemId] = stamp.planItemIds;
   const evidence = activeSpecEvidence(input.evidence);
-  const relations = evidence.flatMap((row) => {
+  // One proof receipt can have separately reviewed requirement relations. Proof
+  // correction selection collapses equal kind/ref rows, so it cannot select these
+  // certificates: retain every live candidate and refuse ambiguity below.
+  const relations = input.evidence.flatMap((row) => {
     const parsed = itemCloseContributionSchema.safeParse(row.details.itemCloseContribution);
     return parsed.success && row.evidenceKind === 'independent-verification' &&
       row.id != null && row.createdBy && row.verifiesBindingId != null &&

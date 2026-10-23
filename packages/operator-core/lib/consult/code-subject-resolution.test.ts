@@ -111,6 +111,21 @@ describe('gitGrepSymbolResolver', () => {
     expect(out.has('missingThing')).toBe(false);
   });
 
+  it('reports invalid inherited Git worker settings as unavailable', async () => {
+    // A negative value makes Git fail before searching, without spawning an
+    // excessive worker population in the test process. Git rejects this before
+    // applying command-level overrides; it must not look like an absent symbol.
+    execFileSync('git', ['config', 'grep.threads', '-1'], { cwd: repo });
+    try {
+      const resolve = gitGrepSymbolResolver({ cwd: repo });
+      const subjects = await resolveQuestionCodeSubjects('where is `routeThing` defined?', { resolveSymbol: resolve });
+      expect(subjects.resolver).toBe('unavailable');
+      expect(subjects.files).toEqual([]);
+    } finally {
+      execFileSync('git', ['config', '--unset', 'grep.threads'], { cwd: repo });
+    }
+  });
+
   it('searches the whole checkout from a subdirectory cwd and returns repo-relative paths', async () => {
     // The operator hosts run with cwd <checkout>/apps/operator; a cwd-relative
     // pathspec searched only that subtree and found nothing in packages/.

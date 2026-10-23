@@ -1821,8 +1821,9 @@ export function wakeTurnText(d: DeliveryWork): string {
   // distinguishable from one about the CURRENTLY live registration on the same key,
   // instead of forcing a second events:status round-trip to tell them apart.
   const timeout = payloadIsTimeout(d.payload)
-    ? ` [TIMEOUT (fired_reason: timeout, await_id: ${d.awaitId}) — the event did NOT fire before your deadline;` +
-      ' the awaited source did NOT complete. If a re-arm on this key already created a NEWER await_id,' +
+    ? ` [TIMEOUT (fired_reason: timeout, await_id: ${d.awaitId}) — the event was not observed by your deadline;` +
+      ' it may have fired since. Check events:status for this exact key before treating the source as pending.' +
+      ' If a re-arm on this key already created a NEWER await_id,' +
       ' cross-check events:status active_awaits before re-arming again — this delivery is only about' +
       ` await_id ${d.awaitId}]`
     : '';

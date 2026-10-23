@@ -1,0 +1,328 @@
+{
+  "schemaVersion": 1,
+  "kind": "supplementary-bounded-quality-review",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005891",
+  "cohortId": "gf-r6-e25ea-natural-work-20261023T021246787Z",
+  "reviewerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "requesterId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "status": "bounded review complete; sample shortfall and missing requester evidence remain unknown; acceptance and shipment open",
+  "authority": {
+    "rubricRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "rubricRevision": 9,
+    "criterion": "r-6",
+    "specId": "AUTO-BAR-R-6-P-006",
+    "specRevision": 6,
+    "precommitRef": "WI-6554700010020902 checkpoint 1908bef6d9a2",
+    "savedQueryResultRef": "WI-6554700010020902 checkpoint c76ea9995309",
+    "method": "Earliest eligible thread by creation timestamp then conversation id from each nonempty stratum in order same-backend dispatch, cross-backend dispatch, archive/retrieval-only advice; fill with remaining earliest eligible threads globally to eight distinct threads. Substantive answers are eligible even when requester decisions are unknown or the consultation expired. No quota calls or unrelated historical backfill."
+  },
+  "window": {
+    "start": "2026-10-03T05:21:32.561Z",
+    "end": "2026-10-23T02:12:46.787Z",
+    "fixedBeforeSupplementaryContentReview": true,
+    "matrixArtifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-23.json",
+    "matrixSha256": "4e126c50d1d2d7b122ec68ea8b50aedeaebda2250a94e5b6977728c9625e48b9",
+    "scope": "This requester and the precommitted P-001 through P-007 origins only. Later observations reproduce the saved population; they do not move the cut."
+  },
+  "originWorkItems": {
+    "P-001": [
+      "WI-10005836"
+    ],
+    "P-002": [
+      "WI-10005889"
+    ],
+    "P-003": [
+      "WI-10005848"
+    ],
+    "P-004": [
+      "WI-10005886",
+      "WI-10007524"
+    ],
+    "P-005": [
+      "WI-10005890"
+    ],
+    "P-006": [
+      "WI-10005891"
+    ],
+    "P-007": [
+      "WI-10005892"
+    ]
+  },
+  "sourceQuery": {
+    "args": {
+      "sql": "SELECT cs.conversation_id,cs.created_at,cs.origin_task_ref,cs.state,COALESCE((SELECT jsonb_agg(pm.post_id ORDER BY pm.created_at,pm.post_id) FROM harness_shared.consult_post_meta pm WHERE pm.workspace_id=cs.workspace_id AND pm.conversation_id=cs.conversation_id AND pm.author_id<>cs.requester_id AND pm.kind IN ('answer','new_fact') AND pm.created_at<'2026-10-23T02:12:46.787Z'),'[]'::jsonb) AS answer_post_ids FROM harness_shared.consult_state cs WHERE cs.workspace_id='papercusp-workspace' AND cs.requester_id='su-e25eacde-e8fc-4927-b3c6-74766d34696e' AND cs.created_at>='2026-10-03T05:21:32.561Z' AND cs.created_at<'2026-10-23T02:12:46.787Z' AND cs.origin_task_ref IN ('WI-10005836','WI-10005889','WI-10005848','WI-10005886','WI-10007524','WI-10005890','WI-10005891','WI-10005892','get-feedback-reliability-usefulness-adoption-2026-10-03#P-001','get-feedback-reliability-usefulness-adoption-2026-10-03#P-002','get-feedback-reliability-usefulness-adoption-2026-10-03#P-003','get-feedback-reliability-usefulness-adoption-2026-10-03#P-004','get-feedback-reliability-usefulness-adoption-2026-10-03#P-005','get-feedback-reliability-usefulness-adoption-2026-10-03#P-006','get-feedback-reliability-usefulness-adoption-2026-10-03#P-007') ORDER BY cs.created_at,cs.conversation_id LIMIT 101",
+      "positiveControlSql": "SELECT conversation_id FROM harness_shared.consult_state WHERE workspace_id='papercusp-workspace' AND requester_id='su-e25eacde-e8fc-4927-b3c6-74766d34696e' AND conversation_id='conv-request-dddf6609a0424d3379dfd2b408b65e90faa579c2dce26af081b72c624213ff77' LIMIT 1",
+      "allowUnscoped": false,
+      "maxRows": 101,
+      "timeoutMs": 15000
+    },
+    "reproduction": {
+      "rowCount": 4,
+      "truncated": false,
+      "positiveControl": "passed; exact dddf6609 consultation returned",
+      "matchesSavedPopulation": true,
+      "scope": "The saved query bounds request and answer creation at the cut. Consultation lifecycle fields are current persisted state, not a reconstructed historical transition ledger."
+    }
+  },
+  "fullConsultationPopulation": [
+    {
+      "conversationId": "conv-request-e7aa1b67f69da1fffe5bf254497e468a7bb75071b57689b7f1dba9d650803f99",
+      "createdAt": "2026-10-22T21:19:18.064838Z",
+      "originTaskRef": "WI-10005891",
+      "state": "expired",
+      "answerPostIds": [
+        1197082
+      ],
+      "eligible": true
+    },
+    {
+      "conversationId": "conv-request-dddf6609a0424d3379dfd2b408b65e90faa579c2dce26af081b72c624213ff77",
+      "createdAt": "2026-10-23T00:29:02.144706Z",
+      "originTaskRef": "WI-10005891",
+      "state": "closed_answered",
+      "answerPostIds": [
+        1197725
+      ],
+      "eligible": true
+    },
+    {
+      "conversationId": "conv-request-51630f2be4628b0b7a8528a85454e46d9af5a18d39a2af7e4fea3fbf3d59d8b1",
+      "createdAt": "2026-10-23T00:43:35.011321Z",
+      "originTaskRef": "WI-10005891",
+      "state": "closed_cant_help",
+      "answerPostIds": [],
+      "eligible": false,
+      "reason": "No substantive answer by the cut. Retained as the unavailable Claude-fork matrix trial; no answer or usefulness credit."
+    },
+    {
+      "conversationId": "conv-request-d6a47cbf3bdd8848418b9a9d139ee0dd81d2c182efdbdfb05aca919487a29ace",
+      "createdAt": "2026-10-23T00:43:57.048190Z",
+      "originTaskRef": "WI-10005891",
+      "state": "closed_answered",
+      "answerPostIds": [
+        1197793
+      ],
+      "eligible": true
+    }
+  ],
+  "fullEligiblePopulation": [
+    {
+      "conversationId": "conv-request-e7aa1b67f69da1fffe5bf254497e468a7bb75071b57689b7f1dba9d650803f99",
+      "stratum": "same-backend-dispatch",
+      "sourceBackend": "codex",
+      "targetBackend": "codex",
+      "deliveryIntent": "dispatch",
+      "sourceNativeSessionId": "01a151d5-1565-75a1-8f09-7580766394c7",
+      "answeringOwnerId": "su-aed19f4a-c6ba-4029-8d95-184b3293a534",
+      "answeringNativeSessionId": "01a16599-a71c-7fb2-b07f-9279dc993000",
+      "answerPostId": 1197082,
+      "sourceEvidence": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-22.json#currentNativeAcceptance20261022.successfulDispatch",
+      "quality": {
+        "rating": "useful",
+        "reason": "The full answer gives grounded actionable receipt checks, maintained source/doc references and limits for the unresolved native acceptance decision. It separates transport acknowledgement, prompt persistence, model activity and typed answer readback. This quality rating does not excuse the recorded earlier launch and pickup failures or expired lifecycle.",
+        "evidenceRef": "thread-post:1197082",
+        "bodyReadInFull": true
+      },
+      "requesterDecision": {
+        "status": "unknown",
+        "recordedDisposition": null,
+        "reason": "The exact canonical thread contains only answer1197082 and no requester-authored decision post. No qualifying pre-cut requester project decision reference was recovered in this review. Do not infer adoption from the later trial or evidence-file work.",
+        "searchedRef": "conversations:get conv-request-e7aa1b67f69da1fffe5bf254497e468a7bb75071b57689b7f1dba9d650803f99",
+        "scope": "Absence established for this thread; no claim that every project record lacks a decision."
+      },
+      "selection": "earliest eligible same-backend-dispatch thread"
+    },
+    {
+      "conversationId": "conv-request-dddf6609a0424d3379dfd2b408b65e90faa579c2dce26af081b72c624213ff77",
+      "stratum": "same-backend-dispatch",
+      "sourceBackend": "codex",
+      "targetBackend": "codex",
+      "deliveryIntent": "dispatch",
+      "sourceNativeSessionId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+      "answeringOwnerId": "su-44a492fb-b5a0-47ca-b5c9-cf24eb321439",
+      "answerPostId": 1197725,
+      "sourceEvidence": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-23.json#successfulDispatch",
+      "quality": {
+        "rating": "partial",
+        "reason": "Actionable acknowledgement/answer and payload-identity distinctions, but a material source-lease inference misapplies the prior trial's empty census to this trial.",
+        "conflict": "Answer1197725 says the source snapshot had an empty plan-claim census. This trial's independently captured sourceBefore has nonexpired P-001/P-005 leases. The request attributed the empty census to the prior trial.",
+        "authoritativeRef": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-23.json#sourceBefore",
+        "evidenceRef": "thread-post:1197725",
+        "bodyReadInFull": true
+      },
+      "requesterDecision": {
+        "status": "requester evidence recovered; qualified partial adoption",
+        "recordedDisposition": null,
+        "reviewerClassification": "rescoped",
+        "classificationScope": "Reviewer normalization of explicit requester prose, not a claimed machine-recorded disposition or scorecard pass.",
+        "by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+        "at": "2026-10-23T00:38:28.123Z",
+        "ref": "thread-post:1197747",
+        "reason": "Requester adopts the acknowledgement/answer distinction, explicitly rejects the current-empty-census inference, and retains native per-call and actor/lease-transition unknowns.",
+        "planDecisionRef": null,
+        "scope": "Trial-specific evidence decision; no new cross-lane convention or parent acceptance."
+      },
+      "selection": "earliest remaining eligible thread in global chronological fill"
+    },
+    {
+      "conversationId": "conv-request-d6a47cbf3bdd8848418b9a9d139ee0dd81d2c182efdbdfb05aca919487a29ace",
+      "stratum": "cross-backend-dispatch",
+      "sourceBackend": "claude",
+      "targetBackend": "codex",
+      "deliveryIntent": "dispatch",
+      "sourceNativeSessionId": "3ca5c586-e804-424d-b3c2-6f7329bf404a",
+      "answeringOwnerId": "su-c481e0f9-dec5-4ba3-8d9b-1e5d92d2df33",
+      "answeringNativeSessionId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+      "answerPostId": 1197793,
+      "sourceEvidence": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-23.json#remainingMatrixTrials.claude-source-isolated-codex-conversion",
+      "quality": {
+        "rating": "partial",
+        "reason": "Grounded selected-turn reply/close distinction with exact historical receipts; requester must qualify terminal consultation closure versus physical answering-process termination and bounded source grounding versus exhaustive noninterference.",
+        "evidenceRef": "thread-post:1197793",
+        "bodyReadInFull": true
+      },
+      "requesterDecision": {
+        "status": "requester evidence recovered; qualified partial adoption",
+        "recordedDisposition": null,
+        "reviewerClassification": "rescoped",
+        "classificationScope": "Reviewer normalization of explicit requester prose, not a claimed machine-recorded disposition or scorecard pass.",
+        "by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+        "at": "2026-10-23T01:22:47.579Z",
+        "ref": "WI-10005891#comment:1197924",
+        "reason": "Requester explicitly partially adopts the answer/close distinction, qualifies physical-process and actor claims, and preserves the timing correction that the second task existed before consultation close.",
+        "planDecisionRef": null,
+        "scope": "Normal work-item review evidence. Answerer-authored close1197794 supplies no requester-adoption credit."
+      },
+      "selection": "earliest eligible cross-backend-dispatch thread"
+    }
+  ],
+  "selection": {
+    "eligibleCount": 3,
+    "requiredCount": 8,
+    "selectedCount": 3,
+    "shortfall": 5,
+    "strata": {
+      "same-backend-dispatch": [
+        "conv-request-e7aa1b67f69da1fffe5bf254497e468a7bb75071b57689b7f1dba9d650803f99",
+        "conv-request-dddf6609a0424d3379dfd2b408b65e90faa579c2dce26af081b72c624213ff77"
+      ],
+      "cross-backend-dispatch": [
+        "conv-request-d6a47cbf3bdd8848418b9a9d139ee0dd81d2c182efdbdfb05aca919487a29ace"
+      ],
+      "archive-retrieval-only-advice": []
+    },
+    "chosenIdsInSelectionOrder": [
+      "conv-request-e7aa1b67f69da1fffe5bf254497e468a7bb75071b57689b7f1dba9d650803f99",
+      "conv-request-d6a47cbf3bdd8848418b9a9d139ee0dd81d2c182efdbdfb05aca919487a29ace",
+      "conv-request-dddf6609a0424d3379dfd2b408b65e90faa579c2dce26af081b72c624213ff77"
+    ],
+    "rating": "unknown",
+    "reason": "Five-thread sample shortfall and one missing requester decision reference prevent healthy. Useful answer quality cannot erase delivery failures or prove reliability."
+  },
+  "routingHealthReplication": {
+    "endpoint": "http://127.0.0.1:3170",
+    "tool": "consult:routing-health",
+    "requestedArgs": {
+      "since": "2026-10-03T05:21:32.561Z",
+      "until": "2026-10-23T02:12:46.787Z"
+    },
+    "response": {
+      "ok": false,
+      "error": "the window is longer than 14 days"
+    },
+    "writerRef": "packages/operator-core/lib/consult/consult-routing-health.ts#resolveRoutingHealthWindow",
+    "windowSemantics": "Launch/request cohorts are half-open [since, until); outcome judgment asOf is the observation time. Neither these workspace-wide cohorts nor their totals are the requester quality sample.",
+    "partitionedReadAttempts": [
+      {
+        "args": {
+          "since": "2026-10-03T05:21:32.561Z",
+          "until": "2026-10-17T05:21:32.561Z"
+        },
+        "status": "client transport-timeout; exact successful server response recovered",
+        "traceId": "46b3a2c8-e97c-42bb-8705-034ea2734778",
+        "idempotencyKey": "460cc7af-9cde-41a0-a8b2-e20aa9d25c9c",
+        "evidenceRef": "/tmp/gf-r6-e25ea-health-first-20261023.err"
+      },
+      {
+        "args": {
+          "since": "2026-10-17T05:21:32.561Z",
+          "until": "2026-10-23T02:12:46.787Z"
+        },
+        "status": "client transport-timeout; exact successful server response recovered",
+        "traceId": "81961420-59f9-4339-8321-5e28e6dadbef",
+        "idempotencyKey": "ccb83f19-dbb6-479e-8810-633ef7d126b9",
+        "evidenceRef": "/tmp/gf-r6-e25ea-health-second-20261023.err"
+      }
+    ],
+    "scope": "Both client calls timed out, but exact invocation ledger rows43321596/43321638 completed on staging ba18a1e11a. Same-owner scratch manifests and full responses were read, verified and saved. No query retry or new cohort. Response asOf is later than the cohort cut, and workspace-wide health is not the requester quality population.",
+    "recoveredResponses": [
+      {
+        "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-routing-health-first-2026-10-23.json",
+        "sha256": "c8b47689903d85a6d59e0ce863d8a5030897a6693c5751dc66c0bdb664133add",
+        "invocationId": 43321638,
+        "window": {
+          "since": "2026-10-03T05:21:32.561Z",
+          "until": "2026-10-17T05:21:32.561Z",
+          "cohort": "launch-time"
+        },
+        "asOf": "2026-10-23T02:45:12.099Z",
+        "bounded": {
+          "truncatedByLimit": false,
+          "consultsScanned": 2248,
+          "consultLimit": 5000,
+          "dispatchLogCapped": 0
+        },
+        "sourcePayloadSha256": "eb40e3563d5d1fbf221869d83d63cefd7da8c0403d3c652d8d5d985b8ae53310"
+      },
+      {
+        "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-routing-health-second-2026-10-23.json",
+        "sha256": "cb75241cc9a6cdd2905b1f53e6f7ed9482fd3dfd8b4a1032d89cb6869520b2a4",
+        "invocationId": 43321596,
+        "window": {
+          "since": "2026-10-17T05:21:32.561Z",
+          "until": "2026-10-23T02:12:46.787Z",
+          "cohort": "launch-time"
+        },
+        "asOf": "2026-10-23T02:45:03.889Z",
+        "bounded": {
+          "truncatedByLimit": false,
+          "consultsScanned": 1218,
+          "consultLimit": 5000,
+          "dispatchLogCapped": 0
+        },
+        "sourcePayloadSha256": "16a3f307e1de0cf7afc35fb01d51c93246a19cce7208537e4f54654bbf44752d"
+      }
+    ],
+    "transportIssueRef": "EI-26736697864894628"
+  },
+  "preservedHistoricalEvidence": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "requesterId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+    "eligibleCount": 4,
+    "requiredCount": 8,
+    "shortfall": 4,
+    "creditFromThisCohort": 0
+  },
+  "nativeEvidenceRefs": [
+    {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-22.json",
+      "sha256": "4a50f94ac0c15b8dcbf1b0ad6f89f885d6533bf83d11b0cfa058e76345989b47"
+    },
+    {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-23.json",
+      "sha256": "4e126c50d1d2d7b122ec68ea8b50aedeaebda2250a94e5b6977728c9625e48b9"
+    },
+    {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-actors-2026-10-23.json",
+      "sha256": "b00e369e8d0b8fd90bd00313057f313edae60e318b52295305f6e0a224eed192"
+    }
+  ],
+  "remaining": [
+    "Complete independent replication and governed acceptance with shortfall and missing requester evidence retained as unknown.",
+    "Resolve exact-source/current-native audit and maintained-adapter evidence gaps under their owning work-items; universal source immutability is not an added R2 condition.",
+    "Complete normal independent acceptance and exact final R7 shipment verification.",
+    "Retain the transport defect under EI-26736697864894628; successful server execution does not resolve lost client delivery."
+  ]
+}

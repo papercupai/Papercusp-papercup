@@ -195,6 +195,26 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     expect(result.violations).toEqual([]);
   });
 
+  it('accepts the shipped tool-utilization criterion containing the code:run tool name', () => {
+    const rubric = JSON.parse(
+      readFileSync(new URL('../../../rubrics/pot-coordination-health/rubric.json', import.meta.url), 'utf8'),
+    ) as { criteria: ProposeRubricCriterion[]; ratingScale: string[] };
+    const toolUtilization = rubric.criteria.find((candidate) => candidate.key === 'tool-utilization');
+
+    expect(toolUtilization).toBeDefined();
+    expect(validateRubricRatingVocabulary([toolUtilization!], rubric.ratingScale)).toMatchObject({
+      ok: true,
+      instructions: [],
+      violations: [],
+    });
+
+    const explicitColonDirective = validateRubricRatingVocabulary(
+      [criterion({ key: 'explicit-colon', method: 'Grade partial: if the evidence is incomplete.' })],
+      rubric.ratingScale,
+    );
+    expect(explicitColonDirective.violations.map((violation) => violation.rating)).toEqual(['partial']);
+  });
+
   it.each([
     ['"', '"'],
     ["'", "'"],

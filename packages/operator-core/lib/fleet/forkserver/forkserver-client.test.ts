@@ -5,6 +5,9 @@ import { once } from 'node:events';
 const wire = vi.hoisted(() => ({
   outcome: { code: null as number | null, signal: null as NodeJS.Signals | null,
     stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) },
+  startupFailureMs: 0,
+  startupFailures: 0,
+  reaped: 0,
 }));
 
 // Unit boundary: only the server process/kernel enclosure are doubles. The
@@ -16,7 +19,7 @@ vi.mock('../sidecar-exec-lifetime', () => ({
     scopeUnit, pid, identity: 'unit-wire', rootIdentity: 'unit-root',
     cgroupPath: '/unit-wire', cgroupIdentity: 'unit-cgroup',
   }),
-  reapDeadSidecar: async () => true,
+  reapDeadSidecar: async () => { wire.reaped += 1; return true; },
 }));
 vi.mock('../../task-manager/control', () => ({ killScopeUnit: async () => {} }));
 vi.mock('../../task-manager/managed-spawn', async () => {
@@ -25,6 +28,12 @@ vi.mock('../../task-manager/managed-spawn', async () => {
     markManagedSpawnTeardown: () => {},
     managedSpawn: async (_command: string, _args: string[], _spec: unknown,
       opts: { onSpawn: (proc: unknown) => void }) => {
+      if (wire.startupFailureMs > 0) {
+        wire.startupFailures += 1;
+        const until = performance.now() + wire.startupFailureMs;
+        while (performance.now() < until) { /* reject after the deadline before timers run */ }
+        throw new Error('scope startup unavailable');
+      }
       const proc = Object.assign(new EventEmitter(), {
         pid: 41001, ref: () => {}, unref: () => {}, kill: () => true,
         send: (request: { t: string; id: number }, callback: (error: Error | null) => void) => {
@@ -52,7 +61,7 @@ vi.mock('../../task-manager/managed-spawn', async () => {
   };
 });
 
-import { currentForkserverProcess, spawnSidecarChild } from './forkserver-client';
+import { currentForkserverProcess, forkserverStats, spawnSidecarChild } from './forkserver-client';
 
 afterAll(() => { currentForkserverProcess()?.emit('disconnect'); });
 
@@ -78,5 +87,29 @@ describe.runIf(process.platform === 'linux')('forkserver client wire parity', ()
     expect(Buffer.concat(stdout)).toEqual(direct.stdout);
     expect(Buffer.concat(stderr)).toEqual(direct.stderr);
     expect(events).toEqual(['spawn', 'exit']);
+  });
+
+  it('does not fall back after startup rejection crosses the caller deadline before its timer runs', async () => {
+    // Own the initial generation, including when this case is selected alone.
+    wire.outcome = { code: 0, signal: null, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+    const warm = await spawnSidecarChild({ command: 'unit-warm', args: [], env: process.env, detached: true });
+    await once(warm, 'close');
+    const reaped = wire.reaped;
+    currentForkserverProcess()!.emit('disconnect');
+    // Kernel/process retirement is doubled here so the subject is the client's
+    // deadline ordering, independent of OS exit-event delivery and suite order.
+    await vi.waitFor(() => expect(wire.reaped).toBeGreaterThan(reaped));
+    expect(currentForkserverProcess()).toBeNull();
+    const fallbacks = forkserverStats().fallbacks;
+    wire.startupFailures = 0;
+    wire.startupFailureMs = 30;
+    try {
+      await expect(spawnSidecarChild({ command: process.execPath, args: ['-e', 'process.exit(0)'],
+        env: process.env, detached: true, spawnTimeoutMs: 1 })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      expect(wire.startupFailures).toBe(1);
+      expect(forkserverStats().fallbacks).toBe(fallbacks);
+    } finally {
+      wire.startupFailureMs = 0;
+    }
   });
 });
