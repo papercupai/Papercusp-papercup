@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "papercusp": {
-      "type": "http",
-      "url": "http://127.0.0.1:9071/api/mcp?harness=papercusp&workspace=papercusp-workspace&role=planner&run=1782258544-planner&spawn=ec25046f-38b9-464d-9716-948e43c6b6cb&client=role-4d64071b-334a-47a7-bbaf-1f5921bbc08d&exp=1782344944&sig=PiONHo7mBgoUJzQ-64V6M9Dg06Ac6gSI5zlRkbrQqBE"
-    }
-  }
-}
