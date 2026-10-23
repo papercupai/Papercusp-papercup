@@ -42,6 +42,14 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
 
+// Bun accepts node:module.register without running these hooks, and its
+// CommonJS path also bypasses _compile. A successful preload is therefore not
+// an enforcement check. Keep this safety orchestration on Node; application
+// artifacts need their own verified integrity/custody boundary before Bun runs.
+if (process.versions.bun) {
+  throw new Error('COMMITTED_SOURCE requires Node: Bun does not enforce the Node source-loading hooks');
+}
+
 /** When set to a file path, one JSON line per judged module is appended there (tests, debugging). */
 export const COMMITTED_SOURCE_AUDIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_AUDIT';
 /** Prefix of every line this loader writes to stderr. */

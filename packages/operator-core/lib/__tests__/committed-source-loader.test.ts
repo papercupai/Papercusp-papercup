@@ -189,6 +189,39 @@ function readAudit(file: string): AuditRecord[] {
 }
 
 describe('committed-source loader — a scratch checkout', () => {
+  it.each([
+    ['entry.mjs', [], 'V=DIRTY'],
+    ['req-entry.mjs', ['./c-dirty.cjs'], 'CJS-DIRTY'],
+    ['new-door.mjs', [], 'NEW-DOOR-RAN'],
+  ])('refuses an unsupported interpreter before %s executes', (entry, args, marker) => {
+    // The default Node lane models the unsupported-runtime branch. An explicit
+    // Bun pin exercises its actual preload behavior with the identical controls.
+    const bun = process.env.PAPERCUSP_RUNTIME_TEST_BUN;
+    const executable = bun ?? process.execPath;
+    const target = join(fixture, entry);
+    const env = cleanEnv();
+    delete env.BUN_OPTIONS;
+    const control = spawnSync(executable, [target, ...args], {
+      cwd: fixture, env, encoding: 'utf8', timeout: 15_000,
+    });
+    expect(control.status, control.stderr).toBe(0);
+    expect(control.stdout).toContain(marker);
+    const guardedArgs = bun
+      ? ['--preload', COMMITTED_SOURCE_LOADER, target, ...args]
+      : ['--input-type=module', '-e', [
+        "Object.defineProperty(process.versions, 'bun', { value: 'modeled-unsupported-runtime' });",
+        `await import(${JSON.stringify(COMMITTED_SOURCE_LOADER)});`,
+        `process.argv = [process.execPath, ${JSON.stringify(target)}, ...${JSON.stringify(args)}];`,
+        `await import(${JSON.stringify(target)});`,
+      ].join('\n')];
+    const guarded = spawnSync(executable, guardedArgs, {
+      cwd: fixture, env, encoding: 'utf8', timeout: 15_000,
+    });
+    expect(guarded.status, guarded.stderr).not.toBe(0);
+    expect(guarded.stdout).not.toContain(marker);
+    expect(guarded.stderr).toContain('COMMITTED_SOURCE requires Node');
+  }, 45_000);
+
   it('runs retained ESM beneath an info-only Git metadata directory outside a checkout', () => {
     const outside = mkdtempSync(join(scratch, 'retained-api-'));
     put(outside, '.git/info/exclude', '*.log\n');
@@ -705,13 +738,13 @@ describe('committed-source loader — the real census closure', () => {
   }
 
   it('the census and its forked closure worker run only committed ES modules (none CommonJS, none uncommitted)', () => {
-    // A held path that is neither a test nor runner-loaded makes router mode walk the import
-    // closure, which forks mutation-probe-closure.worker with execArgv: [].
-    const held = join(REPO, '.papercusp', 'scratch', 'wi5764-held-nonexistent.ts');
-    const test = join(REPO, 'packages/operator-core/lib/__tests__/restricted-hold-preflight.test.ts');
-    const result = census([REPO, test], [{ path: held, owner: 'su-restricted', intent: 'x' }]);
+    // Run the REAL census and compiler child over a bounded fixture graph. Their
+    // own code still comes from REPO under the loader. Unrelated evolving router
+    // imports must not decide whether this test can observe the loader boundary.
+    const held = join(fixture, 'held-nonexistent.ts');
+    const result = census([fixture, join(fixture, 'entry.mjs')], [{ path: held, owner: 'su-restricted', intent: 'x' }]);
 
-    expect(result.status).toBe(RESTRICTED_HOLD_PREFLIGHT_EXIT.admit);
+    expect(result.status, JSON.stringify({ verdict: result.verdict, stderr: result.stderr })).toBe(RESTRICTED_HOLD_PREFLIGHT_EXIT.admit);
     expect(result.verdict).toEqual({ verdict: 'admit' });
 
     const judged = result.records.filter((r) => r.kind === 'committed' || r.kind === 'substituted');
