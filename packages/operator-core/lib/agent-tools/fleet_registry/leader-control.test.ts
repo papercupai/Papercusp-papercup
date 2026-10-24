@@ -160,7 +160,7 @@ describe('ensureFleetLeaderControl', () => {
     expect(shouldMaintainFleetLeaderControl(undefined)).toBe(true);
   });
 
-  it('derives the exact six standard event keys from the fleet-leader auto-arm profile', () => {
+  it('derives the exact seven standard event keys from the fleet-leader auto-arm profile', () => {
     expect(standardEventKeys()).toEqual([
       'fleet:member-dead:alpha',
       'fleet:member-left:alpha',
@@ -168,6 +168,7 @@ describe('ensureFleetLeaderControl', () => {
       'fleet:context-critical:alpha',
       'fleet:claim-released:alpha',
       'fleet:admission-blocked:alpha',
+      'fleet:launch-failed:alpha',
     ]);
     expect(standardEventKeys()).not.toContain('fleet:item-completed:alpha');
   });
@@ -210,7 +211,7 @@ describe('ensureFleetLeaderControl', () => {
     expect(registerAwait).not.toHaveBeenCalled();
     expect(out.watches.cancel).toEqual({
       tool: 'events:cancel',
-      args: { await_ids: [1, 2, 3, 4, 5, 6] },
+      args: { await_ids: [1, 2, 3, 4, 5, 6, 7] },
     });
   });
 
@@ -276,11 +277,11 @@ describe('ensureFleetLeaderControl', () => {
         onlyIfInactive: true,
       }),
     );
-    expect(registerAwait).toHaveBeenCalledTimes(6);
+    expect(registerAwait).toHaveBeenCalledTimes(7);
     expect(out.watches.added).toEqual(standardEventKeys());
     expect(out.watches.cancel).toEqual({
       tool: 'events:cancel',
-      args: { await_ids: [101, 102, 103, 104, 105, 106] },
+      args: { await_ids: [101, 102, 103, 104, 105, 106, 107] },
     });
 
     const registrations = registerAwait.mock.calls.map(([args]) => args as Record<string, unknown>);
@@ -416,7 +417,7 @@ describe('ensureFleetLeaderControl', () => {
     expect(registerAwait).not.toHaveBeenCalled();
     expect(cancelAwait).not.toHaveBeenCalled();
     expect(out.watches.active).toEqual(standardEventKeys());
-    expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   it.each(['status', 'payload', 'standdown'] as const)(
@@ -488,7 +489,7 @@ describe('ensureFleetLeaderControl', () => {
       expect(out.inboxWake.healthy).toBe(true);
       expect(armInboxWake).toHaveBeenCalledTimes(1);
       expect(out.watches.active).toEqual(standardEventKeys());
-      expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5, 6, 7]);
       expect(registerAwait).not.toHaveBeenCalled();
       expect(cancelAwait).not.toHaveBeenCalled();
       expect(retireLifecycleBoundWatches).not.toHaveBeenCalled();
