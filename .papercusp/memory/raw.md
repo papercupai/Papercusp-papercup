@@ -1005,3 +1005,4 @@
 [2026-10-22T18:21:48Z] release-fixer WI-6554700010020691: A frozen admission precheck reporting matched=0 can be a native Vitest config rejected by committed-source-loader, not a missing path; reproduce via lint:as-committed --ref before changing tests or routing.
 
 [2026-10-23T20:37:11+00:00] release-fixer WI-6554700010025055: Recovery file locks default to the operator checkout even with --harness; for a delegated clone repair pass coordination_domain=<physical clone root> and inspect that domain before editing.
+[2026-10-24T08:55:26.874111Z] release-fixer WI-6554700010027114: source-preview verifier-run reports dirty tested-input mismatch when current declared input bytes differ from the requested historical ref even on a clean checkout; confirm input blob equality before treating that refusal as working-tree dirt.
