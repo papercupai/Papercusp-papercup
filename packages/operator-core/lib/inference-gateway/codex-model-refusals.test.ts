@@ -79,6 +79,57 @@ describe('createCodexModelRefusalRegistry', () => {
     expect(reg.clear('b', 'm')).toBe(false);
   });
 
+  // WI-6554700010030462: measured 2026-10-27 — the only healthy account refused gpt-5.6-sol, the
+  // mark lapsed with the 30-minute re-check window, /stats dropped the model, and both launch
+  // preflights read "unknown" and paid a convert that 429-aborted. Re-check and belief are separate.
+  it('keeps BELIEVING a refusal after the selection re-check window lapses', () => {
+    const c = clock();
+    const reg = createCodexModelRefusalRegistry({ ttlMs: 60_000, reportHorizonMs: 600_000, now: c.now });
+
+    reg.record('a', 'gpt-5.6-sol', 'refused');
+    c.advance(60_001);
+    // Selection may re-try the account (cheap, in-request failover)…
+    expect(reg.isRefused('a', 'gpt-5.6-sol')).toBe(false);
+    expect(reg.snapshot()).toEqual([]);
+    // …but the launch preflights are still told it refuses.
+    expect(reg.isBelievedRefused('a', 'gpt-5.6-sol')).toBe(true);
+    expect(reg.believedSnapshot()).toEqual([expect.objectContaining({ accountId: 'a', model: 'gpt-5.6-sol', hits: 1 })]);
+
+    // The belief ends at the report horizon when nothing re-confirms it.
+    c.advance(600_000 - 60_001);
+    expect(reg.isBelievedRefused('a', 'gpt-5.6-sol')).toBe(false);
+    expect(reg.believedSnapshot()).toEqual([]);
+  });
+
+  it('re-arms both horizons when a lapsed re-check is refused again, and logs that as a new exclusion', () => {
+    const c = clock();
+    const reg = createCodexModelRefusalRegistry({ ttlMs: 60_000, reportHorizonMs: 600_000, now: c.now });
+
+    reg.record('a', 'm', 'first');
+    c.advance(30_000);
+    expect(reg.record('a', 'm', 'inside the window')).toBe(false);
+    c.advance(100_000); // re-check window lapsed, belief still held
+    expect(reg.record('a', 'm', 'refused on re-check')).toBe(true);
+    expect(reg.isRefused('a', 'm')).toBe(true);
+    c.advance(599_999); // the belief horizon restarted at the re-confirmation
+    expect(reg.isBelievedRefused('a', 'm')).toBe(true);
+    expect(reg.believedSnapshot()).toEqual([
+      expect.objectContaining({ since: 1_000_000, hits: 3, detail: 'refused on re-check' }),
+    ]);
+  });
+
+  it('a 2xx clears the belief too, and the report horizon is never shorter than the re-check TTL', () => {
+    const c = clock();
+    const reg = createCodexModelRefusalRegistry({ ttlMs: 60_000, reportHorizonMs: 1_000, now: c.now });
+
+    reg.record('a', 'm', 'x');
+    c.advance(30_000);
+    expect(reg.isBelievedRefused('a', 'm')).toBe(true);
+    expect(reg.clear('a', 'm')).toBe(true);
+    expect(reg.isBelievedRefused('a', 'm')).toBe(false);
+    expect(reg.believedSnapshot()).toEqual([]);
+  });
+
   it('stays bounded under a flood of distinct pairs', () => {
     const reg = createCodexModelRefusalRegistry({ ttlMs: 60_000, maxEntries: 3 });
     for (let i = 0; i < 10; i++) reg.record(`acct-${i}`, 'm', 'x');

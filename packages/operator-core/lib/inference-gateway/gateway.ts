@@ -1581,6 +1581,9 @@ export interface GatewayDeps {
    *  for env/defaults (enabled, freeze 75s, poll 10s). `enabled:false` disables it (e.g. unit tests
    *  that don't want the timer). */
   selfHeal?: { enabled?: boolean; freezeMs?: number; pollMs?: number };
+  /** Codex (account, model) refusal registry horizons (WI-10003306, WI-6554700010030462). Omit for
+   *  the env/defaults (30-minute selection re-check, 24-hour reported belief). */
+  codexModelRefusalPolicy?: { ttlMs?: number; reportHorizonMs?: number; now?: () => number };
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status + the account that served it (pool
    *  projection / observability) — the gateway is the only process that sees the unified-budget
@@ -2000,9 +2003,11 @@ export interface GatewayStats {
   codexModelRefusals?: CodexModelRefusalEntry[];
   /**
    * WI-6554700010029748: `codexHealthyAccounts` is MODEL-BLIND — an account that refuses a model
-   * still counts. For every model with at least one live refusal, the number of serviceable
-   * accounts that do NOT refuse it (the same `accountHealthKey` test as the provider-wide count).
-   * A model absent from the map has no live refusal, so `codexHealthyAccounts` describes it.
+   * still counts. For every model with at least one believed refusal, the number of serviceable
+   * accounts not believed to refuse it (the same `accountHealthKey` test as the provider-wide count).
+   * A refusal stays believed past selection's re-check window until a 2xx clears it or the report
+   * horizon (default 24h) lapses (WI-6554700010030462). A model absent from the map has no
+   * believed refusal, so `codexHealthyAccounts` describes it.
    * psu's launch preflight refuses a launch whose model reads 0 here while the provider reads > 0.
    */
   codexServiceableByModel?: Record<string, number>;
@@ -3421,7 +3426,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** WI-10003306: Codex (account, model) pairs the ChatGPT backend has refused. Selection routes
    *  around them per model; entries lapse on a TTL and clear on the next 2xx, so an account marked
    *  here is never removed from the pool and never needs a manual flip to come back. */
-  const codexModelRefusals = createCodexModelRefusalRegistry();
+  const codexModelRefusals = createCodexModelRefusalRegistry(deps.codexModelRefusalPolicy);
   /** WI-10007199: can the gateway reach the Codex upstream AT ALL? Kept apart from account capacity
    *  so a host network outage is reported as one, not as every account being usage-walled. */
   const codexReachability = createUpstreamReachabilityTracker();
@@ -4248,7 +4253,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     source: AccountPool | null | undefined,
     at: number,
     fallbackEntries: readonly ActiveAccount[] = [],
-    /** Count only accounts that do not hold a live refusal for this model (WI-6554700010029748). */
+    /** Count only accounts not believed to refuse this model (WI-6554700010029748). The belief
+     *  outlives selection's re-check window (WI-6554700010030462), so a lapsed re-check does not
+     *  turn a known refusal back into "unknown" for the launch preflights. */
     model?: string,
   ): number => {
     const entries = source?.entries?.() ?? fallbackEntries;
@@ -4256,7 +4263,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const byId = new Map(entries.map((account) => [account.accountId, account]));
     const serviceable = (accountId: string): boolean => {
       const account = byId.get(accountId);
-      if (!account || (model && codexModelRefusals.isRefused(accountId, model))) return false;
+      if (!account || (model && codexModelRefusals.isBelievedRefused(accountId, model))) return false;
       return accountHealthKey(account, at) < Infinity;
     };
     return source?.healthyCount
@@ -5143,9 +5150,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const codexHealthyAccounts =
       codexServiceableCount(deps.codexPool, now) +
       codexServiceableCount(codexCliPool, now, codexCliPool ? [] : codexCliHealthEntries());
-    // WI-6554700010029748: the per-model view of the same count, for every model with a live refusal.
+    // WI-6554700010029748: the per-model view of the same count, for every model with a believed
+    // refusal — including one whose selection re-check window lapsed (WI-6554700010030462).
     let codexServiceableByModel: Record<string, number> | undefined;
-    for (const { model } of codexModelRefusals.snapshot()) {
+    for (const { model } of codexModelRefusals.believedSnapshot()) {
       if (!model || (codexServiceableByModel && model in codexServiceableByModel)) continue;
       (codexServiceableByModel ??= {})[model] =
         codexServiceableCount(deps.codexPool, now, [], model) +
@@ -11454,7 +11462,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const dbDown = s.db?.ok === false;
       const providerReadiness = {
         claude: s.healthyAccounts > 0,
-        codex: s.codexHealthyAccounts > 0,
+        codex: (s.codexHealthyAccounts ?? 0) > 0,
       };
       const providerReady = providerReadiness.claude || providerReadiness.codex;
       const ready = !dbDown && providerReady;

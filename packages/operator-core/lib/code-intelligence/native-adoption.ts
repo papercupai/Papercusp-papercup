@@ -22,8 +22,11 @@
  * workspace predicate lets the planner skip-scan the telemetry index instead and read ~2M heap
  * rows for a 3-day window (measured 2026-10-14: 15.3 s vs 0.31 s).
  */
+import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+// Type-only: push-channel.ts imports this module at runtime, so a value import would cycle.
+import type { PushLegId } from './push-channel';
 
 export const NATIVE_ADOPTION_VERSION = 1;
 
@@ -842,4 +845,449 @@ export async function measureNativeAdoptionWindow(
 ): Promise<NativeAdoptionMetrics> {
   const read = await readNativeAdoptionWindow(window, sql);
   return summarizeNativeAdoption({ window, ...read });
+}
+
+// ── Per-leg outcome chains (code-intel-delivery-and-outcomes-2026-10-26 P-013; R-7, R-10) ──────
+//
+// exposure → follow-through → result, one chain per PUSH_LEG_FLAGS leg. The code map below is
+// pinned to the plan's ## Design push-leg table (push-leg-design-table.md is the tree copy,
+// PUSH_LEG_DESIGN_TABLE_SHA256 its hash; native-adoption.test.ts compares all three). Control
+// populations are code-intel-delivery-and-outcomes-2026-10-26#D-027.
+
+const DAY_MS = 86_400_000;
+/** D-014 item 5: a result needs this many eligible triggers (and samples), else insufficient-data. */
+export const LEG_OUTCOME_MIN_SAMPLE = 20;
+/** D-027: the pre-exposure baseline is the 7 days before the leg's first push. */
+export const LEG_BASELINE_DAYS = 7;
+/** One scored window per run of the instrument. */
+export const LEG_OUTCOME_WINDOW_MS = 7 * DAY_MS;
+/** R-10: the re-score schedule interval may not exceed 24 h. */
+export const LEG_OUTCOME_MAX_INTERVAL_MS = DAY_MS;
+
+/** The only legs allowed to report cannot-observe. Adding a member needs a plan Decision (R-7). */
+export const CANNOT_OBSERVE_LEGS: readonly PushLegId[] = Object.freeze(['notes'] as PushLegId[]);
+
+export type LegResultKey = 'time to first correct edit' | 'gate reds avoided' | 'clones avoided' | 'interface follow-through rate';
+export type LegControl = 'pre-exposure baseline' | 'none';
+export interface LegOutcomeSpec {
+  /** The Design table's flag cell (FLAGS member name; "(shared)" when another leg owns the flag). */
+  flag: string;
+  resultKey: LegResultKey | 'cannot-observe';
+  control: LegControl;
+  /** Follow-through and result are attributed to a trigger only inside (trigger, trigger + this]. */
+  attributionWindowDays: number;
+  denominator: string;
+  minSample: number;
+  cannotObserveReason?: string;
+}
+
+const TIME_TO_EDIT = (flag: string): LegOutcomeSpec => ({
+  flag, resultKey: 'time to first correct edit', control: 'none', attributionWindowDays: 1, minSample: LEG_OUTCOME_MIN_SAMPLE,
+  denominator: 'exposed pushes in the scored window; the value is the median time from push to the recipient\'s first correct edit of a cited path',
+});
+const AVOIDED = (flag: string, resultKey: 'gate reds avoided' | 'clones avoided'): LegOutcomeSpec => ({
+  flag, resultKey, control: 'pre-exposure baseline', attributionWindowDays: 1, minSample: LEG_OUTCOME_MIN_SAMPLE,
+  denominator: 'eligible triggers: exposed ones in the scored window and unexposed ones in the baseline window; the value is the baseline outcome share minus the exposed outcome share',
+});
+
+/** The R-7 code map: leg → result key, control population, window, denominator, minimum sample. */
+export const LEG_OUTCOME_TABLE: Readonly<Record<PushLegId, LegOutcomeSpec>> = Object.freeze({
+  grep: TIME_TO_EDIT('CODE_INTEL_PUSH_GREP'),
+  'first-touch': TIME_TO_EDIT('CODE_INTEL_PUSH_FIRST_TOUCH'),
+  interface: {
+    flag: 'CODE_INTEL_PUSH_INTERFACE', resultKey: 'interface follow-through rate', control: 'none',
+    attributionWindowDays: 1, minSample: LEG_OUTCOME_MIN_SAMPLE,
+    denominator: 'exposed interface pushes that cite a consumer path; the value is the share after which the recipient read or edited a cited path',
+  },
+  incident: AVOIDED('CODE_INTEL_PUSH_INCIDENT', 'gate reds avoided'),
+  completion: AVOIDED('CODE_INTEL_PUSH_COMPLETION', 'gate reds avoided'),
+  clone: AVOIDED('CODE_INTEL_PUSH_FIRST_TOUCH (shared)', 'clones avoided'),
+  antipattern: AVOIDED('CODE_INTEL_AST_GREP', 'gate reds avoided'),
+  intent: TIME_TO_EDIT('CODE_INTEL_PUSH_INTENT'),
+  resume: TIME_TO_EDIT('CODE_INTEL_PUSH_RESUME'),
+  notes: {
+    flag: 'CODE_INTEL_PUSH_NOTES', resultKey: 'cannot-observe', control: 'none', attributionWindowDays: 1, minSample: LEG_OUTCOME_MIN_SAMPLE,
+    denominator: 'exposed notes pushes (exposure and follow-through only)',
+    cannotObserveReason: 'a notes push restates a peer\'s prose; no ledger records whether the recipient acted on it, and its effect cannot be separated from the first-touch push in the same turn',
+  },
+});
+
+/** One eligible trigger. `exposed` = a push was issued for it; false = an unexposed (baseline) trigger. */
+export interface LegTrigger { id: string; leg: string; ownerId: string; at: string; exposed: boolean; paths: readonly string[] }
+/**
+ * One recorded action on a repo-relative path. `touch` = a read or edit; `correct-edit` = an edit
+ * not reverted within 24 h whose file passed the next lint:tsc run (D-013); `gate-red` = a gate or
+ * lint red on the file; `clone` = a new function that matches an existing clone.
+ */
+export type LegActionKind = 'touch' | 'correct-edit' | 'gate-red' | 'clone';
+export interface LegAction { kind: LegActionKind; ownerId: string | null; at: string; path: string }
+
+export type LegResult =
+  | { status: 'measured'; key: LegResultKey; value: number | null; unit: 'ms' | 'share' | 'share-difference'; sample: number; detail: string }
+  | { status: 'insufficient-data'; key: LegResultKey; reason: string }
+  | { status: 'unmeasured'; key: LegResultKey; reason: string }
+  | { status: 'cannot-observe'; key: 'cannot-observe'; reason: string };
+
+export interface LegOutcome {
+  leg: PushLegId;
+  resultKey: LegOutcomeSpec['resultKey'];
+  control: LegControl;
+  attributionWindowDays: number;
+  denominator: string;
+  minSample: number;
+  /** Eligible triggers in the scored window (independent source when supplied); null = unmeasured. */
+  eligibleTriggers: number | null;
+  exposure: number;
+  followThrough: { measured: number; positive: number; rate: number | null };
+  result: LegResult;
+}
+
+export interface LegOutcomeInput {
+  windowStart: string;
+  windowEnd: string;
+  triggers: readonly LegTrigger[];
+  actions: readonly LegAction[];
+  /** The leg's first push ever (baseline end); default: its earliest exposed trigger, else windowStart. */
+  firstExposureAt?: Partial<Record<PushLegId, string | null>>;
+  /** Independent eligible-trigger counts for the scored window; default: triggers counted here. */
+  eligibleTriggers?: Partial<Record<PushLegId, number | null>>;
+  /** Result-side reader limits per leg; such a leg reports unmeasured, never a number. */
+  unmeasured?: Partial<Record<PushLegId, string>>;
+  /** Override a leg's attribution window (the D-014 boundary test widens it by one day). */
+  attributionWindowDays?: Partial<Record<PushLegId, number>>;
+}
+
+function median(values: readonly number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+/** Pure: one outcome chain per LEG_OUTCOME_TABLE leg (the same key set as PUSH_LEG_FLAGS). */
+export function computeLegOutcomes(input: LegOutcomeInput): LegOutcome[] {
+  const start = Date.parse(input.windowStart);
+  const end = Date.parse(input.windowEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) throw new Error('A valid [windowStart, windowEnd) is required.');
+  const actionsAt = input.actions.map(a => ({ ...a, ms: Date.parse(a.at) })).filter(a => Number.isFinite(a.ms));
+  return (Object.keys(LEG_OUTCOME_TABLE) as PushLegId[]).map((leg): LegOutcome => {
+    const spec = LEG_OUTCOME_TABLE[leg];
+    const days = input.attributionWindowDays?.[leg] ?? spec.attributionWindowDays;
+    const windowMs = days * DAY_MS;
+    const triggers = input.triggers.filter(t => t.leg === leg).map(t => ({ ...t, ms: Date.parse(t.at) })).filter(t => Number.isFinite(t.ms));
+    const scored = (t: { ms: number }) => t.ms >= start && t.ms < end;
+    const exposed = triggers.filter(t => t.exposed && scored(t));
+    // Attributed only to the trigger's own paths, inside its window, and (unless noted) by its owner.
+    const attributed = (t: (typeof triggers)[number], kinds: readonly LegActionKind[], sameOwner: boolean) => actionsAt.filter(a =>
+      kinds.includes(a.kind) && t.paths.includes(a.path) && a.ms > t.ms && a.ms <= t.ms + windowMs && (!sameOwner || a.ownerId === t.ownerId));
+    const withPaths = exposed.filter(t => t.paths.length > 0);
+    const followed = withPaths.filter(t => attributed(t, ['touch', 'correct-edit'], true).length > 0).length;
+    const followThrough = { measured: withPaths.length, positive: followed, rate: withPaths.length ? followed / withPaths.length : null };
+    const eligibleTriggers = input.eligibleTriggers?.[leg] !== undefined ? input.eligibleTriggers[leg]! : triggers.filter(scored).length;
+    const base = {
+      leg, resultKey: spec.resultKey, control: spec.control, attributionWindowDays: days, denominator: spec.denominator,
+      minSample: spec.minSample, eligibleTriggers, exposure: exposed.length, followThrough,
+    };
+    if (spec.resultKey === 'cannot-observe') {
+      if (!CANNOT_OBSERVE_LEGS.includes(leg)) throw new Error(`Leg ${leg} reports cannot-observe but is not in CANNOT_OBSERVE_LEGS.`);
+      return { ...base, result: { status: 'cannot-observe', key: 'cannot-observe', reason: spec.cannotObserveReason ?? '' } };
+    }
+    const key = spec.resultKey;
+    const insufficient = (reason: string): LegOutcome => ({ ...base, result: { status: 'insufficient-data', key, reason } });
+    if (exposed.length === 0) return insufficient('zero exposure in the scored window');
+    if (eligibleTriggers !== null && eligibleTriggers < spec.minSample) {
+      return insufficient(`${eligibleTriggers} eligible trigger(s) in the scored window; the minimum sample is ${spec.minSample}`);
+    }
+    const limit = input.unmeasured?.[leg];
+    if (limit) return { ...base, result: { status: 'unmeasured', key, reason: limit } };
+    if (key === 'time to first correct edit') {
+      if (exposed.length < spec.minSample) return insufficient(`${exposed.length} exposed push(es); the minimum sample is ${spec.minSample}`);
+      const deltas = exposed.flatMap(t => {
+        const first = attributed(t, ['correct-edit'], true).reduce((m, a) => Math.min(m, a.ms), Infinity);
+        return Number.isFinite(first) ? [first - t.ms] : [];
+      });
+      return { ...base, result: { status: 'measured', key, value: median(deltas), unit: 'ms', sample: exposed.length,
+        detail: `${deltas.length}/${exposed.length} exposed push(es) reached a correct edit within ${days} d` } };
+    }
+    if (key === 'interface follow-through rate') {
+      if (followThrough.measured < spec.minSample) return insufficient(`${followThrough.measured} exposed push(es) with a cited path; the minimum sample is ${spec.minSample}`);
+      return { ...base, result: { status: 'measured', key, value: followThrough.rate, unit: 'share', sample: followThrough.measured,
+        detail: `${followed}/${followThrough.measured} followed through within ${days} d` } };
+    }
+    // An 'avoided' key: baseline outcome share minus exposed outcome share (D-027).
+    const firstGiven = input.firstExposureAt?.[leg];
+    const earliest = triggers.filter(t => t.exposed).reduce((m, t) => Math.min(m, t.ms), Infinity);
+    const baselineEnd = firstGiven ? Date.parse(firstGiven) : Number.isFinite(earliest) ? earliest : start;
+    const baselineStart = baselineEnd - LEG_BASELINE_DAYS * DAY_MS;
+    const baseline = triggers.filter(t => !t.exposed && t.ms >= baselineStart && t.ms < baselineEnd);
+    if (baseline.length < spec.minSample) return insufficient(`${baseline.length} baseline trigger(s) in the 7 days before ${new Date(baselineEnd).toISOString()}; the minimum sample is ${spec.minSample}`);
+    if (exposed.length < spec.minSample) return insufficient(`${exposed.length} exposed trigger(s); the minimum sample is ${spec.minSample}`);
+    const kind: LegActionKind = key === 'clones avoided' ? 'clone' : 'gate-red';
+    // A clone is the agent's own new function; a gate red belongs to the file, whoever ran the gate.
+    const share = (set: typeof triggers) => set.filter(t => attributed(t, [kind], kind === 'clone').length > 0).length / set.length;
+    const baselineShare = share(baseline);
+    const exposedShare = share(exposed);
+    return { ...base, result: { status: 'measured', key, value: baselineShare - exposedShare, unit: 'share-difference', sample: exposed.length,
+      detail: `baseline ${baselineShare.toFixed(3)} over ${baseline.length} trigger(s) [${new Date(baselineStart).toISOString()}, ${new Date(baselineEnd).toISOString()}); exposed ${exposedShare.toFixed(3)} over ${exposed.length}` } };
+  });
+}
+
+/**
+ * R-10 rating: pass only when every observable leg has a measured result; unknown when more than
+ * half of the observable legs (cannot-observe excluded from both sides, D-013) are insufficient-data,
+ * or when any leg is unmeasured.
+ */
+export function rateLegOutcomes(outcomes: readonly LegOutcome[]): {
+  verdict: 'pass' | 'unknown'; reason: string; measured: string[]; insufficient: string[]; unmeasured: string[];
+} {
+  const covered = new Set(outcomes.map(o => o.leg));
+  const missing = (Object.keys(LEG_OUTCOME_TABLE) as PushLegId[]).filter(leg => !covered.has(leg));
+  const observable = outcomes.filter(o => o.result.status !== 'cannot-observe');
+  const pick = (status: LegResult['status']) => observable.filter(o => o.result.status === status).map(o => o.leg);
+  const measured = pick('measured');
+  const insufficient = pick('insufficient-data');
+  const unmeasured = pick('unmeasured');
+  const reason = `measured: ${measured.join(', ') || 'none'}; insufficient-data: ${insufficient.join(', ') || 'none'}; `
+    + `unmeasured: ${unmeasured.join(', ') || 'none'}${missing.length ? `; no outcome computed: ${missing.join(', ')}` : ''}.`;
+  const verdict = missing.length || unmeasured.length || insufficient.length * 2 > observable.length || measured.length === 0
+    ? 'unknown' as const : 'pass' as const;
+  return { verdict, reason, measured, insufficient, unmeasured };
+}
+
+// ── The re-score schedule and the score's freshness (R-10; SPEC-P-013-C / -D) ─────────────────
+
+/** Interval of a plan schedule in ms: an interval schedule, or a daily/hourly cron; null = unknown. */
+export function legOutcomeScheduleIntervalMs(schedule: unknown): number | null {
+  if (!schedule || typeof schedule !== 'object') return null;
+  const s = schedule as { kind?: unknown; intervalSec?: unknown; cron?: unknown };
+  if (typeof s.intervalSec === 'number' && s.intervalSec > 0) return s.intervalSec * 1000;
+  if (typeof s.cron !== 'string') return null;
+  const f = s.cron.trim().split(/\s+/);
+  if (f.length !== 5 || f[2] !== '*' || f[3] !== '*' || f[4] !== '*' || !/^\d+$/.test(f[0]!)) return null;
+  if (/^\d+$/.test(f[1]!)) return DAY_MS;
+  if (f[1] === '*') return 3_600_000;
+  return null;
+}
+
+export type LegScheduleStatus = 'fresh' | 'no-schedule' | 'unarmed' | 'interval-unknown' | 'interval-too-long' | 'no-score' | 'stale';
+/**
+ * A leg outcome check counts only with an armed schedule of at most 24 h (an unarmed schedule never
+ * fires) and a latest score no older than one interval.
+ */
+export function legOutcomeScheduleVerdict(input: {
+  schedule: unknown; active: boolean | null; latestScoreAt: string | null; now: number;
+}): { status: LegScheduleStatus; armed: boolean; intervalMs: number | null; reason: string } {
+  const intervalMs = legOutcomeScheduleIntervalMs(input.schedule);
+  const out = (status: LegScheduleStatus, reason: string) => ({ status, armed: status !== 'no-schedule' && status !== 'unarmed', intervalMs, reason });
+  if (!input.schedule) return out('no-schedule', 'The subject plan has no re-score schedule.');
+  if (input.active !== true) return out('unarmed', 'The re-score schedule is set but not armed; an unarmed schedule never fires.');
+  if (intervalMs === null) return out('interval-unknown', 'The schedule interval cannot be determined.');
+  if (intervalMs > LEG_OUTCOME_MAX_INTERVAL_MS) return out('interval-too-long', `The schedule interval ${intervalMs} ms exceeds 24 h.`);
+  const at = input.latestScoreAt ? Date.parse(input.latestScoreAt) : NaN;
+  if (!Number.isFinite(at)) return out('no-score', 'No recorded score yet.');
+  if (input.now - at > intervalMs) return out('stale', `The latest score (${new Date(at).toISOString()}) is older than one interval.`);
+  return out('fresh', `The latest score (${new Date(at).toISOString()}) is within one interval.`);
+}
+
+// ── The Design-table pin and the check fingerprint (R-7 doc-claims; R-10) ─────────────────────
+
+/** sha256 of the plan's ## Design push-leg table lines (trimmed, joined by \n). */
+export const PUSH_LEG_DESIGN_TABLE_SHA256 = 'b56fe4555afc846eb348132dcb127a80d2012061efdbbf35330315896873752b';
+
+/** The table lines under the first `### Push-leg table` heading, trimmed; null when absent. */
+export function extractPushLegDesignTable(markdown: string): string | null {
+  const lines = markdown.split('\n');
+  const heading = lines.findIndex(line => line.trim().startsWith('### Push-leg table'));
+  if (heading < 0) return null;
+  const rows: string[] = [];
+  for (const line of lines.slice(heading + 1)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('|')) rows.push(trimmed);
+    else if (rows.length) break;
+    else if (trimmed.startsWith('#')) return null;
+  }
+  return rows.length ? rows.join('\n') : null;
+}
+
+export function pushLegDesignTableHash(table: string): string {
+  return createHash('sha256').update(table).digest('hex');
+}
+
+export interface PushLegDesignRow { leg: string; flag: string; source: string; resultKey: string; control: string }
+export function parsePushLegDesignTable(table: string): PushLegDesignRow[] {
+  return table.split('\n').slice(2).map(line => {
+    const [leg = '', flag = '', source = '', resultKey = '', control = ''] = line.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+    return { leg, flag, source, resultKey, control };
+  });
+}
+
+/** Every disagreement between the Design table rows and LEG_OUTCOME_TABLE; empty = in agreement. */
+export function pushLegDesignDivergence(rows: readonly PushLegDesignRow[]): string[] {
+  const problems: string[] = [];
+  const byLeg = new Map(rows.map(row => [row.leg, row]));
+  if (byLeg.size !== rows.length) problems.push('The Design table lists a leg more than once.');
+  for (const [leg, spec] of Object.entries(LEG_OUTCOME_TABLE) as Array<[PushLegId, LegOutcomeSpec]>) {
+    const row = byLeg.get(leg);
+    if (!row) { problems.push(`Leg ${leg} is missing from the Design table.`); continue; }
+    if (row.flag !== spec.flag) problems.push(`Leg ${leg}: Design flag "${row.flag}" differs from the code map "${spec.flag}".`);
+    const expectedKey = spec.resultKey === 'cannot-observe' ? `cannot-observe: ${spec.cannotObserveReason}` : spec.resultKey;
+    if (row.resultKey !== expectedKey) problems.push(`Leg ${leg}: Design result key "${row.resultKey}" differs from the code map "${expectedKey}".`);
+    if (!row.control.startsWith(`${spec.control}:`)) problems.push(`Leg ${leg}: Design control "${row.control}" does not name the code map's control "${spec.control}".`);
+  }
+  for (const leg of byLeg.keys()) if (!(leg in LEG_OUTCOME_TABLE)) problems.push(`Design table row ${leg} is not a push leg.`);
+  return problems;
+}
+
+/** R-10 check fingerprint: the native-adoption.ts blob sha plus the Design-table hash; null if either is unknown. */
+export function legOutcomeCheckFingerprint(moduleBlobSha: string | null, designTableHash: string | null): string | null {
+  if (!moduleBlobSha || !/^[0-9a-f]{40,64}$/.test(moduleBlobSha) || !designTableHash || !/^[0-9a-f]{64}$/.test(designTableHash)) return null;
+  return `native-adoption.ts@${moduleBlobSha}+design@${designTableHash}`;
+}
+
+// ── The scheduled instrument (R-10) ───────────────────────────────────────────────────────────
+
+export const LEG_OUTCOMES_INSTRUMENT_KEY = 'code-intel:leg-outcomes';
+export const LEG_OUTCOMES_SUBJECT_PLAN = 'code-intel-delivery-and-outcomes-2026-10-26';
+export const LEG_OUTCOMES_ACTOR = 'system:code-intel-leg-outcomes';
+export const LEG_OUTCOMES_ACTION = 'code-intel.leg-outcomes.score';
+export const NATIVE_ADOPTION_MODULE_PATH = 'packages/operator-core/lib/code-intelligence/native-adoption.ts';
+
+/** What the live reader cannot supply yet; each such leg reports unmeasured, never a number. */
+export const LEG_OUTCOME_READER_LIMITS: Readonly<Partial<Record<PushLegId, string>>> = Object.freeze({
+  grep: 'correct-edit is unread: no ledger records whether an edit was reverted within 24 h or passed the next lint:tsc run (D-013)',
+  'first-touch': 'correct-edit is unread: no ledger records whether an edit was reverted within 24 h or passed the next lint:tsc run (D-013)',
+  intent: 'correct-edit is unread: no ledger records whether an edit was reverted within 24 h or passed the next lint:tsc run (D-013)',
+  resume: 'correct-edit is unread: no ledger records whether an edit was reverted within 24 h or passed the next lint:tsc run (D-013)',
+  incident: 'the unexposed baseline triggers and the per-file gate/lint red outcome are not read yet (D-027)',
+  completion: 'the unexposed baseline triggers and the per-file gate/lint red outcome are not read yet (D-027)',
+  antipattern: 'the unexposed baseline triggers and the per-file gate/lint red outcome are not read yet (D-027)',
+  clone: 'the unexposed baseline triggers and the per-function clone outcome are not read yet (D-027)',
+});
+
+/**
+ * Live input for one scored window: exposed triggers are the push ledger rows; follow-through
+ * touches are the recipient's own Read/Edit/Write rows on a cited path inside the attribution
+ * window (absolute paths only under the activity harness's exact registered root, never by
+ * suffix); eligible counts come from the R-1 liveness readers.
+ */
+export async function readLegOutcomeInput(
+  window: NativeAdoptionWindow, sql: Sql = getOrgPg().sql, resolveRepoRoots: PushRepoRootResolver = registryRepoRoots,
+): Promise<LegOutcomeInput> {
+  const start = Date.parse(window.windowStart);
+  const end = Date.parse(window.windowEnd);
+  if (!window.workspaceId.trim() || !Number.isFinite(start) || !Number.isFinite(end) || start >= end) {
+    throw new Error('An exact workspace and a valid [windowStart, windowEnd) are required.');
+  }
+  const legs = Object.keys(LEG_OUTCOME_TABLE);
+  const startIso = new Date(start).toISOString();
+  const endIso = new Date(end).toISOString();
+  const maxDays = Math.max(...Object.values(LEG_OUTCOME_TABLE).map(s => s.attributionWindowDays));
+  const pushes = await sql<Array<{ id: string; leg: string; owner_id: string; pushed_at: Date | string; cited_paths: string[] | null }>>`
+    SELECT id::text, leg, owner_id, pushed_at, cited_paths FROM harness_shared.code_intel_pushes
+     WHERE workspace_id = ${window.workspaceId} AND chars > 0 AND leg = ANY(${legs}::text[])
+       AND pushed_at >= ${startIso}::timestamptz AND pushed_at < ${endIso}::timestamptz`;
+  const first = await sql<Array<{ leg: string; first_at: Date | string }>>`
+    SELECT leg, min(pushed_at) AS first_at FROM harness_shared.code_intel_pushes
+     WHERE workspace_id = ${window.workspaceId} AND chars > 0 AND leg = ANY(${legs}::text[]) GROUP BY leg`;
+  const followTools = [...FILE_FOLLOW_TOOLS, ...FILE_FOLLOW_TOOLS.filter(t => t.startsWith('mcp__papercusp-su__')).map(t => t.replace('mcp__papercusp-su__', 'mcp__papercusp_su__'))];
+  // Suffix match is only a prefilter; pushActivityRepoPath below places each path exactly.
+  const touches = await sql<Array<{ owner_id: string; created_at: Date | string; detail: Record<string, unknown>; harness: string | null }>>`
+    SELECT DISTINCT a.owner_id, a.created_at, jsonb_build_object('file', a.detail->'file', 'file_path', a.detail->'file_path') AS detail, a.harness_slug AS harness
+      FROM harness_shared.code_intel_pushes p
+      JOIN harness_shared.agent_activity a
+        ON a.workspace_id = p.workspace_id AND a.owner_id = p.owner_id
+       AND a.created_at > p.pushed_at AND a.created_at <= p.pushed_at + make_interval(days => ${maxDays}::int)
+       AND a.kind = 'tool' AND a.phase = 'post' AND a.status = 'ok' AND a.tool_name = ANY(${followTools}::text[])
+     WHERE p.workspace_id = ${window.workspaceId} AND p.chars > 0 AND p.leg = ANY(${legs}::text[])
+       AND p.pushed_at >= ${startIso}::timestamptz AND p.pushed_at < ${endIso}::timestamptz
+       AND EXISTS (SELECT 1 FROM unnest(coalesce(p.cited_paths, '{}'::text[])) cp
+         WHERE coalesce(a.detail->>'file', a.detail->>'file_path') = cp OR coalesce(a.detail->>'file', a.detail->>'file_path') LIKE '%/' || cp)`;
+  const harnesses = [...new Set(touches.map(t => t.harness).filter((h): h is string => typeof h === 'string' && h.length > 0))].sort();
+  const roots = await resolveRepoRoots(harnesses, window.workspaceId);
+  const actions: LegAction[] = touches.flatMap(t => {
+    const path = pushActivityRepoPath(t.detail ?? {}, t.harness, roots);
+    return path === null ? [] : [{ kind: 'touch' as const, ownerId: t.owner_id, at: iso(t.created_at), path }];
+  });
+  const { pgLivenessReaders } = await import('./push-leg-liveness');
+  const readers = pgLivenessReaders(sql as unknown as Parameters<typeof pgLivenessReaders>[0], []);
+  const eligibleTriggers: Partial<Record<PushLegId, number | null>> = {};
+  for (const leg of legs as PushLegId[]) {
+    eligibleTriggers[leg] = (await readers.measureLeg(leg, { workspaceId: window.workspaceId, start, end })).eligible;
+  }
+  return {
+    windowStart: startIso, windowEnd: endIso,
+    triggers: pushes.map(p => ({ id: p.id, leg: p.leg, ownerId: p.owner_id, at: iso(p.pushed_at), exposed: true, paths: p.cited_paths ?? [] })),
+    actions,
+    firstExposureAt: Object.fromEntries(first.map(r => [r.leg, iso(r.first_at)])),
+    eligibleTriggers,
+    unmeasured: { ...LEG_OUTCOME_READER_LIMITS },
+  };
+}
+
+/** The native-adoption.ts blob at the running build's commit, read from the registered papercusp checkout. */
+async function runningModuleBlobSha(workspaceId: string, buildSha: string | null): Promise<string | null> {
+  if (!buildSha || !/^[0-9a-f]{7,64}$/.test(buildSha)) return null;
+  try {
+    const root = (await registryRepoRoots(['papercusp'], workspaceId)).get('papercusp');
+    if (!root) return null;
+    const [{ execFile }, { promisify }] = await Promise.all([import('node:child_process'), import('node:util')]);
+    const { stdout } = await promisify(execFile)('git', ['-C', root, 'rev-parse', `${buildSha}:${NATIVE_ADOPTION_MODULE_PATH}`], { timeout: 10_000 });
+    const blob = stdout.trim();
+    return /^[0-9a-f]{40,64}$/.test(blob) ? blob : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The registered instrument's scheduled measurement (run by the plan's daily rubric-rescore). */
+export function codeIntelLegOutcomesRescore() {
+  return {
+    windowMs: LEG_OUTCOME_WINDOW_MS,
+    unit: 'count' as const,
+    scope: 'workspace' as const,
+    resolve: async (window: { workspaceId: string; windowStart: string; windowEnd: string }) => {
+      if (!window.workspaceId.trim()) return { verdict: 'unknown' as const, detail: 'Exact workspace required.' };
+      const [{ getBuildInfo }] = await Promise.all([import('../build-info')]);
+      const sql = getOrgPg().sql;
+      const now = Date.now();
+      const [plan] = await sql<Array<{ content: string | null; schedule: unknown; schedule_active: boolean | null }>>`
+        SELECT content, schedule, schedule_active FROM harness_shared.harness_plans
+         WHERE workspace_id = ${window.workspaceId} AND plan_slug = ${LEG_OUTCOMES_SUBJECT_PLAN}
+         ORDER BY (harness_slug = 'papercusp') DESC LIMIT 1`;
+      const [previous] = await sql<Array<{ ts: string | number }>>`
+        SELECT ts FROM harness_shared.audit_log WHERE workspace_id = ${window.workspaceId} AND action = ${LEG_OUTCOMES_ACTION}
+         ORDER BY ts DESC LIMIT 1`;
+      const table = plan?.content ? extractPushLegDesignTable(plan.content) : null;
+      const tableHash = table ? pushLegDesignTableHash(table) : null;
+      const divergence = !table ? ['The subject plan has no ## Design push-leg table.']
+        : [...pushLegDesignDivergence(parsePushLegDesignTable(table)),
+          ...(tableHash === PUSH_LEG_DESIGN_TABLE_SHA256 ? [] : [`The plan's Design table hash ${tableHash} differs from the pinned ${PUSH_LEG_DESIGN_TABLE_SHA256}.`])];
+      const schedule = legOutcomeScheduleVerdict({ schedule: plan?.schedule ?? null, active: plan?.schedule_active ?? null,
+        latestScoreAt: previous ? new Date(Number(previous.ts)).toISOString() : null, now });
+      const buildSha = getBuildInfo().sha ?? null;
+      const fingerprint = legOutcomeCheckFingerprint(await runningModuleBlobSha(window.workspaceId, buildSha), tableHash);
+      let outcomes: LegOutcome[] = [];
+      let readError: string | null = null;
+      try {
+        outcomes = computeLegOutcomes(await readLegOutcomeInput(window, sql));
+      } catch (err) {
+        readError = err instanceof Error ? err.message : String(err);
+      }
+      const rating = rateLegOutcomes(outcomes);
+      const scheduleBroken = schedule.status === 'no-schedule' || schedule.status === 'unarmed'
+        || schedule.status === 'interval-unknown' || schedule.status === 'interval-too-long';
+      const verdict = divergence.length || scheduleBroken ? 'fail' as const
+        : readError || !fingerprint ? 'unknown' as const : rating.verdict;
+      const legs = Object.keys(LEG_OUTCOME_TABLE);
+      await sql`INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+        VALUES (${`ci-leg-outcomes-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`}, ${now}, ${LEG_OUTCOMES_ACTOR},
+          ${LEG_OUTCOMES_ACTION}, ${LEG_OUTCOMES_INSTRUMENT_KEY},
+          ${sql.json(JSON.parse(JSON.stringify({ verdict, fingerprint, buildSha, legs, schedule, divergence, readError, rating, outcomes, window })))},
+          ${window.workspaceId})`;
+      const detail = `fingerprint ${fingerprint ?? 'unknown'}; legs ${legs.join(',')}; schedule ${schedule.status}; `
+        + (divergence.length ? `Design-table divergence: ${divergence.join(' ')} ` : '')
+        + (readError ? `read error: ${readError}; ` : '') + rating.reason;
+      return { verdict, detail, value: rating.measured.length };
+    },
+  };
 }

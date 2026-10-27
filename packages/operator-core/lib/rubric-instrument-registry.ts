@@ -62,6 +62,7 @@ import {
   NATIVE_ADOPTION_INSTRUMENT_KEYS, measureNativeAdoptionWindow,
   nativeAdoptionCriterionForInstrument, rateNativeAdoption,
   NATIVE_PUSH_INSTRUMENT_KEYS, measureNativePushOutcomesWindow, nativePushCriterionForInstrument, rateNativePushOutcomes,
+  LEG_OUTCOMES_INSTRUMENT_KEY, codeIntelLegOutcomesRescore,
 } from './code-intelligence/native-adoption';
 import {
   WORK_OVERHEAD_INSTRUMENT_KEYS, measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
@@ -814,6 +815,8 @@ export function platformComputedInstrumentKeys(): string[] {
     CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
     // code-intel-delivery-and-outcomes-2026-10-26 P-003 (R-1): the per-leg/op liveness check.
     CODE_INTEL_LIVENESS_INSTRUMENT_KEY,
+    // code-intel-delivery-and-outcomes-2026-10-26 P-013 (R-10): per-leg outcome chains.
+    LEG_OUTCOMES_INSTRUMENT_KEY,
     // code-cleanup-campaigns-2026-10-26 P-008: the campaign outcome rubric's three metrics.
     ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
   ];
@@ -846,6 +849,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       resolvedBy: 'scorecards:instrument-snapshots',
       ...(key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() }
         : key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY ? { rescore: codeIntelLivenessRescore() }
+        : key === LEG_OUTCOMES_INSTRUMENT_KEY ? { rescore: codeIntelLegOutcomesRescore() }
         : cleanupMetric ? { rescore: cleanupOutcomeRescore(cleanupMetric) } : reuseMetric ? { rescore: {
         windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' || reuseMetric === 'providerOutcomes' ? 'count' as const : '%' as const,
         scope: 'harness' as const,

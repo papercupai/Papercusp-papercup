@@ -24,6 +24,16 @@
  * Recovery is automatic: an entry expires after `ttlMs`, the next request for that model may land
  * on the account again, and a refusal there is failed over transparently and re-recorded. A 2xx
  * for the pair clears it immediately. Nothing here needs a manual flip in either direction.
+ *
+ * Two horizons, two questions (WI-6554700010030462). `ttlMs` answers "may selection RE-TRY this
+ * account for this model yet?" — a short re-check window, because a re-try inside a live request
+ * costs one transparently-failed-over 400. `reportHorizonMs` answers "do we still BELIEVE this
+ * account refuses this model?" — what `/stats.codexServiceableByModel` publishes to the launch
+ * preflights (psu, the consult router). Those preflights decide whether to start a whole agent
+ * session; when the belief vanished with the 30-minute re-check window, a model the only healthy
+ * account refuses read as "unknown", the launch went ahead and paid a session that 429-aborted
+ * (measured 2026-10-27 for gpt-5.6-sol). The belief now persists until a 2xx for the pair clears
+ * it, a fresh refusal re-confirms it, or the report horizon passes without either.
  */
 
 /** Matches the ChatGPT codex backend's definitive model refusal. Shared with the launch-time
@@ -35,6 +45,13 @@ export const CODEX_MODEL_REFUSAL_RE = /model is not supported|unsupported model|
  *  attempt per window. Env-tunable. */
 export const DEFAULT_CODEX_MODEL_REFUSAL_TTL_MS =
   Number(process.env.PAPERCUSP_GATEWAY_CODEX_MODEL_REFUSAL_TTL_MS) || 30 * 60_000;
+
+/** How long a refusal stays BELIEVED (reported to launch preflights) after its latest
+ *  confirmation, absent a 2xx for the pair. Never shorter than the re-check TTL. A model refusal is
+ *  a plan entitlement, which changes on the order of days, so a day bounds how long a recovered
+ *  entitlement can go unnoticed when nothing else re-probes it. Env-tunable. */
+export const DEFAULT_CODEX_MODEL_REFUSAL_REPORT_HORIZON_MS =
+  Number(process.env.PAPERCUSP_GATEWAY_CODEX_MODEL_REFUSAL_REPORT_HORIZON_MS) || 24 * 60 * 60_000;
 
 /** Upper bound on the error body read to classify a 4xx. Real refusal bodies are ~120 bytes. */
 export const CODEX_REFUSAL_BODY_MAX_BYTES = 16 * 1024;
@@ -65,47 +82,71 @@ export function codexModelRefusalDetail(body: string): string {
 export interface CodexModelRefusalEntry {
   accountId: string;
   model: string;
-  /** First refusal of the CURRENT episode (epoch ms). */
+  /** First refusal of the CURRENT belief episode (epoch ms) — kept across re-check windows until a
+   *  2xx clears the pair or the report horizon lapses. */
   since: number;
   /** Most recent refusal (epoch ms). */
   lastAt: number;
-  /** When the account becomes eligible for this model again (epoch ms). */
+  /** When selection may re-try the account for this model (epoch ms). */
   until: number;
+  /** Until when the refusal is still believed and reported to launch preflights (epoch ms). */
+  reportUntil: number;
   /** Refusals observed this episode. */
   hits: number;
   detail: string;
 }
 
 export interface CodexModelRefusalRegistry {
-  /** Record a refusal. Returns true when this STARTS an episode (the pair was not already marked),
-   *  so callers can log/alert on the transition instead of on every request. */
+  /** Record a refusal. Returns true when this STARTS a selection exclusion (the pair was not
+   *  already excluded), so callers can log/alert on the transition instead of on every request. */
   record(accountId: string, model: string, detail: string): boolean;
-  /** Is `accountId` currently marked as refusing `model`? */
+  /** Is `accountId` currently excluded from selection for `model`? (the short re-check window) */
   isRefused(accountId: string, model: string): boolean;
+  /** Is `accountId` still believed to refuse `model`? True from a refusal until a 2xx clears it or
+   *  the report horizon passes — what launch preflights are told (WI-6554700010030462). */
+  isBelievedRefused(accountId: string, model: string): boolean;
   /** A 2xx for the pair — clear it now rather than waiting out the TTL. Returns true if it was marked. */
   clear(accountId: string, model: string): boolean;
-  /** Live (unexpired) entries, for /admin/stats. */
+  /** Entries currently excluded from selection, for /admin/stats. */
   snapshot(): CodexModelRefusalEntry[];
+  /** Every still-believed entry, including those whose re-check window has lapsed. */
+  believedSnapshot(): CodexModelRefusalEntry[];
 }
 
 const keyOf = (accountId: string, model: string): string => `${accountId}\u0000${model.trim().toLowerCase()}`;
 
 export function createCodexModelRefusalRegistry(
-  opts: { ttlMs?: number; now?: () => number; maxEntries?: number } = {},
+  opts: { ttlMs?: number; reportHorizonMs?: number; now?: () => number; maxEntries?: number } = {},
 ): CodexModelRefusalRegistry {
   const ttlMs = opts.ttlMs ?? DEFAULT_CODEX_MODEL_REFUSAL_TTL_MS;
+  const reportHorizonMs = Math.max(ttlMs, opts.reportHorizonMs ?? DEFAULT_CODEX_MODEL_REFUSAL_REPORT_HORIZON_MS);
   const now = opts.now ?? (() => Date.now());
   const maxEntries = opts.maxEntries ?? 512;
   const entries = new Map<string, CodexModelRefusalEntry>();
 
-  const live = (key: string, at: number): CodexModelRefusalEntry | undefined => {
+  /** The entry while it is still believed; deleted once the report horizon has passed. */
+  const believed = (key: string, at: number): CodexModelRefusalEntry | undefined => {
     const entry = entries.get(key);
     if (!entry) return undefined;
-    if (entry.until <= at) {
+    if (entry.reportUntil <= at) {
       entries.delete(key);
       return undefined;
     }
     return entry;
+  };
+  /** The entry while selection still excludes the account for the model. */
+  const excluded = (key: string, at: number): CodexModelRefusalEntry | undefined => {
+    const entry = believed(key, at);
+    return entry && entry.until > at ? entry : undefined;
+  };
+  const collect = (pick: (key: string, at: number) => CodexModelRefusalEntry | undefined): CodexModelRefusalEntry[] => {
+    const at = now();
+    const out: CodexModelRefusalEntry[] = [];
+    for (const key of [...entries.keys()]) {
+      const entry = pick(key, at);
+      if (entry) out.push({ ...entry });
+    }
+    return out;
   };
 
   return {
@@ -113,37 +154,40 @@ export function createCodexModelRefusalRegistry(
       if (!accountId || !model) return false;
       const at = now();
       const key = keyOf(accountId, model);
-      const existing = live(key, at);
+      const existing = believed(key, at);
       if (existing) {
+        // A re-confirmation: re-arm both horizons. Only a lapsed re-check window counts as a
+        // new exclusion — the re-try just paid one refusal, so the caller logs it again.
+        const startsExclusion = existing.until <= at;
         existing.lastAt = at;
         existing.until = at + ttlMs;
+        existing.reportUntil = at + reportHorizonMs;
         existing.hits += 1;
         existing.detail = detail || existing.detail;
-        return false;
+        return startsExclusion;
       }
       if (entries.size >= maxEntries) {
         const oldest = entries.keys().next().value;
         if (oldest !== undefined) entries.delete(oldest);
       }
-      entries.set(key, { accountId, model, since: at, lastAt: at, until: at + ttlMs, hits: 1, detail });
+      entries.set(key, {
+        accountId, model, since: at, lastAt: at, until: at + ttlMs, reportUntil: at + reportHorizonMs, hits: 1, detail,
+      });
       return true;
     },
     isRefused(accountId, model) {
       if (!accountId || !model) return false;
-      return live(keyOf(accountId, model), now()) !== undefined;
+      return excluded(keyOf(accountId, model), now()) !== undefined;
+    },
+    isBelievedRefused(accountId, model) {
+      if (!accountId || !model) return false;
+      return believed(keyOf(accountId, model), now()) !== undefined;
     },
     clear(accountId, model) {
       if (!accountId || !model) return false;
       return entries.delete(keyOf(accountId, model));
     },
-    snapshot() {
-      const at = now();
-      const out: CodexModelRefusalEntry[] = [];
-      for (const key of [...entries.keys()]) {
-        const entry = live(key, at);
-        if (entry) out.push({ ...entry });
-      }
-      return out;
-    },
+    snapshot: () => collect(excluded),
+    believedSnapshot: () => collect(believed),
   };
 }

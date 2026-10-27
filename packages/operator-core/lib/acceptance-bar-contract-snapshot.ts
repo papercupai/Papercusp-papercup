@@ -786,6 +786,21 @@ type UnrankedRepairCode = Exclude<AcceptanceBarSnapshotCode, (typeof ACCEPTANCE_
 const everyRepairCodeIsRanked: [UnrankedRepairCode] extends [never] ? true : UnrankedRepairCode = true;
 void everyRepairCodeIsRanked;
 
+/**
+ * EI-27140397957005977: how to find out WHY bound proof went stale, shared by the two codes a
+ * stale row raises. `bar_snapshot_proof_stale` is the obvious one; `bar_snapshot_evidence_plane_unmet`
+ * also fires because the plane is read from current rows only, so a plane whose only row went
+ * stale reads as unmet. Both texts used to say only "re-prove" / "record evidence", which sends a
+ * reader to re-bind when the usual cause is a pinned path that moved (every bg-host restart or a
+ * source edit) and the repair is a same-revision re-measure.
+ */
+export const STALE_PROOF_DIAGNOSIS =
+  'Read plans:get-spec-evidence { specIds, detail:"full" }: each binding\'s currentness.staleReasons names the '
+  + 'stale dimension, and serverMeasurement.movedPaths names the pinned paths that changed since it was measured. '
+  + 'When the spec revision is unchanged and only a pinned path or the environment moved, re-measure at the same '
+  + 'revision (plans:bind-spec-evidence with { fromTestRun } from a fresh run, right before grading rather than hours '
+  + 'ahead); amending the rubric does not clear it.';
+
 export function nextRepair(
   codes: readonly AcceptanceBarSnapshotCode[],
   // Structural, not AcceptanceBarTrace: the lifecycle evaluator re-derives per-phase
@@ -835,7 +850,8 @@ export function nextRepair(
     bar_snapshot_work_contract_missing: 'Promote the BAR/spec revision into the relevant work-item contract.',
     bar_snapshot_work_contract_stale: 'Rebind the open work-item contract to the current spec revision.',
     bar_snapshot_proof_missing: 'Bind evidence at the current spec revision on the declared evidence plane.',
-    bar_snapshot_proof_stale: 'Re-prove the current spec revision; superseded proof does not cover it.',
+    bar_snapshot_proof_stale:
+      'Re-prove the current spec revision; superseded proof does not cover it. ' + STALE_PROOF_DIAGNOSIS,
     bar_snapshot_grading_missing: 'Record a complete independent grading against the current rubric criteria.',
     bar_snapshot_grading_stale: 'Re-grade against the current rubric criteria.',
     bar_snapshot_grading_not_pass: 'Satisfy the BAR and record a pass-equivalent independent rating.',
@@ -880,7 +896,10 @@ export function nextRepair(
       + 'If freshness still reads unknown, read the binding\'s unknownReasons in plans:get-spec-evidence: '
       + 'server-measurement-unavailable:<reason> names why the server could not measure it, and *-current-fingerprint-not-supplied '
       + 'means the binding carries no measurement recipe, so re-bind it with fromTestRun or a measurement.',
-    bar_snapshot_evidence_plane_unmet: "Record current evidence on the BAR's declared evidence plane.",
+    bar_snapshot_evidence_plane_unmet:
+      "Record current evidence on the BAR's declared evidence plane. Only CURRENT rows count toward the plane, "
+      + 'so this also fires when the plane HAS proof that went stale (for example a pinned source path moved). '
+      + 'Check that before recording new proof: ' + STALE_PROOF_DIAGNOSIS,
     bar_snapshot_evidence_runtime_unmet:
       "Measure on the BAR's declared evidenceRuntime (dev:pipeline_position servingRuntimes names its build) and bind evidence with details.runtime set to it — green main is only required when that runtime IS release-operator.",
   };

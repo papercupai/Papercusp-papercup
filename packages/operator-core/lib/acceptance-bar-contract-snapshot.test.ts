@@ -11,6 +11,7 @@ import {
   nextRepair,
   projectAcceptanceBarContractSnapshot,
   readAcceptanceBarContractSnapshot,
+  STALE_PROOF_DIAGNOSIS,
   type AcceptanceBarContractSnapshotInput,
   type AcceptanceBarEvidenceSource,
   type AcceptanceBarPlanItemSource,
@@ -1478,6 +1479,57 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
         codes: expect.arrayContaining(['bar_snapshot_evidence_plane_unmet']),
       }),
     ]));
+  });
+
+  // EI-27140397957005977: the plane is read from CURRENT rows only, so a plane whose only proof
+  // went stale (a pinned path moved, e.g. after a bg-host restart) reads as unmet. The repair used
+  // to say only "record evidence", which hid that the proof exists and needs a re-measure.
+  it('names the stale-proof diagnosis when the declared plane has only stale proof', () => {
+    const input = provedFixture(1);
+    const bar = input.rubrics.rows[0]!.criteria[0]!;
+    const clause = input.clauses.rows[0]!;
+    bar.evidencePlane = 'live';
+    bar.barHash = computeAcceptanceBarHash(bar);
+    const barSetHash = computeAcceptanceBarSetHash([bar]);
+    input.rubrics.rows[0]!.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    clause.sourceBar!.barHash = bar.barHash;
+    clause.sourceBar!.barSetHash = barSetHash;
+    clause.sourceBar!.evidencePlane = 'live';
+    const base = input.evidence.rows[0]!;
+    const staleLive: AcceptanceBarEvidenceSource = {
+      ...base,
+      id: 98,
+      testRunId: 98,
+      evidenceRef: 'test:live-stale',
+      bindingFingerprint: 'binding-live-stale',
+      details: { ...base.details, evidencePlane: 'live' },
+      currentness: { ...base.currentness, overall: 'stale', staleReasons: ['source-stale'] },
+    };
+    input.evidence.rows = [...input.evidence.rows, staleLive];
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    const trace = snapshot.bars[0]!;
+    // The plane HAS proof, but it is stale, so it does not count: the case the old text hid.
+    expect(trace.proof.history?.some((row) => row.id === 98 && row.currentness.overall === 'stale')).toBe(true);
+    expect(trace.proof.evidencePlanes).not.toContain('live');
+    expect(trace.readiness.codes).toContain('bar_snapshot_evidence_plane_unmet');
+    expect(snapshot.readiness.nextRepair).toMatchObject({ code: 'bar_snapshot_evidence_plane_unmet', barKey: 'R-1' });
+    expect(snapshot.readiness.nextRepair?.action).toContain(STALE_PROOF_DIAGNOSIS);
+  });
+
+  it('names where to read why proof went stale, and the same-revision re-measure, on both stale codes', () => {
+    expect(STALE_PROOF_DIAGNOSIS).toMatch(/plans:get-spec-evidence \{ specIds, detail:"full" \}/);
+    expect(STALE_PROOF_DIAGNOSIS).toMatch(/currentness\.staleReasons/);
+    expect(STALE_PROOF_DIAGNOSIS).toMatch(/serverMeasurement\.movedPaths/);
+    expect(STALE_PROOF_DIAGNOSIS).toMatch(/\{ fromTestRun \}/);
+    for (const code of ['bar_snapshot_proof_stale', 'bar_snapshot_evidence_plane_unmet'] as const) {
+      const repair = nextRepair([code], [{ barKey: 'R-1', readiness: { codes: [code] } }]);
+      expect(repair).toMatchObject({ code, barKey: 'R-1' });
+      expect(repair?.action).toContain(STALE_PROOF_DIAGNOSIS);
+    }
+    expect(nextRepair(['bar_snapshot_proof_stale'], [{ barKey: 'R-1', readiness: { codes: ['bar_snapshot_proof_stale'] } }])?.action)
+      .toMatch(/^Re-prove the current spec revision; superseded proof does not cover it\./);
   });
 
   it.each([

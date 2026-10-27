@@ -124,17 +124,30 @@ describe('shared snapshot-backed push channel', () => {
       symbols: [{ name: 'changed', line: 1 }] };
     const measured = (patch = {}) => ({ ...input, root,
       incidentAttribution: { status: 'measured', recentEdits: [{ ...row, ...patch }] } }) as PushInput;
+    // Keep the positive fixture independent of wall-clock scheduling; test the
+    // production deadline value and its fail-closed path explicitly below.
+    const liveSignal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(liveSignal);
     try {
       await writeFile(join(root, 'a.ts'), text);
       expect((await readPushIncidentAttribution(measured(), ['a.ts'], sql)).changedSymbols).toEqual(['changed:a.ts:1']);
+      expect(timeout).toHaveBeenCalledWith(75);
       for (const patch of [{ workspace: 'foreign' }, { root: '/foreign' }, { harness: 'foreign' },
         { agentId: 'another' }, { at: Date.now() - 86_400_001 }, { beforeSha256: sha256 }]) {
         expect((await readPushIncidentAttribution(measured(patch), ['a.ts'], sql)).changedSymbols).toEqual([]);
       }
       expect((await readPushIncidentAttribution(measured(), ['unrelated.ts'], sql)).changedSymbols).toEqual([]);
+      const expired = new AbortController();
+      expired.abort();
+      timeout.mockReturnValue(expired.signal);
+      expect((await readPushIncidentAttribution(measured(), ['a.ts'], sql)).changedSymbols).toEqual([]);
+      timeout.mockReturnValue(liveSignal);
       await writeFile(join(root, 'a.ts'), 'export const changed = 4;');
       expect((await readPushIncidentAttribution(measured(), ['a.ts'], sql)).changedSymbols).toEqual([]);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      timeout.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('automatically enriches observed failures, including structured native digests beyond the recall prefix', async () => {

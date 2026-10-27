@@ -414,4 +414,44 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
     // …but only the non-refusing ones can serve THIS model.
     expect(stats.codexServiceableByModel).toEqual({ 'gpt-5.5': expected });
   });
+
+  // WI-6554700010030462: live 2026-10-27 — the per-model reading for gpt-5.6-sol vanished from /stats
+  // when the 30-minute selection re-check lapsed, so psu and the consult router read the model as
+  // "unknown", launched it, and paid a convert that 429-aborted. The reading must outlive the re-check.
+  it('/stats keeps the per-model reading after the selection re-check lapses, until the report horizon', async () => {
+    let clock = 5_000_000;
+    const accounts = await Promise.all(['chatgpt-a', 'chatgpt-b'].map(async accountId => ({ accountId, home: await codexHome(accountId) })));
+    const refusal = `{"detail":"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."}`;
+    const fetchImpl = vi.fn(async () =>
+      new Response(refusal, { status: 400, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => accounts,
+      codexCliPool: createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => '' }))),
+      codexOAuthProxy: true, fetchImpl, selfHeal: { enabled: false },
+      codexModelRefusalPolicy: { ttlMs: 60_000, reportHorizonMs: 600_000, now: () => clock },
+    });
+    const port = await gateway.listen(0);
+    for (const owner of ['lapse-session-1', 'lapse-session-2']) {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: owner },
+        body: JSON.stringify({ model: 'gpt-5.6-sol', input: [], stream: true }),
+      });
+      await response.text();
+    }
+    const read = async () => await (await fetch(`http://127.0.0.1:${port}/stats`)).json() as {
+      codexServiceableByModel?: Record<string, number>;
+      codexModelRefusals: Array<{ accountId: string; model: string }>;
+    };
+    expect((await read()).codexServiceableByModel).toEqual({ 'gpt-5.6-sol': 0 });
+
+    clock += 60_001; // selection may re-try both accounts now…
+    const lapsed = await read();
+    expect(lapsed.codexModelRefusals).toEqual([]);
+    // …but the launch preflights are still told nobody serves the model.
+    expect(lapsed.codexServiceableByModel).toEqual({ 'gpt-5.6-sol': 0 });
+
+    clock += 600_000; // the belief ends at the report horizon with nothing re-confirming it
+    expect((await read()).codexServiceableByModel).toBeUndefined();
+  });
 });

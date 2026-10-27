@@ -20,8 +20,15 @@ import {
   type NativeAdoptionInvocation,
   type NativeAdoptionShellCommand,
   type NativeAdoptionTarget,
+  CANNOT_OBSERVE_LEGS, LEG_OUTCOME_TABLE, LEG_OUTCOME_MIN_SAMPLE, LEG_OUTCOMES_INSTRUMENT_KEY, PUSH_LEG_DESIGN_TABLE_SHA256,
+  computeLegOutcomes, rateLegOutcomes, legOutcomeScheduleVerdict, legOutcomeScheduleIntervalMs, legOutcomeCheckFingerprint,
+  extractPushLegDesignTable, parsePushLegDesignTable, pushLegDesignDivergence, pushLegDesignTableHash,
+  type LegAction, type LegOutcome, type LegTrigger,
 } from './native-adoption';
 import { getRegisteredInstrument, platformComputedInstrumentKeys } from '../rubric-instrument-registry';
+import { PUSH_LEG_FLAGS, type PushLegId } from './push-channel';
+import { FLAGS } from '@papercusp/flags';
+import { readFileSync } from 'node:fs';
 
 const WINDOW = { workspaceId: 'ws-test', windowStart: '2026-10-01T00:00:00.000Z', windowEnd: '2026-10-04T00:00:00.000Z' };
 const at = '2026-10-02T12:00:00.000Z';
@@ -362,5 +369,277 @@ describe('instrument registration', () => {
       expect(platformComputedInstrumentKeys()).toContain(key);
       expect(getRegisteredInstrument(key)).toMatchObject({ evaluator: 'platform', resolvedBy: 'scorecards:instrument-snapshots' });
     }
+  });
+});
+
+// ── P-013 (code-intel-delivery-and-outcomes-2026-10-26 R-7 / R-10): per-leg outcome chains ──
+
+const H = 3_600_000;
+const D = 24 * H;
+const LEGS = Object.keys(PUSH_LEG_FLAGS) as PushLegId[];
+const SCORED = { windowStart: '2026-10-10T00:00:00.000Z', windowEnd: '2026-10-17T00:00:00.000Z' };
+const EXPOSED_AT = Date.parse('2026-10-11T00:00:00.000Z');
+const BASELINE_AT = Date.parse('2026-10-05T00:00:00.000Z');
+const isoMs = (ms: number) => new Date(ms).toISOString();
+// One path per trigger, so a trigger's window never sees a neighbouring trigger's actions.
+const trig = (leg: string, i: number, exposed: boolean, owner = 'agent-a'): LegTrigger => ({
+  id: `${leg}-${exposed ? 'x' : 'b'}-${i}`, leg, ownerId: owner, exposed, paths: [`src/${leg}-${exposed ? 'x' : 'b'}${i}.ts`],
+  at: isoMs((exposed ? EXPOSED_AT : BASELINE_AT) + i * H),
+});
+const act = (kind: LegAction['kind'], _leg: string, from: LegTrigger, afterMs: number, owner: string | null = 'agent-a', path = from.paths[0]!): LegAction =>
+  ({ kind, ownerId: owner, path, at: isoMs(Date.parse(from.at) + afterMs) });
+
+/** Golden fixture: 20 exposed (+20 baseline for 'avoided' legs) per leg, with known chains and negatives. */
+function goldenFixture(): { triggers: LegTrigger[]; actions: LegAction[] } {
+  const triggers: LegTrigger[] = [];
+  const actions: LegAction[] = [];
+  for (const leg of LEGS) {
+    const spec = LEG_OUTCOME_TABLE[leg];
+    const exposed = Array.from({ length: 20 }, (_, i) => trig(leg, i, true));
+    triggers.push(...exposed);
+    if (spec.resultKey === 'time to first correct edit') {
+      exposed.slice(0, 5).forEach(t => actions.push(act('correct-edit', leg, t, 2 * H)));
+      // +36 h: outside the 1-day window, inside a 2-day one (the D-014 boundary).
+      exposed.slice(5, 15).forEach(t => actions.push(act('correct-edit', leg, t, 36 * H)));
+      actions.push(act('correct-edit', leg, exposed[15]!, H, 'agent-b')); // another agent: not attributed
+      actions.push(act('correct-edit', leg, exposed[16]!, H, 'agent-a', 'src/elsewhere.ts')); // another path: not attributed
+      actions.push(act('touch', leg, exposed[17]!, H / 2)); // follow-through without a correct edit
+    } else if (spec.resultKey === 'interface follow-through rate') {
+      exposed.slice(0, 12).forEach(t => actions.push(act('touch', leg, t, H)));
+      exposed.slice(12, 15).forEach(t => actions.push(act('touch', leg, t, H, 'agent-b')));
+      exposed.slice(15, 17).forEach(t => actions.push(act('touch', leg, t, 36 * H)));
+    } else if (spec.resultKey !== 'cannot-observe') {
+      const kind = spec.resultKey === 'clones avoided' ? 'clone' as const : 'gate-red' as const;
+      const baseline = Array.from({ length: 20 }, (_, i) => trig(leg, i, false));
+      triggers.push(...baseline);
+      baseline.slice(0, 10).forEach(t => actions.push(act(kind, leg, t, 2 * H, kind === 'clone' ? 'agent-a' : 'gate')));
+      exposed.slice(0, 4).forEach(t => actions.push(act(kind, leg, t, 2 * H, kind === 'clone' ? 'agent-a' : 'gate')));
+      exposed.slice(4, 8).forEach(t => actions.push(act(kind, leg, t, 36 * H, kind === 'clone' ? 'agent-a' : 'gate')));
+      exposed.slice(8, 10).forEach(t => actions.push(act(kind, leg, t, 2 * H, kind === 'clone' ? 'agent-b' : 'gate', 'src/elsewhere.ts')));
+    }
+  }
+  return { triggers, actions };
+}
+const byLeg = (outcomes: LegOutcome[]) => new Map(outcomes.map(o => [o.leg, o]));
+const wider = Object.fromEntries(LEGS.map(leg => [leg, LEG_OUTCOME_TABLE[leg].attributionWindowDays + 1])) as Record<PushLegId, number>;
+
+describe('P-013 leg outcome table covers the push-leg registry (R-7)', () => {
+  it('maps exactly the PUSH_LEG_FLAGS keys, each to a named key, a control and a stated window/denominator/minimum', () => {
+    expect(Object.keys(LEG_OUTCOME_TABLE).sort()).toEqual([...LEGS].sort());
+    for (const leg of LEGS) {
+      const spec = LEG_OUTCOME_TABLE[leg];
+      expect(['time to first correct edit', 'gate reds avoided', 'clones avoided', 'interface follow-through rate', 'cannot-observe']).toContain(spec.resultKey);
+      expect(spec.minSample, leg).toBe(LEG_OUTCOME_MIN_SAMPLE);
+      expect(spec.attributionWindowDays, leg).toBeGreaterThan(0);
+      expect(spec.denominator.length, leg).toBeGreaterThan(20);
+      // D-014: an 'avoided' key always names its control population.
+      if (spec.resultKey.endsWith('avoided')) expect(spec.control, leg).toBe('pre-exposure baseline');
+      expect(spec.resultKey === 'cannot-observe', leg).toBe(CANNOT_OBSERVE_LEGS.includes(leg));
+    }
+    expect([...CANNOT_OBSERVE_LEGS]).toEqual(['notes']);
+  });
+
+  it('each Design flag cell names the FLAGS member the leg is gated by', () => {
+    for (const leg of LEGS) {
+      const name = LEG_OUTCOME_TABLE[leg].flag.replace(/ \(shared\)$/, '') as keyof typeof FLAGS;
+      expect(FLAGS[name], leg).toBe(PUSH_LEG_FLAGS[leg]);
+    }
+  });
+});
+
+describe('P-013 Design push-leg table pin (R-7 doc-claims)', () => {
+  const copy = readFileSync(new URL('./push-leg-design-table.md', import.meta.url), 'utf8');
+  const table = extractPushLegDesignTable(copy)!;
+
+  it('the tree copy hashes to the pinned hash and agrees with the code map row for row', () => {
+    expect(table).not.toBeNull();
+    expect(pushLegDesignTableHash(table)).toBe(PUSH_LEG_DESIGN_TABLE_SHA256);
+    const rows = parsePushLegDesignTable(table);
+    expect(rows.map(r => r.leg).sort()).toEqual([...LEGS].sort());
+    expect(pushLegDesignDivergence(rows)).toEqual([]);
+  });
+
+  it('fails on a renamed result key, a missing row, an extra row, a wrong control or a wrong flag', () => {
+    const rows = parsePushLegDesignTable(table);
+    const edit = (leg: string, patch: Partial<(typeof rows)[number]>) => rows.map(r => (r.leg === leg ? { ...r, ...patch } : r));
+    expect(pushLegDesignDivergence(edit('interface', { resultKey: 'cross-agent breakages avoided' })).join(' ')).toMatch(/interface: Design result key/);
+    expect(pushLegDesignDivergence(rows.filter(r => r.leg !== 'clone')).join(' ')).toMatch(/clone is missing/);
+    expect(pushLegDesignDivergence([...rows, { ...rows[0]!, leg: 'reuse-provenance' }]).join(' ')).toMatch(/reuse-provenance is not a push leg/);
+    expect(pushLegDesignDivergence(edit('incident', { control: 'none: not an avoided key' })).join(' ')).toMatch(/incident: Design control/);
+    expect(pushLegDesignDivergence(edit('grep', { flag: 'CODE_INTEL_PUSH_RESUME' })).join(' ')).toMatch(/grep: Design flag/);
+    expect(pushLegDesignDivergence(edit('notes', { resultKey: 'cannot-observe: some other reason' })).join(' ')).toMatch(/notes: Design result key/);
+    // A table edit changes the hash the live instrument compares with the pin.
+    expect(pushLegDesignTableHash(table.replace('interface follow-through rate', 'cross-agent breakages avoided'))).not.toBe(PUSH_LEG_DESIGN_TABLE_SHA256);
+  });
+
+  it('extracts only the push-leg table, stopping at the first non-table line', () => {
+    const md = `## Design\n\n### Other\n| a |\n\n### Push-leg table (x)\n\nprose\n\n${table}\n\nreuse-<provider> rows...\n| stray |\n`;
+    expect(extractPushLegDesignTable(md)).toBe(table);
+    expect(extractPushLegDesignTable('## Design\nno table here')).toBeNull();
+  });
+});
+
+describe('P-013 outcome computation over the golden fixture (R-7 truth table)', () => {
+  const { triggers, actions } = goldenFixture();
+  const outcomes = computeLegOutcomes({ ...SCORED, triggers, actions });
+  const legs = byLeg(outcomes);
+
+  it('emits one outcome per PUSH_LEG_FLAGS leg with exactly its Design-table result key', () => {
+    expect(outcomes.map(o => o.leg).sort()).toEqual([...LEGS].sort());
+    for (const leg of LEGS) {
+      expect(legs.get(leg)!.resultKey, leg).toBe(LEG_OUTCOME_TABLE[leg].resultKey);
+      expect(legs.get(leg)!.result.key, leg).toBe(LEG_OUTCOME_TABLE[leg].resultKey);
+      expect(legs.get(leg)!.exposure, leg).toBe(20);
+    }
+  });
+
+  it('time to first correct edit: median over the recipient\'s own correct edits on a cited path inside 1 d', () => {
+    for (const leg of ['grep', 'first-touch', 'intent', 'resume'] as const) {
+      const o = legs.get(leg)!;
+      // 5 at +2 h attributed; 10 at +36 h, another agent's edit and another path's edit are not.
+      expect(o.result, leg).toMatchObject({ status: 'measured', value: 2 * H, unit: 'ms', sample: 20 });
+      expect(o.followThrough, leg).toEqual({ measured: 20, positive: 6, rate: 6 / 20 });
+    }
+  });
+
+  it('interface follow-through rate: only the recipient, only inside the window', () => {
+    const o = legs.get('interface')!;
+    expect(o.control).toBe('none');
+    expect(o.result).toMatchObject({ status: 'measured', value: 12 / 20, unit: 'share', sample: 20 });
+  });
+
+  it('gate reds / clones avoided: pre-exposure baseline share minus exposed share', () => {
+    for (const leg of ['incident', 'completion', 'antipattern', 'clone'] as const) {
+      const o = legs.get(leg)!;
+      expect(o.control, leg).toBe('pre-exposure baseline');
+      expect(o.result, leg).toMatchObject({ status: 'measured', unit: 'share-difference', sample: 20 });
+      expect((o.result as { value: number }).value, leg).toBeCloseTo(0.5 - 0.2, 10);
+      expect((o.result as { detail: string }).detail, leg).toContain('2026-10-04T00:00:00.000Z');
+    }
+  });
+
+  it('notes is cannot-observe with the Design-table reason, and still reports exposure', () => {
+    const o = legs.get('notes')!;
+    expect(o.result).toEqual({ status: 'cannot-observe', key: 'cannot-observe', reason: LEG_OUTCOME_TABLE.notes.cannotObserveReason });
+    expect(o.exposure).toBe(20);
+  });
+
+  it('D-014 boundary: widening each attribution window by one day changes the fixture result', () => {
+    const widened = byLeg(computeLegOutcomes({ ...SCORED, triggers, actions, attributionWindowDays: wider }));
+    for (const leg of LEGS.filter(l => !CANNOT_OBSERVE_LEGS.includes(l))) {
+      expect(widened.get(leg)!.result, leg).not.toEqual(legs.get(leg)!.result);
+      expect(widened.get(leg)!.attributionWindowDays, leg).toBe(2);
+    }
+    expect(widened.get('grep')!.result).toMatchObject({ value: 36 * H });
+    expect(widened.get('interface')!.result).toMatchObject({ value: 14 / 20 });
+    expect((widened.get('incident')!.result as { value: number }).value).toBeCloseTo(0.5 - 0.4, 10);
+  });
+
+  it('rejects an invalid window', () => {
+    expect(() => computeLegOutcomes({ windowStart: SCORED.windowEnd, windowEnd: SCORED.windowStart, triggers, actions })).toThrow(/valid/);
+  });
+});
+
+describe('P-013 insufficient-data and unmeasured (SPEC-P-013-B)', () => {
+  const { triggers, actions } = goldenFixture();
+  const observable = LEGS.filter(l => !CANNOT_OBSERVE_LEGS.includes(l));
+
+  it('zero exposure reports insufficient-data, never zero benefit or a number', () => {
+    const outcomes = byLeg(computeLegOutcomes({ ...SCORED, triggers: triggers.filter(t => !t.exposed), actions }));
+    for (const leg of observable) {
+      expect(outcomes.get(leg)!.result, leg).toMatchObject({ status: 'insufficient-data', reason: 'zero exposure in the scored window' });
+      expect(outcomes.get(leg)!.result).not.toHaveProperty('value');
+    }
+  });
+
+  it('19 exposed triggers (one below the minimum) report insufficient-data; 20 measure', () => {
+    const drop = new Set(LEGS.map(leg => `${leg}-x-19`));
+    const outcomes = byLeg(computeLegOutcomes({ ...SCORED, triggers: triggers.filter(t => !drop.has(t.id)), actions }));
+    for (const leg of observable) expect(outcomes.get(leg)!.result.status, leg).toBe('insufficient-data');
+  });
+
+  it('fewer than 20 eligible triggers from the independent source report insufficient-data', () => {
+    const eligibleTriggers = Object.fromEntries(LEGS.map(leg => [leg, 19]));
+    const outcomes = byLeg(computeLegOutcomes({ ...SCORED, triggers, actions, eligibleTriggers }));
+    for (const leg of observable) expect(outcomes.get(leg)!.result, leg).toMatchObject({ status: 'insufficient-data', reason: expect.stringMatching(/^19 eligible/) });
+  });
+
+  it('a baseline below the minimum leaves an avoided key insufficient-data', () => {
+    const outcomes = byLeg(computeLegOutcomes({ ...SCORED, triggers: triggers.filter(t => t.id !== 'incident-b-0'), actions }));
+    expect(outcomes.get('incident')!.result).toMatchObject({ status: 'insufficient-data', reason: expect.stringMatching(/^19 baseline/) });
+  });
+
+  it('a reader limit reports unmeasured with its reason, never a number', () => {
+    const outcomes = byLeg(computeLegOutcomes({ ...SCORED, triggers, actions, unmeasured: { grep: 'no correct-edit ledger' } }));
+    expect(outcomes.get('grep')!.result).toEqual({ status: 'unmeasured', key: 'time to first correct edit', reason: 'no correct-edit ledger' });
+  });
+});
+
+describe('P-013 rating (R-10 more-than-half rule)', () => {
+  const { triggers, actions } = goldenFixture();
+  const measured = computeLegOutcomes({ ...SCORED, triggers, actions });
+
+  it('passes when every observable leg is measured; cannot-observe is excluded from both sides', () => {
+    expect(rateLegOutcomes(measured)).toMatchObject({ verdict: 'pass', insufficient: [], unmeasured: [] });
+  });
+
+  it('is unknown when more than half of the observable legs are insufficient-data, pass at exactly half', () => {
+    const starve = (legs: readonly string[]) => computeLegOutcomes({ ...SCORED, actions,
+      triggers: triggers.filter(t => !(legs.includes(t.leg) && t.exposed)) });
+    // 9 observable legs (notes excluded): 4 insufficient is not more than half, 5 is.
+    expect(rateLegOutcomes(starve(['grep', 'first-touch', 'intent', 'resume'])).verdict).toBe('pass');
+    expect(rateLegOutcomes(starve(['grep', 'first-touch', 'intent', 'resume', 'interface']))).toMatchObject({ verdict: 'unknown' });
+  });
+
+  it('is unknown when any leg is unmeasured or a leg has no outcome', () => {
+    expect(rateLegOutcomes(computeLegOutcomes({ ...SCORED, triggers, actions, unmeasured: { clone: 'x' } })).verdict).toBe('unknown');
+    expect(rateLegOutcomes(measured.filter(o => o.leg !== 'grep'))).toMatchObject({ verdict: 'unknown', reason: expect.stringContaining('no outcome computed: grep') });
+  });
+});
+
+describe('P-013 re-score schedule and score freshness (SPEC-P-013-C / -D)', () => {
+  const daily = { kind: 'cron', cron: '40 6 * * *', tzid: 'UTC', action: { system: 'rubric-rescore' } };
+  const now = Date.parse('2026-10-27T12:00:00.000Z');
+
+  it('a leg outcome check with no schedule, or a set-but-unarmed one, is not armed (SPEC-P-013-C)', () => {
+    expect(legOutcomeScheduleVerdict({ schedule: null, active: null, latestScoreAt: isoMs(now - H), now })).toMatchObject({ status: 'no-schedule', armed: false });
+    expect(legOutcomeScheduleVerdict({ schedule: daily, active: false, latestScoreAt: isoMs(now - H), now })).toMatchObject({ status: 'unarmed', armed: false });
+    expect(legOutcomeScheduleVerdict({ schedule: daily, active: true, latestScoreAt: isoMs(now - H), now })).toMatchObject({ status: 'fresh', armed: true, intervalMs: D });
+  });
+
+  it('an interval over 24 h or an unreadable one does not count', () => {
+    expect(legOutcomeScheduleVerdict({ schedule: { kind: 'interval', intervalSec: 2 * 86_400 }, active: true, latestScoreAt: null, now }).status).toBe('interval-too-long');
+    expect(legOutcomeScheduleVerdict({ schedule: { kind: 'cron', cron: '0 6 * * 1' }, active: true, latestScoreAt: null, now }).status).toBe('interval-unknown');
+    expect(legOutcomeScheduleIntervalMs({ kind: 'cron', cron: '15 * * * *' })).toBe(H);
+    expect(legOutcomeScheduleIntervalMs({ intervalSec: 3600 })).toBe(H);
+  });
+
+  it('a check with no score, or a latest score older than one interval, is not fresh (SPEC-P-013-D)', () => {
+    expect(legOutcomeScheduleVerdict({ schedule: daily, active: true, latestScoreAt: null, now }).status).toBe('no-score');
+    expect(legOutcomeScheduleVerdict({ schedule: daily, active: true, latestScoreAt: isoMs(now - 25 * H), now }).status).toBe('stale');
+    expect(legOutcomeScheduleVerdict({ schedule: daily, active: true, latestScoreAt: isoMs(now - 23 * H), now }).status).toBe('fresh');
+  });
+});
+
+describe('P-013 check fingerprint (R-10)', () => {
+  const blob = 'a'.repeat(40);
+  const table = 'b'.repeat(64);
+
+  it('carries both the module blob and the Design-table hash, and is unknown without either', () => {
+    expect(legOutcomeCheckFingerprint(blob, table)).toBe(`native-adoption.ts@${blob}+design@${table}`);
+    expect(legOutcomeCheckFingerprint(null, table)).toBeNull();
+    expect(legOutcomeCheckFingerprint(blob, null)).toBeNull();
+    expect(legOutcomeCheckFingerprint('HEAD', table)).toBeNull();
+  });
+
+  it('is not a constant: changing either input changes it', () => {
+    const base = legOutcomeCheckFingerprint(blob, table);
+    expect(legOutcomeCheckFingerprint('c'.repeat(40), table)).not.toBe(base);
+    expect(legOutcomeCheckFingerprint(blob, 'd'.repeat(64))).not.toBe(base);
+  });
+
+  it('is a registered platform instrument with a scheduled rescore', () => {
+    expect(platformComputedInstrumentKeys()).toContain(LEG_OUTCOMES_INSTRUMENT_KEY);
+    expect(getRegisteredInstrument(LEG_OUTCOMES_INSTRUMENT_KEY)).toMatchObject({ evaluator: 'platform' });
   });
 });
