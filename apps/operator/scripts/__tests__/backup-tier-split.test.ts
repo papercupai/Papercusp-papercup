@@ -744,3 +744,44 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     });
   });
 });
+
+describe('papercusp-db-backup globals failure diagnostics', () => {
+  it('records the command exit and bounded stderr without leaving the private temp file', () => {
+    const start = src.indexOf('if [[ -z "$GLOBALS_STDERR" ]]; then');
+    const end = src.indexOf('# ── per-database, parallel directory format', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const globalsBlock = src.slice(start, end);
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-globals-failure-'));
+    try {
+      const harness = [
+        'set -uo pipefail',
+        'PGOUT="$FIXTURE_ROOT"; HOST_BACKUP_APPLICATION_NAME=pcbackup; FAILED=()',
+        'log() { printf "LOG %s\\n" "$*"; }',
+        'run_bounded() { shift; printf "%s" "$FIXTURE_STDERR" >&2; return "$FIXTURE_EXIT"; }',
+        globalsBlock,
+        'printf "FAILED %s\\n" "${FAILED[*]}"',
+      ].join('\n');
+      const run = spawnSync('bash', ['-c', harness], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          FIXTURE_ROOT: dir,
+          FIXTURE_EXIT: '42',
+          FIXTURE_STDERR: `${'x'.repeat(5000)}permission denied`,
+          TMPDIR: dir,
+        },
+      });
+      if (run.error) throw run.error;
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('LOG globals FAIL (exit 42)');
+      expect(run.stdout).toContain('LOG globals stderr (last 4096 bytes):');
+      expect(run.stdout).toContain('permission denied');
+      expect(run.stdout).not.toContain('x'.repeat(5000));
+      expect(run.stdout).toContain('FAILED globals');
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

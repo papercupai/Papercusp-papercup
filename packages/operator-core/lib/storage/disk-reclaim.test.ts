@@ -340,7 +340,8 @@ describe('retention holder evidence', () => {
     const environmentByPath = { '/work': 'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=run:exact' };
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
     let stdin = '';
-    child.stdin.on('data', data => { stdin += data.toString(); });
+    child.stdin.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+    child.stdin.on('data', data => { stdin += data; });
     delegateSpawn.mockImplementationOnce(async (_command, args, _spec, options) => {
       expect(args.join(' ')).toContain('includeMappedFiles: true');
       expect(args.join(' ')).toContain('payload.environmentByPath');

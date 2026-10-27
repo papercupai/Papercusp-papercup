@@ -17,7 +17,8 @@ it('uses current CLI authorization and single-use tickets to deliver two windows
   for (const machine of ['host-a', 'host-b']) {
     const server = createServer((req, res) => {
       let body = '';
-      req.on('data', chunk => { body += String(chunk); });
+      req.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+      req.on('data', chunk => { body += chunk; });
       req.on('end', () => {
         seen.push({ machine, path: req.url!, workspace: String(req.headers['x-papercusp-workspace']),
           user: String(req.headers[HOSTED_PRINCIPAL_USER_HEADER]), body });

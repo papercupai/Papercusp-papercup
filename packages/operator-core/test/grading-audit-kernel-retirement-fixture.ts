@@ -55,12 +55,14 @@ async function scenario(ended: boolean) {
     requireConfinement: true, spawnOptions: { stdio: ['ignore', 'pipe', 'pipe'] },
     // Observe before asynchronous ledger persistence can outlive a short child.
     onSpawn: child => {
+      child.stdout?.setEncoding('utf8'); // boundary-safe decode (WI-6728)
       child.stdout?.on('data', chunk => {
-        childStdout = (childStdout + String(chunk)).slice(-4096);
+        childStdout = (childStdout + chunk).slice(-4096);
         childReady ||= childStdout.split('\n').includes(readyMarker);
       });
+      child.stderr?.setEncoding('utf8');
       child.stderr?.on('data', chunk => {
-        childStderr = (childStderr + String(chunk)).slice(-4096);
+        childStderr = (childStderr + chunk).slice(-4096);
       });
     } });
   owned.add(task.taskId);

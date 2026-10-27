@@ -300,11 +300,15 @@ export interface TestPassReuseExclusionSample {
 /**
  * A round's exclusion evidence. `omitted` is always `total - examples.length`. The full records
  * live in `journals` (the retained affected-tests journals), correlated by `runGroupIds`.
+ *
+ * `total` and `omitted` are null when the round emitted sample lines but none of them parsed
+ * (`malformed > 0`, no examples). That total was never measured, so it must not read as 0
+ * (plan test-pass-reuse-exclusion-cause-diagnostics-2026-10-25 D-004 B4).
  */
 export interface TestPassReuseExclusionSummary {
-  total: number;
+  total: number | null;
   examples: TestPassReuseExclusionRecord[];
-  omitted: number;
+  omitted: number | null;
   journals: string[];
   runGroupIds: string[];
   /** Sample lines or example records that failed validation and were dropped. */
@@ -367,6 +371,10 @@ function summarizeExclusions(runs: TestPassReuseRun[]): TestPassReuseExclusionSu
   const malformed = runs.reduce((n, r) => n + (r.malformedExclusions ?? 0), 0);
   // No sample line at all = a runner predating the records: not measured, never zero.
   if (samples.length === 0 && malformed === 0) return null;
+  // Sample lines were emitted but none parsed: the total was never measured, so it is not 0 (D-004 B4).
+  if (samples.length === 0) {
+    return { total: null, examples: [], omitted: null, journals: [], runGroupIds: [], malformed };
+  }
   const total = samples.reduce((n, s) => n + s.total, 0);
   const examples = samples.flatMap((s) => s.examples);
   const distinct = (values: (string | null)[]) => [...new Set(values.filter((x): x is string => x !== null))];
@@ -379,13 +387,18 @@ function summarizeExclusions(runs: TestPassReuseRun[]): TestPassReuseExclusionSu
 function parseExclusionSummary(value: unknown): TestPassReuseExclusionSummary | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
-  if (!isCount(v.total) || !isCount(v.omitted) || !isCount(v.malformed) || !Array.isArray(v.examples) ||
-      v.omitted !== v.total - v.examples.length ||
+  if (!isCount(v.malformed) || !Array.isArray(v.examples) ||
       !Array.isArray(v.journals) || !v.journals.every((j) => typeof j === 'string' && j.trim()) ||
       !Array.isArray(v.runGroupIds) || !v.runGroupIds.every((g) => typeof g === 'string' && g.trim())) return null;
+  // Not measured (D-004 B4) is valid only with nothing parsed and something dropped.
+  const notMeasured = v.total === null && v.omitted === null && v.examples.length === 0 && v.malformed > 0;
+  if (!notMeasured && (!isCount(v.total) || !isCount(v.omitted) || v.omitted !== v.total - v.examples.length)) {
+    return null;
+  }
   const examples = v.examples.map(parseExclusionRecord);
   if (examples.some((e) => e === null)) return null;
-  return { total: v.total, examples: examples as TestPassReuseExclusionRecord[], omitted: v.omitted,
+  return { total: v.total as number | null, examples: examples as TestPassReuseExclusionRecord[],
+    omitted: v.omitted as number | null,
     journals: v.journals as string[], runGroupIds: v.runGroupIds as string[], malformed: v.malformed };
 }
 
@@ -1189,7 +1202,7 @@ function boundExclusionSummary(s: TestPassReuseExclusionSummary): TestPassReuseE
   const examples = s.examples
     .slice(0, TEST_PASS_REUSE_HEALTH_MAX_EXCLUSION_EXAMPLES)
     .map((e) => ({ ...e, ws: clip(e.ws), file: clip(e.file) }));
-  return { total: s.total, examples, omitted: s.total - examples.length,
+  return { total: s.total, examples, omitted: s.total === null ? null : s.total - examples.length,
     journals: s.journals.slice(0, HEALTH_EXCLUSION_LINKS_MAX).map(clip),
     runGroupIds: s.runGroupIds.slice(0, HEALTH_EXCLUSION_LINKS_MAX).map(clip),
     malformed: s.malformed };

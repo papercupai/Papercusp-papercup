@@ -14,7 +14,8 @@ async function control(sock: string, message: unknown): Promise<Record<string, u
     let bytes = '';
     conn.setTimeout(3000, () => conn.destroy(new Error('fixture control timed out')));
     conn.once('error', reject);
-    conn.on('data', data => { bytes += data.toString(); });
+    conn.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+    conn.on('data', data => { bytes += data; });
     conn.once('end', () => { try { resolve(JSON.parse(bytes)); } catch (error) { reject(error); } });
     conn.once('connect', () => conn.end(JSON.stringify(message)));
   });

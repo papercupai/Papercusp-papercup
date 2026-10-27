@@ -37,7 +37,8 @@ describe('managed assume server host adapter', () => {
     const messages: Array<Record<string, any>> = [];
     const server = net.createServer({ allowHalfOpen: true }, conn => {
       let bytes = '';
-      conn.on('data', data => { bytes += data.toString(); });
+      conn.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+      conn.on('data', data => { bytes += data; });
       conn.on('end', () => {
         messages.push(JSON.parse(bytes));
         conn.end(JSON.stringify({ v: 1, ok: true, phase: 'queued' }) + '\n');

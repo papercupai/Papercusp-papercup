@@ -303,8 +303,9 @@ describe('bundled typecheck service identity', () => {
         const timer = setTimeout(() => { socket.destroy(); reject(new Error(output)); }, 10_000);
         socket.on('connect', () => socket.write(JSON.stringify({ v: 2, requestId: 'old-caller-after-reset',
           root, project, files: ['a.ts'], scope: 'named', identity: before.identity }) + '\n'));
+        socket.setEncoding('utf8'); // boundary-safe decode (WI-6728)
         socket.on('data', data => {
-          buffer += String(data);
+          buffer += data;
           let newline: number;
           while ((newline = buffer.indexOf('\n')) >= 0) {
             const response = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
@@ -341,7 +342,8 @@ describe('native compiler ownership during reset', () => {
       env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stderr = '';
-    child.stderr.on('data', data => { stderr = (stderr + String(data)).slice(-1_000); });
+    child.stderr.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+    child.stderr.on('data', data => { stderr = (stderr + data).slice(-1_000); });
     const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
     try {
       await new Promise<void>((resolve, reject) => {

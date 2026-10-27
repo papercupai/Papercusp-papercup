@@ -215,7 +215,10 @@ export async function captureEditInterface(ctx: InterfaceCaptureContext, file: s
   return captureInterfaceEligibility({ file, beforeText, afterText, capturedAt, peerEvidence });
 }
 
-/** Journal interface eligibility on just-inserted ledger rows. First observation wins; never throws. */
+/** Journal interface eligibility on just-inserted ledger rows. First observation wins; never throws.
+ * A row recorded by a build without this capture keeps signal_eligibility NULL, which the R-1
+ * liveness probe reads as not observed rather than as a silent leg. A direct capability:edit
+ * call is attributed by the lock grant path; an indirect one (tools:invoke, code:run) records here. */
 export async function fillInterfaceEligibility(rows: readonly { id: string; file: string }[],
   ctx: InterfaceCaptureContext, sql: Sql, deps: InterfaceCaptureDeps = {}): Promise<number> {
   const workspace = ctx.workspaceId;

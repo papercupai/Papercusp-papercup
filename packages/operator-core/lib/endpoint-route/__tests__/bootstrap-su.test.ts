@@ -2126,6 +2126,28 @@ describe('bootstrap-su', () => {
       expect.objectContaining({ turnProvenanceDir: dir, workspaceId: result.workspaceId }));
   });
 
+  it('pins the default provenance directory when the launch envelope omits it', async () => {
+    const { buildConsoleEnvelope } = await import('../../console-launcher');
+    const envelopeMock = vi.mocked(buildConsoleEnvelope);
+    const original = envelopeMock.getMockImplementation()!;
+    envelopeMock.mockImplementationOnce(async opts => {
+      const result = await original(opts);
+      const env = { ...result.env };
+      delete env.PAPERCUSP_TURN_PROVENANCE_DIR;
+      return { ...result, env };
+    });
+
+    const response = await callPost({ agent: 'codex' });
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    const { recordSuLaunchSpec } = await import('../../adv-sessions');
+    const { turnProvenanceDir } = await import('../../turn-provenance/turn-provenance');
+    expect(recordSuLaunchSpec).toHaveBeenCalledWith(
+      expect.anything(), result.envelopeEnv.PAPERCUSP_SID,
+      expect.objectContaining({ turnProvenanceDir: turnProvenanceDir(result.envelopeEnv), workspaceId: result.workspaceId }),
+    );
+  });
+
   it('pins every component of a selected named composition at bootstrap', async () => {
     const { resolveNamedIdentityCompositionSelection } = await import('../../agent-identities/source');
     const dir = mkdtempSync(join(tmpdir(), 'bootstrap-named-composition-'));

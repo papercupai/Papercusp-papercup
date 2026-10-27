@@ -79,7 +79,8 @@ export async function runOperatorChatWorkers(inputs: WorkerInput[]): Promise<Cha
       });
       children.push(child);
       let stderr = '';
-      child.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-2000); });
+      child.stderr?.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+      child.stderr?.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
       let readyResolve!: () => void;
       let readyReject!: (error: Error) => void;
       const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });

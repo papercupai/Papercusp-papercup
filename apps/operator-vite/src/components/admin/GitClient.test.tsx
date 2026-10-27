@@ -68,7 +68,7 @@ vi.mock('@papercusp/sync', () => ({
 }));
 
 import GitClient, { kindLabel } from './GitClient';
-import { buildTestPassReuseHealth } from '@papercusp/operator-core/lib/release/test-pass-reuse-report';
+import { buildTestPassReuseHealth, parseTestPassReuseHealth } from '@papercusp/operator-core/lib/release/test-pass-reuse-report';
 
 afterEach(() => cleanup());
 
@@ -172,7 +172,10 @@ describe('GitClient', () => {
     // The fixture is the real producer's output (A8), not a hand-shaped health object.
     const cell = (sample: string | null) => {
       cleanup();
-      const testPassReuse = buildTestPassReuseHealth([reuseLine, ...(sample ? [sample] : [])].join('\n'), sha, 120);
+      const built = buildTestPassReuseHealth([reuseLine, ...(sample ? [sample] : [])].join('\n'), sha, 120);
+      expect(built).not.toBeNull();
+      // Through the production read path (the persisted record is JSON, re-validated on read).
+      const testPassReuse = parseTestPassReuseHealth(JSON.parse(JSON.stringify(built)));
       expect(testPassReuse).not.toBeNull();
       mockResult = { data: [{ ...snapshot, gate: { ...snapshot.gate, testPassReuse } }], loading: false, fetching: false,
         error: null, invalidate: vi.fn(), transport: 'POLL' };
@@ -191,6 +194,11 @@ describe('GitClient', () => {
       .toBe(' full records: /logs/affected-tests-run.log \u00b7 run group rg-7');
     expect(cell(sampleLine(0, [])).textContent).toBe('0 excluded, 0 omitted full records: /logs/affected-tests-run.log \u00b7 run group rg-7');
     expect(cell(null).textContent).toBe('not measured');
+    // D-004 B4: sample lines that all fail validation are a fourth state, never "0 excluded".
+    const unparseable = cell('TEST_PASS_REUSE_EXCLUSIONS {not json');
+    expect(unparseable.textContent).toBe('not measured: 1 unparseable sample line(s)');
+    expect(screen.getByTestId('gate-test-pass-reuse-exclusions-unparseable')).toBeTruthy();
+    expect(unparseable.textContent).not.toContain('0 excluded');
   });
 
   it('gate card: round time reads "not measured" without a breakdown, and shows it when present (P-013)', () => {

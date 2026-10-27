@@ -144,7 +144,8 @@ describe('embedded-PG postmaster supervision (WI-10003688)', () => {
     const closed = once(child, 'close');
     let pid: number | undefined, identity: string | null = null;
     let stderr = '';
-    child.stderr!.on('data', chunk => { stderr += String(chunk); });
+    child.stderr!.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+    child.stderr!.on('data', chunk => { stderr += chunk; });
     try {
       const ready = await Promise.race([
         once(child.stdout!, 'data'),

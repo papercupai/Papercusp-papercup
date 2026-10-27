@@ -64,9 +64,12 @@ const child = spawn(executable, [entry], {
     PAPERCUSP_SERVE_UI: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let output = '';
-for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => {
-  output = (output + bytes.toString()).slice(-32000);
-});
+for (const stream of [child.stdout, child.stderr]) {
+  stream.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+  stream.on('data', bytes => {
+    output = (output + bytes).slice(-32000);
+  });
+}
 const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
 let admitted = false;
 try {

@@ -382,12 +382,59 @@ describe('selectReusablePasses exclusion records', () => {
       .toMatchObject({ reason: 'audited', evidence: { auditRate: 1 } });
   });
 
+  // D-004 B1: every fixture above has one cause, so a branch-order swap would pass them all.
+  // One candidate carries every defect; removing them one at a time must walk the committed
+  // precedence exactly.
+  it('D-004 B1: a candidate with every defect walks the committed precedence one removal at a time', () => {
+    const capped = Array.from({ length: EXECUTED_SOURCE_MAP_IMPORT_LIMIT }, (_, i) => `pkg/src/m${i}.ts`);
+    const drift = ['docs/x.md', 'package-lock.json', SETUP, 'pkg/src/m0.ts'];
+    let p: Proof = proof(T, { executedModules: capped, runContext: 'clean-local', runnerIdentity: 'v22.0.0 linux x64',
+      inputsCaptured: false, opaqueReasons: ['child-process'] });
+    let d: Set<string> | null = null;
+    let extra: Partial<Parameters<typeof selectReusablePasses>[0]> =
+      { proofFormat: 'proof-v0', testConfigMainProcess: MAIN, auditRate: 1 };
+    const reasonNow = () => one(new Map([[T, p]]), d, extra);
+    const ladder: Array<[string, Record<string, unknown>, () => void]> = [
+      ['noProof', { evidence: { missing: 'thisFile' } }, () => { p = { ...p, executedModules: [T, ...capped] }; }],
+      ['otherContext', {}, () => { p = { ...p, runContext: CTX }; }],
+      ['otherRunner', {}, () => { p = { ...p, runnerIdentity: RUNNER }; }],
+      ['notCaptured', {}, () => { p = { ...p, inputsCaptured: true }; }],
+      ['opaque', { evidence: { opaqueReasons: ['child-process'] } }, () => { p = { ...p, opaqueReasons: [] }; }],
+      ['unknownDrift', {}, () => { d = new Set(drift); }],
+      ['legacyFormatDrift', {}, () => { extra = { testConfigMainProcess: MAIN, auditRate: 1 }; }],
+      ['globalInput', { evidence: { path: 'package-lock.json' } },
+        () => { d = new Set(drift.filter((x) => x !== 'package-lock.json')); }],
+      ['opaque', { evidence: { importCap: { executedModules: capped.length + 1, limit: EXECUTED_SOURCE_MAP_IMPORT_LIMIT } } },
+        () => { p = { ...p, executedModules: [T, 'pkg/src/m0.ts'] }; }],
+      ['inputChanged', { evidence: { path: 'pkg/src/m0.ts' } },
+        () => { d = new Set(drift.filter((x) => x !== 'package-lock.json' && x !== 'pkg/src/m0.ts')); }],
+      ['audited', { evidence: { auditRate: 1 } }, () => { extra = { testConfigMainProcess: MAIN, auditRate: 0 }; }],
+    ];
+    const walked: string[] = [];
+    for (const [reason, shape, strip] of ladder) {
+      const got = reasonNow();
+      expect(got, `step ${walked.length + 1}`).toMatchObject({ reason, ...shape });
+      walked.push(got.reason);
+      strip();
+    }
+    expect(walked).toEqual(['noProof', 'otherContext', 'otherRunner', 'notCaptured', 'opaque', 'unknownDrift',
+      'legacyFormatDrift', 'globalInput', 'opaque', 'inputChanged', 'audited']);
+    // With every defect gone the candidate is reused.
+    const done = selectReusablePasses({ candidates: [T], proofs: new Map([[T, p]]), judgedSha: 'new',
+      changedBetween: () => d, runContext: CTX, runnerIdentity: RUNNER, ...extra });
+    expect(done.skip).toEqual([T]);
+    expect(done.exclusions).toEqual([]);
+  });
+
   it('reconciles a mixed population without changing the skip decision', () => {
-    const files = ['a/1.test.ts', 'a/2.test.ts', 'a/3.test.ts', 'a/4.test.ts'];
+    const files = ['a/1.test.ts', 'a/2.test.ts', 'a/3.test.ts', 'a/4.test.ts', 'a/5.test.ts'];
     const proofs = new Map<string, Proof>([
       ['a/1.test.ts', proof('a/1.test.ts')],
       ['a/2.test.ts', proof('a/2.test.ts', { inputsCaptured: false })],
       ['a/3.test.ts', proof('a/3.test.ts', { runContext: 'clean-local' })],
+      // D-004 B1: a multi-cause candidate is recorded once, under the earliest branch only.
+      ['a/5.test.ts', proof('a/5.test.ts', { runnerIdentity: 'v22.0.0 linux x64', inputsCaptured: false,
+        opaqueReasons: ['child-process'] })],
     ]);
     const r = run(files, proofs, new Set(['other/unrelated.ts']));
     reconcile(r);
@@ -396,7 +443,10 @@ describe('selectReusablePasses exclusion records', () => {
       ['a/2.test.ts', 'notCaptured'],
       ['a/3.test.ts', 'otherContext'],
       ['a/4.test.ts', 'noProof'],
+      ['a/5.test.ts', 'otherRunner'],
     ]);
+    expect(r.summary).toMatchObject({ candidates: 5, reused: 1, notCaptured: 1, otherContext: 1, noProof: 1,
+      otherRunner: 1, opaque: 0 });
   });
 });
 

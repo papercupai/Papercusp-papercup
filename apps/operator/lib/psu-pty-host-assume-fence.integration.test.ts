@@ -17,7 +17,8 @@ async function control(sock: string, message: unknown): Promise<Record<string, u
     let bytes = '';
     conn.setTimeout(3000, () => conn.destroy(new Error('fixture control timed out')));
     conn.once('error', reject);
-    conn.on('data', data => { bytes += data.toString(); });
+    conn.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+    conn.on('data', data => { bytes += data; });
     conn.once('end', () => { try { resolve(JSON.parse(bytes)); } catch (error) { reject(error); } });
     conn.once('connect', () => conn.end(JSON.stringify(message)));
   });
@@ -32,7 +33,7 @@ it('holds real PTY owner input and refuses wake/raw/recycle effects until exact 
   const prepare = vi.fn(async () => null);
   const onReexec = vi.fn();
   const done = hostThroughPty({ command: process.execPath,
-    args: ['-e', "process.stdin.setRawMode(true);process.stdin.on('data',b=>process.stdout.write('INPUT:'+b.toString()+'\\n'));process.stdout.write('FIXTURE_READY\\n');setInterval(()=>{},1000)"],
+    args: ['-e', "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdin.on('data',b=>process.stdout.write('INPUT:'+b+'\\n'));process.stdout.write('FIXTURE_READY\\n');setInterval(()=>{},1000)"],
     cwd: process.cwd(), ownerId,
     env: hermeticEnv({ PAPERCUSP_AGENT: 'codex', PAPERCUSP_SID: ownerId, PAPERCUSP_WORKSPACE: 'test-workspace',
       PAPERCUSP_PSU_REEXEC: '75', PAPERCUSP_PSU_REEXEC_PPID: String(process.ppid) }),

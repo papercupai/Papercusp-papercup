@@ -155,14 +155,15 @@ describe('maintenance atomicity and recovery (real private PG)', () => {
           const child = spawn(process.execPath, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
           let stdout = '', stderr = '', interrupted = false;
           const timer = setTimeout(() => { child.kill('SIGKILL'); fail(new Error('Guardian did not finish within test bound')); }, 45_000);
+          child.stdout.setEncoding('utf8'); // boundary-safe decode (WI-6728)
           child.stdout.on('data', bytes => {
-            stdout += String(bytes);
+            stdout += bytes;
             if (!interrupted && stdout.split('\n').some(line => { try { return JSON.parse(line).armed === true; } catch { return false; } })) {
               interrupted = true;
               child.kill('SIGTERM');
             }
           });
-          child.stderr.on('data', bytes => { stderr += String(bytes); });
+          child.stderr.setEncoding('utf8'); child.stderr.on('data', bytes => { stderr += bytes; });
           child.on('error', error => { clearTimeout(timer); fail(error); });
           child.on('close', code => {
             clearTimeout(timer);

@@ -1116,13 +1116,17 @@ export function deriveGitSyncExclusions(
   const hasByteExclusions = oversized.length > 0 || bulkExcluded.length > 0;
   const exclusionStampMatchesSweep =
     exclusionAtMs !== null && lastSyncedAtMs !== null && exclusionAtMs === lastSyncedAtMs;
-  const sweepStale =
-    hasByteExclusions &&
-    (!exclusionStampMatchesSweep || freshness?.status === 'degraded');
+  // The stamp and freshness verdict describe the whole completed sweep, including
+  // skip-only sweeps. Do not make stale skip records actionable just because no blob
+  // crossed a byte-exclusion limit.
+  const sweepStale = !exclusionStampMatchesSweep || freshness?.status === 'degraded';
   const parts: string[] = [];
   const remedies: string[] = [];
   if (skipped.length > 0) {
     parts.push(`${skipped.length} path(s) excluded from the last completed sweep (${skipReason ?? 'unknown'})`);
+    if (sweepStale) {
+      parts.push('skip-exclusion data is from a stale or unknown sweep vintage; do not treat these paths as current');
+    }
     const migrationGuarded = skipReasons.some((r) => r.startsWith('migration-'));
     if (skipReasons.length === 0 || skipReasons.includes('locked-path')) {
       remedies.push('release the corresponding file lock(s)');
@@ -1165,7 +1169,7 @@ export function deriveGitSyncExclusions(
   // WI-10006505: skip remedies used to render only when byte exclusions were also present, so a
   // skip-only sweep never said what to do. Byte remedies are pushed only on the fresh branch
   // above, so a stale byte record still contributes none.
-  if (remedies.length > 0) {
+  if (remedies.length > 0 && !sweepStale) {
     warningParts.push(remedies.join('; '));
   }
   return {
@@ -1190,8 +1194,8 @@ export function deriveGitSyncExclusions(
       warningParts.length === 0
         ? null
         : `${warningParts.join('; ')}${
-            hasByteExclusions && sweepStale
-              ? '. Wait for a fresh completed sweep before taking byte-exclusion action'
+            sweepStale
+              ? '. Wait for a fresh completed sweep before taking exclusion action'
               : ', so work_items:complete on it can land completionAuthority:\'proposed\''
           }.`,
   };
@@ -1487,7 +1491,7 @@ export default defineTool({
       '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
       '⚠ `health.origin_freshness` — whether commits are REACHING ORIGIN, which `git_sync_freshness` cannot tell you (EI-22702954391733746): { alerted, cause, tracked_origin_sha, stall_sweeps, integrator_backlog_sweeps, publish_refused_sweeps, publish_backlog_sweeps }, null on a pot the origin watchdog does not judge. Read it as the SEPARATE question it is: `git_sync_freshness` measures whether the LOCAL COMMIT stage ran on schedule, and on a `bridged` pot the member is commit-only BY DESIGN, so `fresh` + `synced` is fully compatible with origin being arbitrarily stale — measured 2026-09-08, this surface read a clean bill for ~8h while origin sat 26 commits behind. When `alerted:true` the `last_status` headline is derived-overridden to say so.',
-      '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244/WI-2141747): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, bulk_excluded_count, bulk_excluded_sample, +_truncated markers, sweep_at, sweep_age_ms, sweep_stale, warning }. `oversized_*` is only the per-file blob guard; `bulk_excluded_*` is the cumulative commit-size guard and has a different remedy. Counts are true totals; samples are bounded. `sweep_stale:true` (including legacy rows with no stamp, or a degraded git-sync freshness verdict) suppresses byte-exclusion action advice until a fresh completed sweep is measured. Always present on a git-sync row, so zero counts are measurements, not missing fields.',
+      '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244/WI-2141747): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, bulk_excluded_count, bulk_excluded_sample, +_truncated markers, sweep_at, sweep_age_ms, sweep_stale, warning }. `oversized_*` is only the per-file blob guard; `bulk_excluded_*` is the cumulative commit-size guard and has a different remedy. Counts are true totals; samples are bounded. `sweep_stale:true` (including legacy rows with no matching stamp, or a degraded git-sync freshness verdict) suppresses exclusion-action advice for skipped paths and byte exclusions until a fresh completed sweep is measured. Always present on a git-sync row, so zero counts are measurements, not missing fields.',
       '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, long_running_age_ms, last_progress_at, progress_age_ms, stuck }, null when the row carries no git_sync_activity. `age_ms`/`long_running_age_ms` measure total fire duration; `progress_age_ms` measures time since the writer heartbeat. `stuck:true` means progress has been absent for longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`. Legacy active markers without a progress timestamp fall back to started_at.',
       '⛔ `health.git_sync_freshness.safe_to_restart` IS THE RESTART/KILL DECISION — never `status` (WI-10002019). `status:\'degraded\'` COMPOSES two legs whose remedies are opposite, so it indicates the destructive action in exactly the case that must not take it: a long fire freezes `last_synced_at`, so `scheduler.status` reads `not-firing` BECAUSE `execution.status` is `in-flight`, and a restart then drops the exclusive git-sync lock mid-write and destroys the sweep\'s uncommitted work. The legs are independent — `scheduler` { status: firing|not-firing|inactive|unknown, last_completed_at, age_ms, cadence_ms, stale_after_ms, missed_intervals, stalled_behind_in_flight_fire } and `execution` { status: idle|in-flight|stuck|unknown, phase, started_at, age_ms, last_progress_at, progress_age_ms, holds_exclusive_locks, locks_reported }. `stalled_behind_in_flight_fire:true` is the giveaway that a stale scheduler leg is EXPLAINED by a live fire rather than by a stalled engine.',
       '`health.git_sync_freshness.safe_to_restart` is derived from the EXECUTION leg ALONE and is true only for a provably idle one; `execution.status:\'unknown\'` (the row carries no git_sync_activity marker) reports UNSAFE on purpose, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart. `safe_to_restart_reason` names which case you are in, and `holds_exclusive_locks` is writer-reported only — `locks_reported:false` means UNMEASURED, never "holds no locks".',

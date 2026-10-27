@@ -21,8 +21,11 @@ async function census(image: RuntimeSourceImage, signal?: AbortSignal): Promise<
   return await new Promise((resolve, reject) => {
     let encoded = '', failure: unknown;
     child.stderr!.resume();
-    child.stdout!.on('data', (chunk: Buffer) => {
-      encoded += chunk.toString();
+    // setEncoding: Node's own decoder holds a UTF-8 character split across two
+    // chunks; a per-chunk toString() would turn it into replacement chars (WI-6728).
+    child.stdout!.setEncoding('utf8');
+    child.stdout!.on('data', (chunk: string) => {
+      encoded += chunk;
       if (Buffer.byteLength(encoded) > 64 * 1024 * 1024) {
         failure = new Error('broker_source_census_oversized'); child.kill();
       }

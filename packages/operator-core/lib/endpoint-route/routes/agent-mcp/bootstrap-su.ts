@@ -28,6 +28,7 @@ import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../work
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
 import { requirePrincipal } from '../../../auth/require-principal';
+import { turnProvenanceDir as resolveTurnProvenanceDir } from '../../../turn-provenance/turn-provenance';
 import sessionResumeRoutes from './bootstrap-su-resume';
 export { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
 // WI-42439: the single source for which `--account=` spellings bypass the gateway.
@@ -3350,7 +3351,7 @@ export const bootstrapSu = defineTool({
     {
       const launchSpecRecord: SuLaunchSpecRecord = {
         v: 1,
-        turnProvenanceDir: envelope.env.PAPERCUSP_TURN_PROVENANCE_DIR,
+        turnProvenanceDir: resolveTurnProvenanceDir(envelope.env),
         ...(codexSqliteHome ? { codexSqliteHome } : {}),
         agent,
         workspaceId: workspace,

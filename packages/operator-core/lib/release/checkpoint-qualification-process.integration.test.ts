@@ -104,8 +104,10 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       setInterval(() => {}, 100);
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', diagnostics = '';
-    parent.stdout!.on('data', chunk => { output += chunk.toString(); });
-    parent.stderr!.on('data', chunk => { diagnostics += chunk.toString(); });
+    parent.stdout!.setEncoding('utf8'); // boundary-safe decode (WI-6728)
+    parent.stderr!.setEncoding('utf8');
+    parent.stdout!.on('data', chunk => { output += chunk; });
+    parent.stderr!.on('data', chunk => { diagnostics += chunk; });
     try {
       await until(() => output.includes('\n'), 5000);
       const pids = JSON.parse(output.trim()) as number[];

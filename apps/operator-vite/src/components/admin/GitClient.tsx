@@ -146,10 +146,11 @@ interface GitPipelineSnapshot {
       headline: string;
       alarms: { ws: string; file: string; proof: string }[];
       // WI-6554700010026699: why candidates were not reused. Absent/null = not measured (a runner
-      // predating the records); total 0 = nothing excluded. Full records live in `journals`.
+      // predating the records); total 0 = nothing excluded; total null = sample lines were
+      // emitted but none parsed, so the count is unmeasured (D-004 B4). Full records live in `journals`.
       exclusions?: {
-        total: number;
-        omitted: number;
+        total: number | null;
+        omitted: number | null;
         malformed: number;
         journals: string[];
         runGroupIds: string[];
@@ -915,10 +916,18 @@ export default function GitClient() {
                   <span className="pc-git__v" data-testid="gate-test-pass-reuse-exclusions">
                     {st.gate.testPassReuse?.exclusions ? (
                       <>
-                        {`${st.gate.testPassReuse.exclusions.total} excluded, ` +
-                          `${st.gate.testPassReuse.exclusions.omitted} omitted`}
-                        {st.gate.testPassReuse.exclusions.malformed > 0 &&
-                          ` (${st.gate.testPassReuse.exclusions.malformed} malformed)`}
+                        {st.gate.testPassReuse.exclusions.total === null ? (
+                          <span className="pc-git__muted" data-testid="gate-test-pass-reuse-exclusions-unparseable">
+                            {`not measured: ${st.gate.testPassReuse.exclusions.malformed} unparseable sample line(s)`}
+                          </span>
+                        ) : (
+                          <>
+                            {`${st.gate.testPassReuse.exclusions.total} excluded, ` +
+                              `${st.gate.testPassReuse.exclusions.omitted} omitted`}
+                            {st.gate.testPassReuse.exclusions.malformed > 0 &&
+                              ` (${st.gate.testPassReuse.exclusions.malformed} malformed)`}
+                          </>
+                        )}
                         {st.gate.testPassReuse.exclusions.examples.length > 0 && (
                           <ul className="pc-git__muted" data-testid="gate-test-pass-reuse-exclusion-examples">
                             {st.gate.testPassReuse.exclusions.examples.map((e, i) => (

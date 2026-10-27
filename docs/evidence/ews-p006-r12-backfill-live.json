@@ -8,8 +8,8 @@
     "docs/evidence/ews-p006-r12-backfill-live/run.mjs"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-27T15:05:35.302Z",
-  "finishedAt": "2026-10-27T15:05:45.086Z",
+  "startedAt": "2026-10-27T16:18:22.457Z",
+  "finishedAt": "2026-10-27T16:18:29.674Z",
   "plan": "event-wait-settlement-2026-10-20",
   "planItem": "P-006",
   "workItemId": "WI-6554700010018158",
@@ -17,62 +17,62 @@
     "AUTO-BAR-R-12-P-006@3"
   ],
   "evidencePlane": "live",
-  "summary": "The R-12 probe (docs/evidence/ews-p006-r12-backfill-live/probe.sql) read every active event/gate wait on a non-terminal papercusp-workspace item and returned 451|393|49|9|0|0|339|0|0: 451 active wait(s) = 393 with a re-check date + 49 on a concrete condition-proving key + 9 on a live announced key + 0 on an already-fired announced key + 0 unprovable with no re-check date. The backfill (system:unprovable-wait-backfill) has stamped 339 row(s) across all items, cleared 0, and 0 stamped row(s) went inactive with no recorded clearer. The committed oracle judged it PASS. All six negative controls failed on their targeted assertion as required.",
+  "summary": "The R-12 probe (docs/evidence/ews-p006-r12-backfill-live/probe.sql) read every active event/gate wait on a non-terminal papercusp-workspace item and returned 453|394|50|9|0|0|340|0|0: 453 active wait(s) = 394 with a re-check date + 50 on a concrete condition-proving key + 9 on a live announced key + 0 on an already-fired announced key + 0 unprovable with no re-check date. The backfill (system:unprovable-wait-backfill) has stamped 340 row(s) across all items, cleared 0, and 0 stamped row(s) went inactive with no recorded clearer. The committed oracle judged it PASS. All six negative controls failed on their targeted assertion as required.",
   "assertions": [
     {
       "id": "live:every-wait-classified-once",
       "passed": true,
-      "evidence": "stamped=393 + proving_concrete=49 + announced_live=9 + announced_fired=0 + unprovable_unstamped=0 = 451; active_waits=451; row 451|393|49|9|0|0|339|0|0"
+      "evidence": "stamped=394 + proving_concrete=50 + announced_live=9 + announced_fired=0 + unprovable_unstamped=0 = 453; active_waits=453; row 453|394|50|9|0|0|340|0|0"
     },
     {
       "id": "live:no-unprovable-unstamped",
       "passed": true,
-      "evidence": "unprovable_unstamped=0 (active event/gate rows with no re-check date that are neither a concrete condition-proving key nor announced); row 451|393|49|9|0|0|339|0|0"
+      "evidence": "unprovable_unstamped=0 (active event/gate rows with no re-check date that are neither a concrete condition-proving key nor announced); row 453|394|50|9|0|0|340|0|0"
     },
     {
       "id": "live:none-cleared-by-backfill",
       "passed": true,
-      "evidence": "backfill_cleared=0 (rows whose clearedBy is system:unprovable-wait-backfill); row 451|393|49|9|0|0|339|0|0"
+      "evidence": "backfill_cleared=0 (rows whose clearedBy is system:unprovable-wait-backfill); row 453|394|50|9|0|0|340|0|0"
     },
     {
       "id": "live:no-unattributed-clear",
       "passed": true,
-      "evidence": "stamped_inactive_unattributed=0 (backfill-stamped rows no longer active with no clearedBy); row 451|393|49|9|0|0|339|0|0"
+      "evidence": "stamped_inactive_unattributed=0 (backfill-stamped rows no longer active with no clearedBy); row 453|394|50|9|0|0|340|0|0"
     },
     {
       "id": "live:backfill-observed",
       "passed": true,
-      "evidence": "backfill_stamped_rows=339 (rows whose recheckSource is system:unprovable-wait-backfill); row 451|393|49|9|0|0|339|0|0"
+      "evidence": "backfill_stamped_rows=340 (rows whose recheckSource is system:unprovable-wait-backfill); row 453|394|50|9|0|0|340|0|0"
     },
     {
       "id": "control-no-stamps:fails-on-no-unprovable-unstamped",
       "passed": true,
-      "evidence": "re-check dates ignored: a database the backfill never stamped must fail; row 451|0|73|29|10|339|339|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
+      "evidence": "re-check dates ignored: a database the backfill never stamped must fail; row 453|0|74|29|10|340|340|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
     },
     {
       "id": "control-no-announcements:fails-on-no-unprovable-unstamped",
       "passed": true,
-      "evidence": "live announcements ignored: an unstamped announced wait must then count as unprovable; row 451|393|49|0|0|9|339|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
+      "evidence": "live announcements ignored: an unstamped announced wait must then count as unprovable; row 453|394|50|0|0|9|340|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
     },
     {
       "id": "control-no-concrete-keys:fails-on-no-unprovable-unstamped",
       "passed": true,
-      "evidence": "concrete condition-proving keys ignored: an unstamped proving wait must then count as unprovable; row 451|393|0|9|0|49|339|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
+      "evidence": "concrete condition-proving keys ignored: an unstamped proving wait must then count as unprovable; row 453|394|0|9|0|50|340|0|0; oracle passed=false; failing assertions: no-unprovable-unstamped"
     },
     {
       "id": "control-cleared-counts:fails-on-none-cleared-by-backfill",
       "passed": true,
-      "evidence": "every cleared row attributed to the backfill: the cleared-row count must be able to fail; row 451|393|49|9|0|0|339|3222|0; oracle passed=false; failing assertions: none-cleared-by-backfill"
+      "evidence": "every cleared row attributed to the backfill: the cleared-row count must be able to fail; row 453|394|50|9|0|0|340|3224|0; oracle passed=false; failing assertions: none-cleared-by-backfill"
     },
     {
       "id": "control-unattributed:fails-on-no-unattributed-clear",
       "passed": true,
-      "evidence": "every stamped row treated as cleared with no clearer: the fail-closed count must be able to fail; row 451|393|49|9|0|0|339|0|339; oracle passed=false; failing assertions: no-unattributed-clear"
+      "evidence": "every stamped row treated as cleared with no clearer: the fail-closed count must be able to fail; row 453|394|50|9|0|0|340|0|340; oracle passed=false; failing assertions: no-unattributed-clear"
     },
     {
       "id": "control-backfill-actor:fails-on-backfill-observed",
       "passed": true,
-      "evidence": "the backfill actor renamed to one that never wrote: a database the backfill never reached must fail; row 451|393|49|9|0|0|0|0|0; oracle passed=false; failing assertions: backfill-observed"
+      "evidence": "the backfill actor renamed to one that never wrote: a database the backfill never reached must fail; row 453|394|50|9|0|0|0|0|0; oracle passed=false; failing assertions: backfill-observed"
     }
   ],
   "environment": {

@@ -22,8 +22,11 @@ export async function sealRuntimeSourceHandle(original: FileHandle, sha256: stri
     let opening: Promise<void> | undefined;
     input.on('error', error => { failure ??= error; child.kill(); });
     errors.resume();
-    output.on('data', (chunk: Buffer) => {
-      encoded += chunk.toString();
+    // setEncoding: Node's own decoder holds a UTF-8 character split across two
+    // chunks; a per-chunk toString() would turn it into replacement chars (WI-6728).
+    output.setEncoding('utf8');
+    output.on('data', (chunk: string) => {
+      encoded += chunk;
       if (encoded.length > 4096) { failure = new Error('broker_seal_export_invalid'); child.kill(); return; }
       if (!encoded.includes('\n') || opening) return;
       opening = (async () => {

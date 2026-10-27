@@ -631,12 +631,25 @@ declare -A ARTIFACT_DUMP_START_EPOCHS=()
 declare -A ARTIFACT_DUMP_SYSTEM_IDENTIFIERS=()
 
 # ── globals (roles, tablespaces) — tiny, but a restore is useless without them
-if run_bounded 120 sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
+GLOBALS_STDERR=$(mktemp "${TMPDIR:-/tmp}/papercusp-db-backup-globals.XXXXXX") || GLOBALS_STDERR=""
+if [[ -z "$GLOBALS_STDERR" ]]; then
+  FAILED+=("globals"); log "globals FAIL (could not create stderr capture)"
+elif run_bounded 120 sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
       pg_dumpall -h /var/run/postgresql --globals-only -f "$PGOUT/globals.sql.tmp"; then
   mv -f "$PGOUT/globals.sql.tmp" "$PGOUT/globals.sql"
   log "globals ok ($(stat -c%s "$PGOUT/globals.sql") bytes)"
+  rm -f "$GLOBALS_STDERR"
 else
-  rm -f "$PGOUT/globals.sql.tmp"; FAILED+=("globals"); log "globals FAIL"
+  globals_rc=$?
+  rm -f "$PGOUT/globals.sql.tmp"; FAILED+=("globals")
+  log "globals FAIL (exit ${globals_rc})"
+  if [[ -s "$GLOBALS_STDERR" ]]; then
+    globals_stderr_tail=$(tail -c 4096 "$GLOBALS_STDERR" | tr '\r\n' '  ')
+    if [[ -n "$globals_stderr_tail" ]]; then
+      log "globals stderr (last 4096 bytes): $globals_stderr_tail"
+    fi
+  fi
+  rm -f "$GLOBALS_STDERR"
 fi
 
 # ── per-database, parallel directory format ─────────────────────────────────
