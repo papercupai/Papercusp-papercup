@@ -17,8 +17,6 @@ import { runInNewContext } from 'node:vm';
 import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
-import '../work_items/set_state';
-import '../scheduler/get_next';
 import { nestedProjectionContext } from '../../result-projection/nested-dispatch';
 import devServiceHealth from '../dev/service_health';
 import launchAgent from '../capability/launch-agent';

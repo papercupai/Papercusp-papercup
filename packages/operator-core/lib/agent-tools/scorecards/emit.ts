@@ -3383,22 +3383,15 @@ export async function emitScorecard(
           error: 'A re-grade preserves its baseline; a correction uses supersedes. Emit these as distinct scorecards.' };
       }
       const [baseline] = await listScorecards({ issueIds: [args.baselineRef], limit: 1 });
-      const notComparable = { ok: false as const, code: 'baseline_not_comparable',
-        error: 'baselineRef must resolve to preserved current audited evidence for the same target and rubric revision; changed meaning needs a fresh baseline.' };
       if (!baseline || !args.subject || baseline.subject?.kind !== args.subject.kind ||
           baseline.subject?.ref !== args.subject.ref || baseline.rubricRef !== args.rubricRef ||
           baseline.rubricRevision !== rubric.revision || baseline.criteriaHash !== rubric.criteriaHash ||
           baseline.provisional || baseline.retracted || baseline.synthesized ||
           !baseline.rubricResolved || baseline.missingKeys.length > 0 || (baseline.extraKeys?.length ?? 0) > 0 ||
+          baseline.gradingAudit?.state !== 'passed' || baseline.gradingAuditCurrentness?.state !== 'current' ||
           baseline.rubricCurrentness?.state !== 'current') {
-        return notComparable;
-      }
-      if (baseline.gradingAudit?.state === 'pending') {
-        return { ok: false as const, code: 'grading_audit_required',
-          error: `baseline scorecard '${baseline.issueId}' has a pending grading audit; emit its grading-integrity audit with subject:{kind:'scorecard',ref:'${baseline.issueId}'} before comparing it.` };
-      }
-      if (baseline.gradingAudit?.state !== 'passed' || baseline.gradingAuditCurrentness?.state !== 'current') {
-        return notComparable;
+        return { ok: false as const, code: 'baseline_not_comparable',
+          error: 'baselineRef must resolve to preserved current audited evidence for the same target and rubric revision; changed meaning needs a fresh baseline.' };
       }
     }
     if (args.supersedes) {

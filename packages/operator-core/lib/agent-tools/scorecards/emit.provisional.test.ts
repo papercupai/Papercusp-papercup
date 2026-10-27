@@ -16,7 +16,6 @@ vi.mock('../../rubrics', async (importOriginal) => {
       return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
     },
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
-    getRubricCriteriaHash: async () => null,
     // The real identity helper closes over the real getRubric, bypassing this suite's mock.
     getRubricEvidenceIdentity: async (rubricId: string) => ({
       revision: await getRubricPlanRevision(rubricId),
@@ -86,8 +85,6 @@ vi.mock('../../harness/improvements/capture-core', () => ({
 vi.mock('../../scout/generation-watermark', () => ({
   readRunningGeneration: async () => null,
 }));
-vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
-vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../issues-engineer')>();
   return { ...real, getIssue: async () => null };
