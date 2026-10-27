@@ -20,7 +20,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, entityRef } from '@papercusp/agent-mcp';
+import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
@@ -40,8 +40,12 @@ const PATCH_FIELDS = {
     .enum(['user', 'feedback', 'project', 'reference'])
     .optional()
     .describe('re-tag the memory kind (metadata — no re-embed)'),
-  workspaceId: entityRef('workspace', { max: 200, describe: 'fix the workspace_id tag (metadata — no re-embed)' })
-    .optional(),
+  workspaceId: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('fix the workspace_id tag (metadata — no re-embed)'),
   scope: z
     .string()
     .min(1)

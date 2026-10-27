@@ -1,40 +1,56 @@
+# Papercusp's own pot — identities-v1-2026-08-30 P-024 / D-027.
+#
+# This is a runnable POT document, not an identity: it deliberately declares no
+# `slots:` of its own.  The inherited papercusp-engineer layer supplies the
+# exclusive domain document; invoke threads the loader's raw layer chain so that
+# inheritance is visible to prompt resolution even though this harness-local file
+# does not live in the built-in blueprints/<id>/ tree.
 id: papercusp
 extends: papercusp-engineer
 kind: pot
 version: 0.1.1
-description: "Papercusp's own engineering pot: senior su collaborators work the shared staging tree,
-  coordinate through work items and plans, and ship through the green-checkpoint release gate."
+description: >-
+  Papercusp's own engineering pot: senior su collaborators work the shared
+  staging tree, coordinate through work items and plans, and ship through the
+  green-checkpoint release gate.
+
 knobs:
   releaseGate:
     # Clones of this pot can have a GitHub default branch of `main`; keep the
     # release gate pointed at the staging integration branch so it can promote.
     integrationBranch: staging
+
 workItem:
   kind: feature
   idPrefix: WI
+
 spine:
   decider: su
   claimModel: self-claim-priority
-  default:
-    to: idle
+  default: { to: idle }
+
 roles:
   - id: su
     description: Senior engineer-collaborator with operator and admin authority.
   - id: operator
-    description: Executes a bounded, owner-authorized operator-config or release operation with
-      independent preflight and verification. Launched explicitly; the pot's su decider never
-      dispatches this role automatically.
+    description: >-
+      Executes a bounded, owner-authorized operator-config or release operation
+      with independent preflight and verification. Launched explicitly; the
+      pot's su decider never dispatches this role automatically.
+
 lexicon:
   workUnit: work item
   reviewGate: green checkpoint
+
 fleet:
   workerRoles:
+    # The explicit pot/role ceiling required by D-005. `*` preserves this pot's
+    # superuser mandate while identity grants still cannot exceed the declared
+    # ceiling (and the universal never-auto protected floor remains independent).
     - id: su
-      capabilities:
-        - "*"
+      capabilities: ["*"]
     - id: operator
-      capabilities:
-        - operator:write
+      capabilities: ["operator:write"]
     - id: researcher
       capabilities:
         - "capability:fetch"

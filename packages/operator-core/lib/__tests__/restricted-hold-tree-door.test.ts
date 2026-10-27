@@ -148,7 +148,7 @@ describe('shell doors refuse before booting anything', () => {
     const tauriRan = join(bin, 'tauri.ran');
     writeFileSync(
       join(bin, 'node'),
-      `#!/usr/bin/env bash\ncase "$1" in */verify-tauri-deadline.mjs) exit 0 ;; esac\nprintf '%s\\n' "$@" > '${record}'\n` +
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > '${record}'\n` +
         (nodeExit === 0 ? 'exit 0\n' : `echo 'RESTRICTED_HOLD_REFUSED door=x error=restricted_write_held booted=none fake' >&2\nexit ${nodeExit}\n`),
     );
     writeFileSync(join(bin, 'tauri'), `#!/usr/bin/env bash\ntouch '${tauriRan}'\nexit 0\n`);
@@ -182,7 +182,7 @@ describe('shell doors refuse before booting anything', () => {
     const script = join(REPO, 'scripts', 'verify-tauri-headless.sh');
     const refused = shims(RESTRICTED_HOLD_PREFLIGHT_EXIT.refuse);
     const r = spawnSync('bash', [script, '--', 'true'], { env: refused.env, encoding: 'utf8', timeout: 60_000 });
-    expect(r.status, r.stderr).toBe(1);
+    expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/restricted-write fence refused this verifier launch/);
     expect(r.stderr).not.toMatch(/PAPERCUSP_SID is unset/);
     expect(readFileSync(refused.record, 'utf8').trim().split('\n')).toEqual(gateArgv('verify-tauri-headless'));

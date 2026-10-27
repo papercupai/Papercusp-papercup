@@ -82,14 +82,6 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, withWorkspace: H.withWorkspace };
 });
 
-// Type-pinning persistence has its own integration suite. Keep these start-door
-// cases on the supplied contract snapshot instead of feeding plan-row SQL doubles
-// to the unrelated type registry.
-vi.mock('../../../plan-types/pins', async (orig) => ({
-  ...(await orig<typeof import('../../../plan-types/pins')>()),
-  withPinnedPlanTypes: <T>(_scope: unknown, fn: () => Promise<T>) => fn(),
-}));
-
 vi.mock('../source', async (orig) => {
   const actual = await orig<typeof import('../source')>();
   return {
