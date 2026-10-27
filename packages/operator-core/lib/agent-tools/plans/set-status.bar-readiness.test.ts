@@ -75,20 +75,17 @@ const body = async (args: Record<string, unknown>) =>
 /** A successful lock that resolved the plan's scope, as the real withPlanLock does. */
 function lockOk(fromStatus: string, extraValue: Record<string, unknown> = {}) {
   lockM.mockImplementation(async (_ctx: unknown, _opts: unknown, mutate: unknown) => {
-    const { value } = await (mutate as (
-      b: string,
-      meta: unknown,
-      scope: { workspaceId: string; harnessSlug: string },
-    ) => Promise<{ value: unknown }>)(
+    const scope = { workspaceId: 'ws-1', harnessSlug: 'papercusp' };
+    const { value } = await (mutate as (b: string, meta: unknown, lockScope: typeof scope) => Promise<{ value: unknown }>)(
       `- **P-001** \`${fromStatus}\` outcome`,
-      undefined,
-      { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+      {},
+      scope,
     );
     return {
       kind: 'ok',
       value: { ...(value as Record<string, unknown>), ...extraValue },
       filePath: 'plan.md',
-      scope: { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+      scope,
     } as never;
   });
 }

@@ -215,14 +215,17 @@ function propertyValue(object: ts.ObjectLiteralExpression, key: string): ts.Expr
   return undefined;
 }
 
-function sameFileStringConstants(sourceFile: ts.SourceFile): ReadonlyMap<string, string> {
+function sameFileStringConstants(sourceFile: ts.SourceFile, exportedOnly = false): Map<string, string> {
   const constants = new Map<string, string>();
   for (const statement of sourceFile.statements) {
     if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+    if (exportedOnly && !statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+      continue;
+    }
     for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name)) continue;
-      const value = declaration.initializer;
-      if (value && (ts.isStringLiteralLike(value) || ts.isNoSubstitutionTemplateLiteral(value))) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      const value = unwrapExpression(declaration.initializer);
+      if (ts.isStringLiteralLike(value) || ts.isNoSubstitutionTemplateLiteral(value)) {
         constants.set(declaration.name.text, value.text);
       }
     }
@@ -246,6 +249,10 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
 
 /** Name registry objects in scope: local binding → { key → literal }. */
 type StringObjectConstants = ReadonlyMap<string, ReadonlyMap<string, string>>;
+type StringConstantBindings = {
+  strings: Map<string, string>;
+  objects: Map<string, Map<string, string>>;
+};
 
 /**
  * `const NAMES = { submit: 'blueprint:submit', … } as const` → NAMES → { submit → 'blueprint:submit' }.
@@ -298,11 +305,34 @@ function literalString(
   return undefined;
 }
 
-function toolNamesIn(sourceFile: ts.SourceFile, importedObjects: StringObjectConstants = new Map()): string[] {
+/** Resolve a string property in assignment order, including shared tool-definition spreads. */
+function literalObjectString(
+  object: ts.ObjectLiteralExpression,
+  key: string,
+  constants: ReadonlyMap<string, string>,
+  objects: StringObjectConstants,
+): string | undefined {
+  let value: string | undefined;
+  for (const property of object.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      const expression = unwrapExpression(property.expression);
+      const entries = ts.isIdentifier(expression) ? objects.get(expression.text) : undefined;
+      if (entries?.has(key)) value = entries.get(key);
+    } else if (ts.isPropertyAssignment(property)) {
+      const name = property.name;
+      if ((ts.isIdentifier(name) || ts.isStringLiteralLike(name)) && name.text === key) {
+        value = literalString(property.initializer, constants, objects);
+      }
+    }
+  }
+  return value;
+}
+
+function toolNamesIn(sourceFile: ts.SourceFile, imported: StringConstantBindings): string[] {
   const names: string[] = [];
-  const constants = sameFileStringConstants(sourceFile);
+  const constants = new Map([...imported.strings, ...sameFileStringConstants(sourceFile)]);
   const objects: StringObjectConstants = new Map([
-    ...importedObjects,
+    ...imported.objects,
     ...stringObjectConstants(sourceFile, false),
   ]);
   const visit = (node: ts.Node): void => {
@@ -319,29 +349,7 @@ function toolNamesIn(sourceFile: ts.SourceFile, importedObjects: StringObjectCon
           mcp && ts.isObjectLiteralExpression(mcp)
             ? literalString(propertyValue(mcp, 'name'), constants, objects)
             : undefined;
-        // Object spreads participate in the runtime definition, including an
-        // imported handler definition whose registration only overrides roles.
-        // Walk backwards so a later name (or spread) wins just as it does in JS.
-        let declared: string | undefined;
-        for (const property of [...input.properties].reverse()) {
-          if (ts.isPropertyAssignment(property)) {
-            const key = ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)
-              ? property.name.text : undefined;
-            if (key !== 'name') continue;
-            declared = literalString(property.initializer, constants, objects);
-            break;
-          }
-          if (ts.isSpreadAssignment(property)) {
-            const value = unwrapExpression(property.expression);
-            const entries = ts.isIdentifier(value) ? objects.get(value.text) : undefined;
-            // An unresolved spread might overwrite an earlier name.
-            if (!entries) break;
-            if (!entries.has('name')) continue;
-            declared = entries.get('name');
-            break;
-          }
-        }
-        const name = projected ?? declared;
+        const name = projected ?? literalObjectString(input, 'name', constants, objects);
         if (name) names.push(name);
       }
     }
@@ -359,48 +367,52 @@ function scriptKind(path: string): ts.ScriptKind {
 }
 
 /**
- * Named imports that bind an EXPORTED `const X = { key: 'literal' }` name registry,
+ * Named imports that bind an exported string or `const X = { key: 'literal' }` registry,
  * resolved through the same graph resolver the scan already walks, keyed by the
  * local binding (so `import { NAMES as N }` resolves `N.submit`).
  */
-function importedStringObjectConstants(
+function importedStringConstantBindings(
   sourceFile: ts.SourceFile,
   file: string,
   repoRoot: string,
   packages: Parameters<typeof resolveGraphImport>[3],
-  cache: Map<string, Map<string, Map<string, string>>>,
-): StringObjectConstants {
-  const imported = new Map<string, ReadonlyMap<string, string>>();
+  cache: Map<string, StringConstantBindings>,
+): StringConstantBindings {
+  const imported: StringConstantBindings = { strings: new Map(), objects: new Map() };
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
     const bindings = statement.importClause?.namedBindings;
     if (!bindings || !ts.isNamedImports(bindings) || bindings.elements.length === 0) continue;
     const target = resolveGraphImport(statement.moduleSpecifier.text, file, repoRoot, packages);
     if (!target) continue;
-    const exported = exportedStringObjectConstants(target, repoRoot, packages, cache);
+    const exported = exportedStringConstantBindings(target, repoRoot, packages, cache);
     for (const element of bindings.elements) {
-      const entries = exported.get((element.propertyName ?? element.name).text);
-      if (entries) imported.set(element.name.text, entries);
+      if (element.isTypeOnly) continue;
+      const name = (element.propertyName ?? element.name).text;
+      const entries = exported.objects.get(name);
+      if (entries) imported.objects.set(element.name.text, entries);
+      const value = exported.strings.get(name);
+      if (value !== undefined) imported.strings.set(element.name.text, value);
     }
   }
   return imported;
 }
 
 /**
- * The string-object constants a module EXPORTS, including ones it re-exports
+ * The string and string-object constants a module exports, including re-exports
  * (`export { X } from './y'`, `export * from './y'`). Without the re-export hop, moving a
  * tool-name object into its own module behind a barrel silently drops every tool that names
  * itself through it from the derived catalog.
  */
-function exportedStringObjectConstants(
+function exportedStringConstantBindings(
   target: string,
   repoRoot: string,
   packages: Parameters<typeof resolveGraphImport>[3],
-  cache: Map<string, Map<string, Map<string, string>>>,
-): Map<string, Map<string, string>> {
+  cache: Map<string, StringConstantBindings>,
+): StringConstantBindings {
   const cached = cache.get(target);
   if (cached) return cached;
-  const exported = new Map<string, Map<string, string>>();
+  const exported: StringConstantBindings = { strings: new Map(), objects: new Map() };
   // Seeded before the walk so a re-export cycle terminates instead of recursing.
   cache.set(target, exported);
   const targetSource = ts.createSourceFile(
@@ -410,7 +422,8 @@ function exportedStringObjectConstants(
     true,
     scriptKind(target),
   );
-  for (const [name, entries] of stringObjectConstants(targetSource, true)) exported.set(name, entries);
+  for (const [name, value] of sameFileStringConstants(targetSource, true)) exported.strings.set(name, value);
+  for (const [name, entries] of stringObjectConstants(targetSource, true)) exported.objects.set(name, entries);
   for (const statement of targetSource.statements) {
     if (
       !ts.isExportDeclaration(statement) ||
@@ -422,15 +435,23 @@ function exportedStringObjectConstants(
     }
     const source = resolveGraphImport(statement.moduleSpecifier.text, target, repoRoot, packages);
     if (!source) continue;
-    const reexported = exportedStringObjectConstants(source, repoRoot, packages, cache);
+    const reexported = exportedStringConstantBindings(source, repoRoot, packages, cache);
     const clause = statement.exportClause;
     if (!clause) {
-      for (const [name, entries] of reexported) if (!exported.has(name)) exported.set(name, entries);
+      for (const [name, entries] of reexported.objects) {
+        if (!exported.objects.has(name)) exported.objects.set(name, entries);
+      }
+      for (const [name, value] of reexported.strings) {
+        if (!exported.strings.has(name)) exported.strings.set(name, value);
+      }
     } else if (ts.isNamedExports(clause)) {
       for (const element of clause.elements) {
         if (element.isTypeOnly) continue;
-        const entries = reexported.get((element.propertyName ?? element.name).text);
-        if (entries) exported.set(element.name.text, entries);
+        const name = (element.propertyName ?? element.name).text;
+        const entries = reexported.objects.get(name);
+        if (entries) exported.objects.set(element.name.text, entries);
+        const value = reexported.strings.get(name);
+        if (value !== undefined) exported.strings.set(element.name.text, value);
       }
     }
   }
@@ -447,7 +468,7 @@ function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
   const pending = [entrypoint];
   const visited = new Set<string>();
   const fileIndex = new Map<string, string[]>();
-  const objectConstantCache = new Map<string, Map<string, Map<string, string>>>();
+  const constantCache = new Map<string, StringConstantBindings>();
   while (pending.length > 0) {
     const file = pending.pop()!;
     if (visited.has(file)) continue;
@@ -459,8 +480,8 @@ function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
       true,
       scriptKind(file),
     );
-    const importedObjects = importedStringObjectConstants(sourceFile, file, repoRoot, packages, objectConstantCache);
-    for (const name of toolNamesIn(sourceFile, importedObjects)) {
+    const imported = importedStringConstantBindings(sourceFile, file, repoRoot, packages, constantCache);
+    for (const name of toolNamesIn(sourceFile, imported)) {
       const existing = fileIndex.get(name);
       if (existing) existing.push(file);
       else fileIndex.set(name, [file]);

@@ -540,7 +540,9 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
     expect(delivery.recovery.carriedProbes).toContain(
       '✗ CHANGED — the carried value is green [WI-1 #changed-probe]: observed "red"',
     );
-    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('state:read', { cell: 'test.carriedValue' }, expect.any(AbortSignal));
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith(
+      'state:read', { cell: 'test.carriedValue' }, expect.any(AbortSignal),
+    );
     expect(delivery.recovery.carriedProbes).not.toContain('COULD NOT RUN');
   });
 
@@ -573,7 +575,9 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
       heldItems: [{ id: 'WI-1', harness: 'h', checkpoint } as never],
       carriedRefChangesFn: async () => null,
     });
-    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('state:read', { cell: 'test.carriedValue' }, expect.any(AbortSignal));
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith(
+      'state:read', { cell: 'test.carriedValue' }, expect.any(AbortSignal),
+    );
     expect(delivery.recovery.carriedProbes).toContain(
       '? COULD NOT RUN — the carried value is green [WI-1 #unavailable-probe]:',
     );

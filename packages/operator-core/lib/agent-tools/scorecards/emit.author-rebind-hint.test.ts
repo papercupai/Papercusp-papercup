@@ -28,9 +28,9 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
-    readRubric: async (rubricId: string) => {
-      const rubric = await getRubric(rubricId);
-      return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+    readRubric: async (...a: unknown[]) => {
+      const rubric = await getRubric(...a);
+      return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
     },
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
     readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),

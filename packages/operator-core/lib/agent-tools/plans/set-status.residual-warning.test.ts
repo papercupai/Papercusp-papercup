@@ -78,12 +78,9 @@ function lockReturnsMutatorValue(knownItems: Set<string>, currentStatus = 'wip')
     const intent = (opts as { intent: string }).intent;
     const itemId = /P-\d{3,}/.exec(intent)?.[0] ?? '';
     const fakeBody = knownItems.has(itemId) ? `- **${itemId}** \`${currentStatus}\` x` : '';
-    const { value } = await (mutate as (
-      b: string | null,
-      meta: unknown,
-      scope: { workspaceId: string; harnessSlug: string },
-    ) => Promise<{ value: unknown }>)(fakeBody, undefined, { workspaceId: 'default', harnessSlug: 'papercup' });
-    return { kind: 'ok', value, filePath: 'plan.md' } as never;
+    const scope = { workspaceId: 'default', harnessSlug: 'papercup' };
+    const { value } = await (mutate as (b: string | null, meta: unknown, lockScope: typeof scope) => Promise<{ value: unknown }>)(fakeBody, {}, scope);
+    return { kind: 'ok', value, filePath: 'plan.md', scope } as never;
   });
 }
 

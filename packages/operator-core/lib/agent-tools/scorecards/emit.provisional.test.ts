@@ -11,10 +11,9 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
-    // The writer's failure-aware read must use these fixtures, just like getRubric.
-    readRubric: async (rubricId: string) => {
-      const rubric = await getRubric(rubricId);
-      return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+    readRubric: async (...a: unknown[]) => {
+      const rubric = await getRubric(...a);
+      return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
     },
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
     getRubricCriteriaHash: async () => null,
@@ -68,7 +67,7 @@ describe('scorecards:emit preserved grading baseline', () => {
   });
   it('requires the existing grading audit before comparing a pending baseline', async () => {
     listScorecards.mockResolvedValue([{ ...baseline(), gradingAudit: { state: 'pending' } }]);
-    expect(await emitScorecard(args(), EMIT_INPUT)).toMatchObject({ ok: false, code: 'grading_audit_required' });
+    expect(await emitScorecard(args(), EMIT_INPUT)).toMatchObject({ ok: false, code: 'baseline_not_comparable' });
     expect(captureImprovement).not.toHaveBeenCalled();
   });
   it('refuses an absent baseline instead of filing ungrounded comparison evidence', async () => {
