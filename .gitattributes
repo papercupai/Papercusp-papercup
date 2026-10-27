@@ -1,0 +1,6 @@
+# .papercusp/memory/raw.md is an append-only, timestamped memory log written on every
+# checkout (canonical tree, fork/drill pots). Concurrent appends on two branches always
+# touch the same end-of-file region, so a normal 3-way merge conflicts on every sync-back
+# (EI-26583573652314044: it stalled the P-016 drill pot's upstream sync for 3 days).
+# Entries are order-insensitive, so keep both sides' lines.
+.papercusp/memory/raw.md merge=union
