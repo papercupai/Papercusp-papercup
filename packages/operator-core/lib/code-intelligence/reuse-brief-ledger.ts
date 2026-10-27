@@ -5,7 +5,8 @@ import { reuseHoldout } from './reuse-measurement';
 export interface ReuseIssuedRecord {
   context: ReuseProviderContext;
   observations: readonly ReuseProviderObservation[];
-  recover: { tool: string; args: unknown };
+  /** The recovery call the recipient received; absent when it was withheld (P-006). */
+  recover?: { tool: string; args: unknown };
 }
 
 /** Keep the complete identity, including dispatch and source/index versions, independently per source. */
@@ -50,7 +51,7 @@ export async function recordReuseBriefIssued(input: ReuseIssuedRecord, signal: A
         (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, cited_paths, suggested_call, chars)
         VALUES (${input.context.workspaceId}, ${input.context.owner}, ${Number(epochs[0]?.epoch ?? 0)},
           ${turns[0].turn_id}, ${row.status === 'held-out' ? `reuse-holdout-${row.provider}` : `reuse-${row.provider}`}, ${subject}, ${input.context.commit ?? null},
-          ${row.citedPaths}::text[], ${`${input.recover.tool} ${JSON.stringify(input.recover.args)}`}, ${row.chars})
+          ${row.citedPaths}::text[], ${input.recover ? `${input.recover.tool} ${JSON.stringify(input.recover.args)}` : null}, ${row.chars})
         ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
     }
     if (signal.aborted) throw new Error('Reuse brief ledger deadline');

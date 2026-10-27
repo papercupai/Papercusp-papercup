@@ -8,8 +8,8 @@
     "docs/evidence/ews-p005-r10-stranded-live/run.mjs"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-27T16:24:15.095Z",
-  "finishedAt": "2026-10-27T16:24:16.306Z",
+  "startedAt": "2026-10-27T18:42:22.131Z",
+  "finishedAt": "2026-10-27T18:42:23.361Z",
   "plan": "event-wait-settlement-2026-10-20",
   "planItem": "P-005",
   "workItemId": "WI-6554700010018157",
@@ -17,57 +17,57 @@
     "AUTO-BAR-R-10-P-005@3"
   ],
   "evidencePlane": "live",
-  "summary": "The R-10 probe (docs/evidence/ews-p005-r10-stranded-live/probe.sql) read the re-check sweep's own population on papercusp-workspace and returned 14|3|11|0|0|0|100|13: 14 blocked item(s) with every blocker cleared = 3 re-blocked after the clear + 11 under another hold + 0 stranded + 0 cleared since the last completed tick + 0 with unknown times; the sweep host routine last started 100s before the reading and the repair path has written 13 audit row(s). The committed oracle judged it PASS. All five negative controls failed on their targeted assertion as required.",
+  "summary": "The R-10 probe (docs/evidence/ews-p005-r10-stranded-live/probe.sql) read the re-check sweep's own population on papercusp-workspace and returned 14|3|11|0|0|0|349|13: 14 blocked item(s) with every blocker cleared = 3 re-blocked after the clear + 11 under another hold + 0 stranded + 0 cleared since the last completed tick + 0 with unknown times; the sweep host routine last started 349s before the reading and the repair path has written 13 audit row(s). The committed oracle judged it PASS. All five negative controls failed on their targeted assertion as required.",
   "assertions": [
     {
       "id": "live:sweep-is-live",
       "passed": true,
-      "evidence": "gate-watcher-tick last started 100s ago (limit 900s; -1 = routine row missing); row 14|3|11|0|0|0|100|13"
+      "evidence": "gate-watcher-tick last started 349s ago (limit 900s; -1 = routine row missing); row 14|3|11|0|0|0|349|13"
     },
     {
       "id": "live:every-candidate-classified-once",
       "passed": true,
-      "evidence": "reblocked_after_clear=3 + other_hold=11 + stranded=0 + cleared_since_tick=0 + missing_times=0 = 14; all_cleared_blocked=14; row 14|3|11|0|0|0|100|13"
+      "evidence": "reblocked_after_clear=3 + other_hold=11 + stranded=0 + cleared_since_tick=0 + missing_times=0 = 14; all_cleared_blocked=14; row 14|3|11|0|0|0|349|13"
     },
     {
       "id": "live:no-unknown-times",
       "passed": true,
-      "evidence": "missing_times=0; row 14|3|11|0|0|0|100|13"
+      "evidence": "missing_times=0; row 14|3|11|0|0|0|349|13"
     },
     {
       "id": "live:no-stranded-item",
       "passed": true,
-      "evidence": "stranded=0 (blocked, every blocker cleared before the last completed tick, no other hold); row 14|3|11|0|0|0|100|13"
+      "evidence": "stranded=0 (blocked, every blocker cleared before the last completed tick, no other hold); row 14|3|11|0|0|0|349|13"
     },
     {
       "id": "live:repair-path-observed",
       "passed": true,
-      "evidence": "repair_audit_rows=13 (audit rows by system:blocker-stranded-repair); row 14|3|11|0|0|0|100|13"
+      "evidence": "repair_audit_rows=13 (audit rows by system:blocker-stranded-repair); row 14|3|11|0|0|0|349|13"
     },
     {
       "id": "control-stranded:fails-on-no-stranded-item",
       "passed": true,
-      "evidence": "one synthetic local candidate, cleared a day before the tick, no hold keys: the falsifier must fire; row 15|3|11|1|0|0|100|13; oracle passed=false; failing assertions: no-stranded-item"
+      "evidence": "one synthetic local candidate, cleared a day before the tick, no hold keys: the falsifier must fire; row 15|3|11|1|0|0|349|13; oracle passed=false; failing assertions: no-stranded-item"
     },
     {
       "id": "control-null-flags:fails-on-no-stranded-item",
       "passed": true,
-      "evidence": "a stranded candidate whose origin and hold keys are all absent (NULL): it must still be counted stranded, not dropped from every bucket; row 15|3|11|1|0|0|100|13; oracle passed=false; failing assertions: no-stranded-item"
+      "evidence": "a stranded candidate whose origin and hold keys are all absent (NULL): it must still be counted stranded, not dropped from every bucket; row 15|3|11|1|0|0|350|13; oracle passed=false; failing assertions: no-stranded-item"
     },
     {
       "id": "control-missing-time:fails-on-no-unknown-times",
       "passed": true,
-      "evidence": "a candidate with no state_changed_at: an unclassifiable row must fail rather than pass silently; row 15|3|11|0|0|1|101|13; oracle passed=false; failing assertions: no-unknown-times"
+      "evidence": "a candidate with no state_changed_at: an unclassifiable row must fail rather than pass silently; row 15|3|11|0|0|1|350|13; oracle passed=false; failing assertions: no-unknown-times"
     },
     {
       "id": "control-stale-sweep:fails-on-sweep-is-live",
       "passed": true,
-      "evidence": "the sweep routine last start moved a day back: a stopped sweep must not read as nothing stranded; row 14|3|11|0|0|0|86501|13; oracle passed=false; failing assertions: sweep-is-live"
+      "evidence": "the sweep routine last start moved a day back: a stopped sweep must not read as nothing stranded; row 14|3|11|0|0|0|86750|13; oracle passed=false; failing assertions: sweep-is-live"
     },
     {
       "id": "control-no-repair-path:fails-on-repair-path-observed",
       "passed": true,
-      "evidence": "the repair actor renamed to one that never wrote: a build without the repair path must fail; row 14|3|11|0|0|0|101|0; oracle passed=false; failing assertions: repair-path-observed"
+      "evidence": "the repair actor renamed to one that never wrote: a build without the repair path must fail; row 14|3|11|0|0|0|350|0; oracle passed=false; failing assertions: repair-path-observed"
     }
   ],
   "environment": {

@@ -163,7 +163,10 @@ async function providers() {
   // (provider-adapters-to-packages-2026-10-11 P-002): one per platform here.
   const socialWrite = vi.fn(async (_args: Args) => ({ externalId: 'p1' }));
   for (const platform of ['mastodon', 'reddit']) {
-    const social: ProviderDescriptor = { id: platform, contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.post', 'social.reply'], egressHosts: [`${platform}.example.test`] };
+    const social: ProviderDescriptor = { id: platform, contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.post', 'social.reply'], egressHosts: [`${platform}.example.test`],
+      // provider-registry refuses an unverified social provider before the ledger (4d002089d5);
+      // same verified shape as social-provider.fixture.ts installSocialPackages.
+      verification: { verifiedAt: '2026-10-16', sources: ['https://example.test/contract'], capabilities: { 'social.post': '2026-10-16', 'social.reply': '2026-10-16' } } };
     await registry.register({ pluginName: platform, descriptor: social, adapter: recorder(social, async ({ args }) => socialWrite(args)) });
   }
   const noHttp: HostFetch = async () => {

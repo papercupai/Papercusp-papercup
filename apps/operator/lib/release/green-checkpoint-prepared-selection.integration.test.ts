@@ -1013,6 +1013,9 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     const f = await lineage();
     f.deps.qualificationAttemptId = "independent-joined-attempt";
     f.deps.runId = "independent-joined-run";
+    // The CLI marks a run that joined an attempt with an already-activated candidate
+    // (scheduledAttemptPinnedCandidate non-null). WI-6554700010030361.
+    f.deps.joinedQualificationAttempt = true;
     const options: CheckpointOpts = { candidate: f.knownGood, candidateSource: "tip", noPush: true };
     const prepared = await f.prepare(options);
     expect(prepared.candidate).toBe(f.knownGood);
@@ -1021,6 +1024,16 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     expect(f.deps.qualificationAttemptId).toBe("independent-joined-attempt");
     expect(options).toEqual({ candidate: f.knownGood, candidateSource: "tip", noPush: true });
     expect(f.events).not.toContain("select-known-good");
+  }, 180_000);
+
+  it("a fresh scheduled fire with its own run id still re-selects its tip hint (WI-6554700010030361)", async () => {
+    // Every scheduled fire mints a fresh run id, so run id !== attempt id is NOT a joined signal.
+    const f = await lineage();
+    f.deps.qualificationAttemptId = "independent-fresh-attempt";
+    f.deps.runId = "independent-fresh-run";
+    const prepared = await f.prepare({ candidate: f.tip, candidateSource: "tip", noPush: true });
+    expect(f.events).toContain("select-known-good");
+    expect(prepared.candidate).toBe(f.knownGood);
   }, 180_000);
 
   it("a known-good point already at the green pin cannot replace the unjudged tip", async () => {

@@ -164,6 +164,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
       acquirePool: 'scheduler-claim',
       signal,
       acquireTimeoutMs: SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS,
+      acquireRetries: 0,
       statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
       lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
     });

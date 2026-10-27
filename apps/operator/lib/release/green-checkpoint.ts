@@ -1735,6 +1735,12 @@ export interface CheckpointDeps {
   runId?: string;
   /** Logical qualification transported by the detached launcher. */
   qualificationAttemptId?: string;
+  /** WI-6554700010030361 — this scheduled run JOINED an existing qualification attempt whose
+   *  candidate was already selected and activated (`scheduledAttemptPinnedCandidate` returned
+   *  non-null). Fresh-candidate selection retains that candidate: re-running the quiet cut or the
+   *  known-good recut could move a joined attempt off the candidate it already activated. The run
+   *  id cannot signal this — every scheduled fire mints a fresh run id — so the CLI sets it. */
+  joinedQualificationAttempt?: boolean;
   /** Stable identity shared by this fire's anchor and terminal/pending outcome rows. */
   gateFireId?: string;
   /** Scheduled routine row that launched this checkpoint child, if any. */
@@ -13258,6 +13264,9 @@ async function selectCheckpointFreshCandidate(
   const { lastReady, opts, repairVerification, initialCandidateVerification, diagnosticOnly, repairQueue } = input;
   // A supplied candidate can be a tip hint; only pinned provenance suppresses fresh cuts.
   const isPinnedCandidate = checkpointCandidateProvenance(opts).candidateSource === "pinned";
+  // A pinned candidate and a joined attempt's already-selected candidate (WI-6554700010030361)
+  // are both retained as-is: neither the quiet cut nor the known-good recut may move them.
+  const retainsSelectedCandidate = isPinnedCandidate || deps.joinedQualificationAttempt === true;
   // QUIET CUT (2026-07-01): never judge a tip younger than the quiet window. On a shared
   // tree, a logically-atomic cross-package change lands across SEVERAL ~3-min git-sync
   // ticks — a candidate cut between the halves is TORN and reds the whole run on a state
@@ -13274,7 +13283,7 @@ async function selectCheckpointFreshCandidate(
   const candidateBeforeQuietCut = candidate;
   let quietCutApplied = false;
   if (
-    !isPinnedCandidate &&
+    !retainsSelectedCandidate &&
     !repairVerification &&
     !initialCandidateVerification &&
     // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
@@ -13322,7 +13331,7 @@ async function selectCheckpointFreshCandidate(
   // round's red legs (`redLegsAtR1`), so every fresh candidate says where it came from.
   let freezeCut: FreezeCutRecord | null = null;
   if (
-    !isPinnedCandidate &&
+    !retainsSelectedCandidate &&
     !repairVerification &&
     !initialCandidateVerification &&
     !diagnosticOnly &&
@@ -26988,7 +26997,9 @@ if (require.main === module) {
         cfg,
         candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? cfg.integrationBranch,
         runCmd,
-        { checkpointSelection: { deps: realCheckpointDeps(cfg, undefined, runId), opts: {
+        { checkpointSelection: { deps: Object.assign(realCheckpointDeps(cfg, undefined, runId), {
+          joinedQualificationAttempt: pinnedCandidate !== null,
+        }), opts: {
           candidate: candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? undefined,
           candidateSource, runStartedAtMs: processStartedAtMs,
         } } },

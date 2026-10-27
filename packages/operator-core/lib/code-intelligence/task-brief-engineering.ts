@@ -8,7 +8,8 @@ export interface TaskEngineeringEvidence {
   validation: EvidenceRef[];
   execution: EvidenceRef[];
   gaps: string[];
-  recover: EngineeringRef;
+  /** Withheld from a delivered brief when the recipient was not listed graph:query (P-006). */
+  recover?: EngineeringRef;
 }
 
 /** A view over canonical records, never a second index or an execution assertion. */

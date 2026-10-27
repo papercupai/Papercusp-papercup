@@ -35,6 +35,11 @@ import catchall from '../endpoint-route/routes/agent-tools/catchall';
 import type { RouteContext } from '../endpoint-route/define-route';
 import { PrincipalCheckError, requirePrincipal, tryResolvePrincipal } from '../auth/require-principal';
 import { mintAppKey } from './key';
+import { setKernelEnforcementResolver } from '../projected-tool-deps';
+// lib/events/index.ts installs the DB-backed control-anchor kernel resolver at import time.
+// This fixture mocks @papercusp/db-org, so that control-anchor read rejects and every call is
+// denied policy-unavailable (403). Uninstall it: app-key scope + structural kernel checks stay real.
+beforeEach(() => { setKernelEnforcementResolver(null); });
 
 const CTX: RouteContext = {
   principal: null,

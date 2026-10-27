@@ -30,6 +30,22 @@ describe('P009 existing issued-only PG ledger', () => {
     expect(JSON.parse(rows[0]!.subject)).toMatchObject({ surface: 'claim', invocation: 'real-fixture-dispatch',
       workItem: 'WI-fixture', planItems: ['P-009'], sourceVersion: 'blob-v1', indexVersion: 'index-v2', outcome: 'complete' });
   });
+  it('SPEC-P-006-B: a withheld recovery call is ledgered as no suggested call, never a tool name', async () => {
+    const recipient = 'reuse-brief-ledger-p006-recipient', signal = new AbortController().signal;
+    await fx.admin`INSERT INTO harness_shared.identity_hook_turns (workspace_id, owner_id, turn_id)
+      VALUES (${fx.workspaceId}, ${recipient}, 'p006-fixture-turn')`;
+    const listed = input('p006-listed'), withheld = input('p006-withheld');
+    delete withheld.recover;
+    for (const record of [listed, withheld]) {
+      record.context.owner = recipient;
+      expect(await recordReuseBriefIssued(record, signal)).toBe(true);
+    }
+    const rows = await fx.admin`SELECT subject, suggested_call
+      FROM harness_shared.code_intel_pushes WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${recipient} ORDER BY id`;
+    expect(rows.map(r => [JSON.parse(r.subject).invocation, r.suggested_call])).toEqual([
+      ['p006-listed', 'work_items:get {"id":"WI-fixture"}'], ['p006-listed', 'work_items:get {"id":"WI-fixture"}'],
+      ['p006-withheld', null], ['p006-withheld', null]]);
+  });
   it('does not persist unknown/no-match/budget outcomes, invent turns or issue cancelled facts', async () => {
     const record = input('non-issued');
     record.observations = [row('coverage', 'unknown'), row('provenance', 'no-match'), row('cochange', 'budget')];
