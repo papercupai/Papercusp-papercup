@@ -353,7 +353,17 @@ describe('scoped runs ask the shared typecheck service first (WI-10003415)', () 
         if (newline < 0) return;
         const request = JSON.parse(buffer.slice(0, newline)) as Record<string, unknown>;
         requests.push(request);
-        socket.end(`${JSON.stringify(reply(request))}\n`);
+        // Protocol v2: a terminal reply must be a `result`, name the serving runtime, and echo
+        // the request's requestId + identity — requestTscService refuses anything else.
+        socket.end(
+          `${JSON.stringify({
+            kind: 'result',
+            runtime: { pid: 4242, startedAt: 1 },
+            ...reply(request),
+            requestId: request.requestId,
+            identity: request.identity,
+          })}\n`,
+        );
       });
     });
     await new Promise<void>((resolveListen) => server.listen(socketPath, resolveListen));
@@ -406,8 +416,14 @@ describe('scoped runs ask the shared typecheck service first (WI-10003415)', () 
     const raw = await handle(scopedArgs);
 
     expect(requests).toEqual([
-      { v: 1, requestId: expect.stringMatching(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i),
-        root, project: join(root, 'tsconfig.json'), files: [join(root, 'src', 'target.ts')] },
+      expect.objectContaining({
+        v: 2,
+        root,
+        project: join(root, 'tsconfig.json'),
+        files: [join(root, 'src', 'target.ts')],
+        requestId: expect.any(String),
+        identity: expect.objectContaining({ project: join(root, 'tsconfig.json') }),
+      }),
     ]);
     expect(childProcess.spawn).not.toHaveBeenCalled();
     expect(governedExecution.begin).not.toHaveBeenCalled();
