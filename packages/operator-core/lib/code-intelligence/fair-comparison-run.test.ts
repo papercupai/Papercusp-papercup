@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { SymbolSite } from './contracts';
-import { preregister, type AnswerKey, type ArmCapabilities, type FairCase } from './fair-comparison';
+import type { CodeIntelAnswer, SymbolSite } from './contracts';
+import { applyAdjudication, preregister, type AdjudicationVerdict, type AnswerKey, type ArmCapabilities, type FairCase } from './fair-comparison';
 import { guardedArm, type FairArm } from './fair-comparison-arms';
-import { preregMismatch, runArm, scoreRuns, type FairArmFactory, type ResourceStage } from './fair-comparison-run';
+import { NATIVE_PROTOCOL_UNKNOWN, preregMismatch, runArm, scoreRuns, type ArmResourceSample, type ArmRepetitionIdentity, type ArmRun, type FairArmFactory, type NativeGraphReplay, type NativeProtocolProof, type ResourceStage } from './fair-comparison-run';
 import { nativeEvaluationProtocol, nativeLanguageControls } from './fair-comparison-corpus';
 
 const cases: FairCase[] = [
@@ -258,5 +259,169 @@ describe('scoreRuns', () => {
     expect(() => scoreRuns([failed, b, rerun], cases, keys, {}, prereg)).toThrow(/more than one run for arm\(s\) arm-a/);
     // Control: the same runs with the superseded one removed score normally.
     expect(scoreRuns([b, rerun], cases, keys, {}, prereg).aggregates.filter((x) => x.armId === 'arm-a')).toHaveLength(1);
+  });
+});
+
+describe('native protocol proof qualification', () => {
+  const controls = nativeLanguageControls();
+  const sourceCommit = 'b'.repeat(40);
+  const repositoryCase: FairCase = {
+    id: 'native-repository-definition', intent: 'definition', subject: 'example',
+    anchorFile: 'repo/src/example.ts', tags: [], source: 'repository-task', language: 'typescript',
+    sourceFingerprint: 'c'.repeat(64), taskRef: 'task:example',
+  };
+  const nativeCases = [...controls.cases.filter(kase => kase.language === 'typescript'), repositoryCase];
+  const repositoryKey: AnswerKey = {
+    caseId: repositoryCase.id, sites: ['repo/src/example.ts:1'], aliases: {}, rejected: [], neutral: [],
+  };
+  const nativeKeys = [...controls.keys.filter(key => nativeCases.some(kase => kase.id === key.caseId)), repositoryKey];
+  const verdicts = {
+    [repositoryCase.id]: [{ site: 'repo/src/example.ts:2', verdict: 'valid', note: 'fixture adjudication' }],
+  } satisfies Readonly<Record<string, readonly AdjudicationVerdict[]>>;
+  const finalKeys = nativeKeys.map(key => applyAdjudication(key, verdicts[key.caseId] ?? []));
+  const finalKeyByCase = new Map(finalKeys.map(key => [key.caseId, key]));
+  const protocol = {
+    ...nativeEvaluationProtocol(sourceCommit, controls.files, [
+      { language: 'typescript', refs: [], unavailable: 'fixture only' },
+    ]),
+    languages: ['typescript'],
+  };
+  const registered = preregister({ cases: nativeCases, keys: nativeKeys, arms: [capsA], reps: 3, seed: 7, protocol });
+  const identity: ArmRepetitionIdentity = {
+    taskId: 'proof-task', cgroupPath: '/task-proof', treeRoot: '/tree-proof', home: '/home-proof',
+    sourceCommit, runtimeVersion: 'test-v1',
+  };
+  const hashJson = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+  function nativeProof(): NativeProtocolProof {
+    let call = 0;
+    const replay = (kase: FairCase): NativeGraphReplay => {
+      const key = finalKeyByCase.get(kase.id)!;
+      const state = kase.sourceState ?? 'current';
+      const originalSourceHash = hashJson({ path: kase.anchorFile, state: 'original' });
+      const currentSourceHash = state === 'deleted' ? null
+        : state === 'stale' ? hashJson({ path: kase.anchorFile, state: 'changed' }) : originalSourceHash;
+      const configurationPath = 'native-controls/typescript/tsconfig.json';
+      const control = kase.source === 'repository-task' ? null : {
+        path: kase.anchorFile,
+        configuration: kase.configuration,
+        sourceState: kase.sourceState,
+        originalSourceHash,
+        currentSourceHash,
+        configurationFiles: [{ path: configurationPath,
+          hash: kase.configuration === 'unconfigured' ? null : hashJson({ configurationPath }) }],
+      };
+      const response: CodeIntelAnswer = {
+        backend: 'gitnexus', intent: kase.intent, query: kase.subject,
+        sites: key.sites.map(site),
+        truncation: { truncated: false, totalAvailable: null, continuation: null },
+        freshness: {
+          health: 'healthy', indexedAt: '2026-10-27T16:00:00.000Z',
+          staleVsDisk: state !== 'current', indexedCommit: sourceCommit,
+        },
+        latencyMs: 1,
+        error: state === 'deleted' ? 'source deleted' : null,
+      };
+      const request = { caseId: kase.id, intent: kase.intent, subject: kase.subject };
+      const index = call++;
+      return {
+        tool: 'graph:query', question: kase, request, response,
+        dispatchWitness: { entrypoint: 'dispatchProjectedTool', transport: 'in_process', toolName: 'graph:query', callId: `call-${index}` },
+        wallMs: 1, control,
+        sourceWitness: {
+          path: kase.anchorFile!,
+          contentHash: kase.source === 'repository-task' ? kase.sourceFingerprint! : currentSourceHash,
+          sourceCommit,
+        },
+        tokenWitness: {
+          requestHash: hashJson(request), responseHash: hashJson(response), requestTokens: 1, responseTokens: 1,
+        },
+      };
+    };
+    const controlCase = (sourceState: string, configuration: string): FairCase => nativeCases.find(kase =>
+      kase.language === 'typescript' && kase.source === 'authored' && kase.intent === 'callers' &&
+      kase.subject === 'target' && kase.sourceState === sourceState && kase.configuration === configuration)!;
+    return {
+      schemaVersion: 'native-protocol-proof-v1', rep: 3, identity,
+      repositoryTaskReplays: [replay(repositoryCase)],
+      sourceStateReplays: ['current', 'stale', 'deleted', 'current'].map(state => replay(controlCase(state, 'configured'))),
+      configurationReplays: ['configured', 'unconfigured', 'configured'].map(configuration => replay(controlCase('current', configuration))),
+    };
+  }
+
+  function runWithProof(proof: NativeProtocolProof): ArmRun {
+    const answers = nativeCases.map(kase => ({
+      caseId: kase.id, status: 'answered' as const,
+      sites: (finalKeyByCase.get(kase.id)?.sites ?? []).map(site), latencyMs: 1,
+    }));
+    const coldAnswers = ['callers', 'definition'].map(intent => ({
+      caseId: nativeCases.find(kase => kase.language === 'typescript' && kase.intent === intent)!.id,
+      status: 'answered' as const, sites: [], latencyMs: 1,
+    }));
+    const sample = (): ArmResourceSample => ({
+      sampledAt: '2026-10-27T16:00:00.000Z', memoryCurrentBytes: 1, memoryPeakBytes: 1,
+      peakChildProcesses: 0, indexFiles: [], unknown: [NATIVE_PROTOCOL_UNKNOWN, 'independent-resource-unknown'],
+    });
+    const index = { ok: true, wallMs: 1, peakRssKb: null, loadAvg1: null, error: null };
+    const reps = [1, 2, 3].map(rep => {
+      const repIdentity = rep === proof.rep ? proof.identity : {
+        ...identity, taskId: `task-${rep}`, cgroupPath: `/task-${rep}`, treeRoot: `/tree-${rep}`, home: `/home-${rep}`,
+      };
+      return {
+        rep, answers, outcome: 'completed' as const, index, setupWallMs: 1, identity: repIdentity,
+        coldAnswers, warmupAnswers: answers,
+        resources: { ready: sample(), warm: sample(), final: sample() },
+      };
+    });
+    return {
+      capabilities: capsA, preregHash: registered.hash, unavailable: null, index, reps,
+      startedAt: '2026-10-27T16:00:00.000Z', finishedAt: '2026-10-27T16:00:01.000Z',
+      measurementMode: 'fresh-repetitions', nativeProtocolProof: proof,
+    };
+  }
+
+  const score = (proof: NativeProtocolProof) => scoreRuns(
+    [runWithProof(proof)], nativeCases, nativeKeys, verdicts, registered,
+  ).decision;
+  const rehash = (replay: NativeGraphReplay, response: CodeIntelAnswer): NativeGraphReplay => ({
+    ...replay, response, tokenWitness: { ...replay.tokenWitness, responseHash: hashJson(response) },
+  });
+
+  it('keeps the unknown marker for rehashed responses that disagree with sites, errors, or freshness', () => {
+    const proof = nativeProof();
+    const wrongSites = rehash(proof.repositoryTaskReplays[0]!, {
+      ...proof.repositoryTaskReplays[0]!.response, sites: [site('wrong/source.ts:99')],
+    });
+    expect(score({ ...proof, repositoryTaskReplays: [wrongSites] }).reason).toContain('native-tool-seam-unverified');
+
+    const proofWithWrongError = nativeProof();
+    const wrongError = rehash(proofWithWrongError.repositoryTaskReplays[0]!, {
+      ...proofWithWrongError.repositoryTaskReplays[0]!.response, error: 'unexpected query failure',
+    });
+    expect(score({ ...proofWithWrongError, repositoryTaskReplays: [wrongError] }).reason).toContain('native-tool-seam-unverified');
+
+    const proofWithWrongFreshness = nativeProof();
+    const staleReplay = proofWithWrongFreshness.sourceStateReplays[1]!;
+    const wrongFreshness = rehash(staleReplay, {
+      ...staleReplay.response, freshness: { ...staleReplay.response.freshness, staleVsDisk: false },
+    });
+    expect(score({ ...proofWithWrongFreshness, sourceStateReplays: [
+      proofWithWrongFreshness.sourceStateReplays[0]!, wrongFreshness,
+      ...proofWithWrongFreshness.sourceStateReplays.slice(2),
+    ] }).reason).toContain('native-tool-seam-unverified');
+  });
+
+  it('discharges only a correctly ordered proof against adjudicated keys and preserves other unknowns', () => {
+    const proof = nativeProof();
+    const valid = score(proof);
+    expect(valid.reason).not.toContain('native-tool-seam-unverified');
+    expect(valid.reason).toContain('ready-resources-unmeasured');
+    expect(scoreRuns([runWithProof(proof)], nativeCases, nativeKeys, verdicts, registered).keys
+      .find(key => key.caseId === repositoryCase.id)?.sites).toEqual(['repo/src/example.ts:1', 'repo/src/example.ts:2']);
+
+    const reordered = { ...proof, sourceStateReplays: [
+      proof.sourceStateReplays[1]!, proof.sourceStateReplays[0]!, ...proof.sourceStateReplays.slice(2),
+    ] };
+    expect(score(reordered).reason).toContain('native-tool-seam-unverified');
   });
 });

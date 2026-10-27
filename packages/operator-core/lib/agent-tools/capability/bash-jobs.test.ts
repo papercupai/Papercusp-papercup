@@ -1679,7 +1679,9 @@ describe('background job deadlines (WI-6677)', () => {
     const deadline = Date.now() + ms;
     for (;;) {
       const job = getJob(id);
-      if (job && readJobOutput(job).includes(needle)) return true;
+      // Polling must not consume a prefix that can arrive in a separate pipe
+      // chunk from the rest of the marker.
+      if (job && readJobOutput(job, true).includes(needle)) return true;
       // Once the job is terminal its output can no longer grow, so keep polling
       // only while it might still produce the needle.
       if (job?.endedAt != null || Date.now() >= deadline) return false;
@@ -2153,6 +2155,33 @@ describe('background job deadlines (WI-6677)', () => {
     expect(out).not.toContain('most likely died QUEUED');
     expect(out).not.toContain('deadline fired before heavy-command admission');
   }, 30_000);
+
+  it('waits across output chunks without consuming a split pc-heavy marker', async () => {
+    const job = startBackground(
+      {
+        command: `printf '%s' '${PC_HEAVY_QUEUE_WAIT_MARKER}'; sleep 0.25; printf '%s' ' a heavy slot'; sleep 30`,
+        cwd: STATE,
+        stateDir: STATE,
+      },
+      10_000,
+    );
+    const evidence = () =>
+      JSON.stringify({
+        status: job.status,
+        exitCode: job.exitCode,
+        output: job.buffer,
+        totalBytes: job.totalBytes,
+        phaseTiming: job.phaseTiming,
+        logPath: job.logPath,
+      });
+    try {
+      expect(await waitForOutput(job.id, 'queued'), evidence()).toBe(true);
+      expect(await waitForOutput(job.id, PC_HEAVY_QUEUE_WAIT_MARKER, 1_000), evidence()).toBe(true);
+    } finally {
+      if (job.status === 'running') killJob(job);
+      await waitForEnd(job.id, 5_000);
+    }
+  }, 15_000);
 
   it('⭐ classifies a queued pc-heavy deadline and exposes the reason in the snapshot', async () => {
     const job = await expireDeadlineAfterOutput(

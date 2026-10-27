@@ -635,7 +635,7 @@ GLOBALS_STDERR=$(mktemp "${TMPDIR:-/tmp}/papercusp-db-backup-globals.XXXXXX") ||
 if [[ -z "$GLOBALS_STDERR" ]]; then
   FAILED+=("globals"); log "globals FAIL (could not create stderr capture)"
 elif run_bounded 120 sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
-      pg_dumpall -h /var/run/postgresql --globals-only -f "$PGOUT/globals.sql.tmp"; then
+      pg_dumpall -h /var/run/postgresql --globals-only -f "$PGOUT/globals.sql.tmp" 2>"$GLOBALS_STDERR"; then
   mv -f "$PGOUT/globals.sql.tmp" "$PGOUT/globals.sql"
   log "globals ok ($(stat -c%s "$PGOUT/globals.sql") bytes)"
   rm -f "$GLOBALS_STDERR"

@@ -1293,8 +1293,17 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
   // ── P-006 slice 2 (WI-10008157, D-004): the pickup sweep's SQL half ──────────────────────
 
   /** Register → fire → queue → claim → deliver one wake; returns the delivery id. */
-  async function deliveredWake(subscriberId: string, eventKey: string, channel: Parameters<typeof store.markDeliveryDelivered>[1]) {
-    const a = await store.registerAwait({ subscriberId, eventKey });
+  async function deliveredWake(
+    subscriberId: string,
+    eventKey: string,
+    channel: Parameters<typeof store.markDeliveryDelivered>[1],
+    wakeHandle?: Parameters<typeof store.registerAwait>[0]['wakeHandle'],
+  ) {
+    const a = await store.registerAwait({
+      subscriberId,
+      eventKey,
+      ...(wakeHandle ? { wakeHandle } : {}),
+    });
     const fired = await store.fireAwaitsForKey({ eventKey });
     await store.insertDeliveries({ awaits: fired, payload: { k: eventKey }, summary: `wake for ${eventKey}` });
     const mine = (await store.claimDueDeliveries({ limit: 100 })).filter((w) => w.awaitId === a.id);
@@ -1354,6 +1363,72 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(delivered[0].gap).toBeGreaterThan(15);
     expect(delivered[0].gap).toBeLessThan(25);
     expect((await proofRow(hookId)).turn_proof).toBe('observed');
+  });
+
+  it('listExpiredPickups returns only the latest non-retired adv-session handle owned by the subscriber', async () => {
+    async function addAdvSession(ownerId: string, sessionId: string, retired = false): Promise<number> {
+      const retiredAt = retired ? new Date() : null;
+      const rows = await db.adminSql<Array<{ id: number | string }>>`
+        INSERT INTO harness_shared.adv_sessions
+          (workspace_id, mode, coord_owner_id, session_id, retired_at)
+        VALUES (${h.ws}, 'console', ${ownerId}, ${sessionId}, ${retiredAt})
+        RETURNING id
+      `;
+      return Number(rows[0].id);
+    }
+
+    const validOwner = 'su-pickup-handle-valid';
+    const wrongOwner = 'su-pickup-handle-wrong-owner';
+    const supersededOwner = 'su-pickup-handle-superseded';
+    const retiredOwner = 'su-pickup-handle-retired';
+    const validId = await addAdvSession(validOwner, 'pickup-valid');
+    const wrongOwnerId = await addAdvSession('su-pickup-handle-foreign', 'pickup-foreign');
+    const supersededId = await addAdvSession(supersededOwner, 'pickup-old');
+    await addAdvSession(supersededOwner, 'pickup-current');
+    const retiredId = await addAdvSession(retiredOwner, 'pickup-retired', true);
+    const handle = (advSessionId: number) => ({
+      kind: 'adv-session' as const,
+      advSessionId,
+      agent: 'codex',
+      sessionId: 'native-' + advSessionId,
+      ompThreadId: null,
+      cwd: '/repo',
+      pid: null,
+    });
+
+    const cases = [
+      { subscriberId: validOwner, wakeHandle: handle(validId) },
+      { subscriberId: wrongOwner, wakeHandle: handle(wrongOwnerId) },
+      { subscriberId: supersededOwner, wakeHandle: handle(supersededId) },
+      { subscriberId: retiredOwner, wakeHandle: handle(retiredId) },
+    ];
+    const deliveryIds: number[] = [];
+    for (const [index, item] of cases.entries()) {
+      deliveryIds.push(await deliveredWake(
+        item.subscriberId,
+        'turn-proof:handle:' + index,
+        'inbox',
+        item.wakeHandle,
+      ));
+    }
+    for (const id of deliveryIds) {
+      await db.adminSql`
+        UPDATE harness_shared.event_wake_deliveries
+           SET delivered_at = now() - interval '20 minutes',
+               pickup_deadline_at = now() - interval '10 minutes'
+         WHERE id = ${id}
+      `;
+    }
+
+    const expired = (await store.listExpiredPickups(50)).filter((row) =>
+      cases.some((item) => item.subscriberId === row.subscriberId),
+    );
+    const byOwner = new Map(expired.map((row) => [row.subscriberId, row]));
+
+    expect(byOwner.get(validOwner)?.wakeHandle).toMatchObject({ kind: 'adv-session', advSessionId: validId });
+    expect(byOwner.get(wrongOwner)?.wakeHandle).toBeNull();
+    expect(byOwner.get(supersededOwner)?.wakeHandle).toBeNull();
+    expect(byOwner.get(retiredOwner)?.wakeHandle).toBeNull();
   });
 
   it('listExpiredPickups + settleExpiredPickup: not-picked-up re-queues ONCE for host recovery', async () => {

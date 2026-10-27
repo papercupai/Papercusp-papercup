@@ -19,6 +19,7 @@ import {
   normalizeAdmissionPath,
   proveAdmissionDiff,
   realAdmissionGit,
+  repairAdmissionSubmoduleRef,
   retractAdmission,
   validateAdmissionPaths,
   type AdmissionGitRunner,
@@ -316,6 +317,69 @@ describe('admitPathsOntoRepairHead — real git (P-001)', () => {
     expect(out.detail).toContain(`repairHead libs/nested@${candidateSubmoduleCommit}`);
     expect(out.detail).toContain('paths: ["libs/nested"]');
     expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+  });
+
+  it('admits a path inside a checked-out submodule narrowly: only that file moves, on the repairHead pin (EI-27153389932897217)', () => {
+    const { root } = repo();
+    const sub = join(root, 'libs/nested');
+    mkdirSync(sub, { recursive: true });
+    git(sub, ['init', '-q', '-b', 'main']);
+    write(sub, 'src/fix.ts', 'export const fix = 1;\n');
+    write(sub, 'src/other.ts', 'export const other = 1;\n');
+    git(sub, ['add', '-A']);
+    git(sub, ['commit', '-q', '-m', 'pin']);
+    const pin = git(sub, ['rev-parse', 'HEAD']);
+    git(root, ['update-index', '--add', '--cacheinfo', `160000,${pin},libs/nested`]);
+    git(root, ['commit', '-q', '-m', 'candidate gitlink']);
+    const candidate = git(root, ['rev-parse', 'HEAD']);
+
+    // The submodule advances with the fix AND an unrelated change; staging pins that tip.
+    write(sub, 'src/fix.ts', 'export const fix = 2;\n');
+    write(sub, 'src/other.ts', 'export const other = 2;\n');
+    git(sub, ['commit', '-q', '-am', 'fix plus unrelated work']);
+    const subTip = git(sub, ['rev-parse', 'HEAD']);
+    git(root, ['update-index', '--cacheinfo', `160000,${subTip},libs/nested`]);
+    git(root, ['commit', '-q', '-m', 'move gitlink']);
+
+    const preview = admit(root, candidate, candidate, ['libs/nested/src/fix.ts'], { dryRun: true });
+    expect(preview).toMatchObject({ ok: true, published: false, diff: ['libs/nested/src/fix.ts'] });
+    if (!preview.ok) return;
+    const built = git(root, ['ls-tree', preview.commit, '--', 'libs/nested']).split(/\s+/)[2]!;
+    // A dry run builds but never pins the submodule commit.
+    expect(() => git(sub, ['rev-parse', '--verify', '--quiet', repairAdmissionSubmoduleRef(built)])).toThrow();
+
+    const out = admit(root, candidate, candidate, ['libs/nested/src/fix.ts']);
+    expect(out).toMatchObject({ ok: true, published: true, diff: ['libs/nested/src/fix.ts'], unchanged: [] });
+    if (!out.ok) return;
+    // Superproject: only the gitlink moved. Submodule: built on the repairHead pin, carrying
+    // the fix and NOT the unrelated change that rode in the same submodule commit.
+    expect(nameDiff(root, candidate, out.commit)).toEqual(['libs/nested']);
+    const subCommit = git(root, ['ls-tree', out.commit, '--', 'libs/nested']).split(/\s+/)[2]!;
+    expect(subCommit).toBe(built);
+    expect(git(sub, ['rev-parse', `${subCommit}^`])).toBe(pin);
+    expect(git(sub, ['diff-tree', '-r', '--name-only', '--no-commit-id', pin, subCommit])).toBe('src/fix.ts');
+    expect(git(sub, ['show', `${subCommit}:src/fix.ts`])).toBe('export const fix = 2;');
+    expect(git(sub, ['show', `${subCommit}:src/other.ts`])).toBe('export const other = 1;');
+    expect(git(sub, ['rev-parse', repairAdmissionSubmoduleRef(subCommit)])).toBe(subCommit);
+    expect(out.entry.paths).toEqual(['libs/nested/src/fix.ts']);
+    expect(out.entry.blobs['libs/nested/src/fix.ts']).toBe(git(sub, ['rev-parse', `${subTip}:src/fix.ts`]));
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(out.commit);
+  });
+
+  it('refuses naming a submodule pointer together with paths inside it', () => {
+    const { root } = repo();
+    const sub = join(root, 'libs/nested');
+    mkdirSync(sub, { recursive: true });
+    git(sub, ['init', '-q', '-b', 'main']);
+    write(sub, 'src/fix.ts', 'export const fix = 1;\n');
+    git(sub, ['add', '-A']);
+    git(sub, ['commit', '-q', '-m', 'pin']);
+    const pin = git(sub, ['rev-parse', 'HEAD']);
+    git(root, ['update-index', '--add', '--cacheinfo', `160000,${pin},libs/nested`]);
+    git(root, ['commit', '-q', '-m', 'candidate gitlink']);
+    const candidate = git(root, ['rev-parse', 'HEAD']);
+    const out = admit(root, candidate, candidate, ['libs/nested', 'libs/nested/src/fix.ts']);
+    expect(out).toMatchObject({ ok: false, code: 'invalid-paths', paths: ['libs/nested'] });
   });
 
   it('is source-agnostic: a raw commit sha works as the source and no branch name is consulted', () => {

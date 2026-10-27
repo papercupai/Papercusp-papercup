@@ -22,6 +22,7 @@ import { interfaceSignatureEdits, readInterfacePeerContext, type InterfacePeerCo
 import type { TaskBrief } from './task-brief';
 import { shellSearchPatterns } from './native-adoption';
 import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
+import { callableSuggestion, canCall, readRecipientToolset, UNKNOWN_TOOLSET, type RecipientToolset } from './push-toolset';
 import { FACT_FILE_ANCHOR_PREFIX, foldCodeNotesForPaths, isCodeNoteKey, isFactFileAnchor, type AgentFact } from '../agent-facts/store';
 import type { FactDependencyStaleness } from '../agent-tools/facts/dependency-staleness';
 import {
@@ -66,6 +67,9 @@ export interface PushInput {
   /** Code notes anchored to first-touched files, read before the notes leg runs. */
   notesContext?: NotesContext;
   interfacePeerContext?: InterfacePeerContext;
+  /** P-006 (SPEC-P-006-B): the tools this session was last listed. A leg names a follow-up
+   * call only for a listed tool; absent or unknown names none. Read before the legs run. */
+  recipientToolset?: RecipientToolset;
   calls: readonly PushCall[];
 }
 export interface FirstTouchContext {
@@ -378,7 +382,7 @@ export function firstTouchFact(input: PushInput, snapshot: PushSnapshot, path: s
     return { leg: 'first-touch', subject: path, citedPaths: [path, ...consumers.slice(0, 2), ...tests.slice(0, 2)], suggestedCall,
       text: `${path}: ${consumers.length} static file importers in this snapshot; examples: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
         + `\nExports (up to 3): ${exports.join('; ') || 'unknown'}.`
-        + `\nTests with static import reach${queue.length ? ' (bounded search)' : ''}: ${suggestedCall || 'unknown'}.`
+        + `\nTests with static import reach${queue.length ? ' (bounded search)' : ''}: ${reachedTestsText(tests)}.`
         + `\nAnchored docs: ${links(sourceLinks?.docs)}. Spec evidence links: ${links(sourceLinks?.specs)} (currentness unknown).`
         + `\nLive consumer locks/claims: ${locks?.length ? locks.slice(0, 2).map(lock => `${lock.path}: ${lock.owner}${lock.goalRef ? ' ' + lock.goalRef : ''}`).join('; ') : 'unknown'}.`
         + '\nSnapshot lower bounds only; current source hashes, unindexed exports, dynamic dispatch, untracked anchors, source completeness and runtime execution are unknown.' };
@@ -924,7 +928,7 @@ export const snapshotInterfaceLeg: PushLeg = (input, snapshot) => {
         ...(peerContext?.status === 'measured' ? peerContext.peers.slice(0, 2).map(p => p.path) : [])])], suggestedCall,
       text: `${edit.path}: ${changes.join('; ')}.\nStatic consumers: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
         + peerText
-        + `\nTests with static import reach${queue.length ? ' (bounded)' : ''}: ${suggestedCall ?? 'unknown'}.`
+        + `\nTests with static import reach${queue.length ? ' (bounded)' : ''}: ${reachedTestsText(tests)}.`
         + `\nPinned strand checks (advisory; run typecheck in background):\n${checks.join('\n')}`
         + '\nSnapshot reach predates this edit; affected consumers are candidates, not proven failures. Dynamic dispatch, new imports, source completeness and runtime execution remain unknown.' });
   }
@@ -1035,8 +1039,11 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
       return failed.includes(path) && typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? [id] : [];
     });
   }))].slice(0, 4);
-  const recovery = runIds.length ? 'Recover recorded failures with testing:runs '
-    + JSON.stringify({ testRunIds: runIds, harness: input.harness }) + '.'
+  // P-006: the run ids are the answer and always inline; the recovery call is named only
+  // when this session was listed testing:runs.
+  const recovery = runIds.length ? 'Recorded failure rows: test run ids ' + runIds.join(', ')
+    + (canCall(input.recipientToolset ?? UNKNOWN_TOOLSET, 'testing:runs')
+      ? '; recover them with testing:runs ' + JSON.stringify({ testRunIds: runIds, harness: input.harness }) : '') + '.'
     : 'Original test-row identity unknown; no exact ledger recovery can be prescribed.';
   return [{
     leg: 'incident',
@@ -1116,6 +1123,9 @@ export interface PushChannelDeps {
   resumeContext?(input: PushInput, diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext>;
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
   interfaceContext?(input: PushInput, snapshot: PushSnapshot): Promise<InterfacePeerContext>;
+  /** P-006: the recipient's last listed toolset. Absent (or slow, or failed) is unknown, and
+   * an unknown toolset names no follow-up tool. */
+  toolset?(input: PushInput): Promise<RecipientToolset>;
   /** P-005: measured acted-on rate per leg, read synchronously from a cache that refreshes
    * off the push wall; null while nothing has been measured (arrival order then stands). */
   legFollowThrough?(workspace: string): ReadonlyMap<string, LegFollowThrough> | null;
@@ -1277,6 +1287,24 @@ async function recordToolResultBrief(input: { workspace: string; owner: string; 
  * as complete or as runtime truth. */
 export const PUSH_OMITTED_QUALIFIER = 'static snapshot lower bounds; runtime unknown';
 
+/** P-006: the covering test files themselves, inline. A push used to say only
+ * `testing:run {...}`, which named the files inside a call the recipient may not have. */
+export function reachedTestsText(tests: readonly string[]): string {
+  if (!tests.length) return 'unknown';
+  return tests.slice(0, 2).join(', ') + (tests.length > 2 ? ` (+${tests.length - 2} more)` : '');
+}
+
+/** P-006 (SPEC-P-006-B): keep a fact's follow-up call only when the recipient was listed its
+ * tool. Without it formatPushFact renders no `Next:` line and the ledger row's
+ * suggested_call is null, so the push never names a tool the session cannot call. */
+export function withCallableSuggestion(fact: PushFact, toolset: RecipientToolset): PushFact {
+  if (!fact.suggestedCall) return fact;
+  const suggestedCall = callableSuggestion(fact.suggestedCall, toolset);
+  if (suggestedCall) return fact;
+  const { suggestedCall: _dropped, ...rest } = fact;
+  return rest;
+}
+
 /**
  * One push, at most CODE_INTEL_PUSH_MAX_CHARS where its first line allows (R-5 D-003/D-014).
  * A leg's text is newline-separated whole statements. The render keeps the first line, then
@@ -1424,7 +1452,11 @@ const defaults: PushChannelDeps = {
   interfaceContext: readInterfacePeerContext,
   resumeContext: (input, diagnostics) => readPushResumeContext(input, undefined, diagnostics),
   notesContext: (input, paths) => readPushNotesContext(input, paths),
+  toolset: input => readRecipientToolset({ workspace: input.workspace, owner: input.owner }),
 };
+
+/** P-006: the toolset read overlaps the snapshot read and gets at most this long after it. */
+export const PUSH_TOOLSET_READ_MS = 100;
 
 /** P-006: the resume context and its entries' source links in ONE background read. A
  * links read awaited inside the wall (`code-intel-resume-links`) was measured on :3170
@@ -1484,9 +1516,18 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
     // degrades exactly as it would on its own timeout.
     const byGatherDeadline = <T>(work: Promise<T>, fallback: T) =>
       withBoundedTimeout(work, { timeoutMs: gatherLeft(), fallback, warn: false }).then(settled => settled.value);
+    // P-006: started beside the snapshot read so it costs the wall no extra wait.
+    const toolsetRead = deps.toolset
+      ? deps.toolset(input).catch((): RecipientToolset => ({ status: 'unknown', reason: 'read-failed' }))
+      : null;
     const snapshot = await deps.snapshot(input);
     if (!snapshot || signal.aborted) return '';
     phase = 'gather';
+    if (toolsetRead) {
+      input.recipientToolset = (await withBoundedTimeout(toolsetRead, { timeoutMs: Math.min(PUSH_TOOLSET_READ_MS, gatherLeft()),
+        fallback: { status: 'unknown', reason: 'read-failed' } as RecipientToolset, warn: false })).value;
+    }
+    const toolset = input.recipientToolset ?? UNKNOWN_TOOLSET;
     const legs = [...deps.legs()].sort(([a], [b]) => pushLegRank(a) - pushLegRank(b));
     // Read every leg's flag at once: one wait instead of one per leg, and the commit
     // needs to know which legs were ON to record the ones the wall stopped.
@@ -1583,7 +1624,8 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
           input.incidentAttribution = measured.value ?? { status: 'unknown' };
           candidates = leg(input, snapshot);
         }
-        for (const fact of candidates) {
+        for (const candidate of candidates) {
+          const fact = withCallableSuggestion(candidate, toolset);
           if (id === 'first-touch' && facts.some(f => f.leg === 'interface' && f.citedPaths[0] === fact.subject)) continue;
           if (fact.leg !== id || fact.subject.length > 1000 || !fact.subject.trim() || !fact.text.trim()
             || !fact.citedPaths.every(safeSnapshotPath)) continue;

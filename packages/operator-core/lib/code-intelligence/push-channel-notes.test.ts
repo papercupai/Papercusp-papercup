@@ -22,6 +22,7 @@ import {
   type NotesContext, type PushChannelDeps, type PushFact, type PushInput, type ReadNotesContextDeps,
 } from './push-channel';
 import { parsePushSnapshot } from './push-snapshot';
+import { toolsetFromNames, type RecipientToolset } from './push-toolset';
 
 const now = Date.now();
 const snapshot = () => parsePushSnapshot(JSON.stringify({
@@ -55,7 +56,7 @@ async function tokenOf(path: string): Promise<string> {
   return token;
 }
 
-function channel(notes: ReadNotesContextDeps, enabled = async () => true) {
+function channel(notes: ReadNotesContextDeps, enabled = async () => true, toolset: RecipientToolset = toolsetFromNames(['facts:list'])) {
   const committed: PushFact[] = [];
   const notesContext = vi.fn((i: PushInput, paths: readonly string[]) => readPushNotesContext(i, paths, notes));
   const deps: PushChannelDeps = {
@@ -63,6 +64,7 @@ function channel(notes: ReadNotesContextDeps, enabled = async () => true) {
     enabled: vi.fn(enabled),
     legs: () => new Map([['notes', snapshotNotesLeg]]),
     notesContext,
+    toolset: async () => toolset,
     commit: async (_i, _s, facts) => { committed.push(...facts); return facts.map(f => f.text).join('\n\n'); },
   };
   return { deps, committed, notesContext };
@@ -81,6 +83,17 @@ describe('R-7: a fresh code note is pushed on first touch of its file', () => {
     expect(committed[0]).toMatchObject({ leg: 'notes', subject: 'note:code-note:retry-loop', citedPaths: ['target-r7.ts'] });
     expect(text).toContain('The retry loop is deliberate');
     expect(committed[0]!.suggestedCall).toBe('facts:list {"scope":"harness","scopeRef":"papercusp","key":"code-note:retry-loop"}');
+  });
+
+  it('P-006: still delivers the note body but names no facts:list call when the session was not listed it', async () => {
+    writeFileSync(join(root, 'target-r7-unlisted.ts'), 'export const retries = 3; // deliberate\n');
+    const digest = await tokenOf('target-r7-unlisted.ts');
+    const fold = vi.fn(async () => [note('code-note:retry-unlisted', [{ path: 'target-r7-unlisted.ts', digest }], 'Upstream drops 1 in 50 requests.')]);
+    const { deps, committed } = channel({ fold, staleness: readNoteAnchorStaleness }, async () => true, toolsetFromNames(['graph:query']));
+    const text = await codeIntelPushText(input('target-r7-unlisted.ts'), deps);
+    expect(text).toContain('Upstream drops 1 in 50 requests.');
+    expect(text).not.toContain('facts:list');
+    expect(committed[0]!.suggestedCall).toBeUndefined();
   });
 
   it('delivers nothing for a file the batch did not touch', () => {

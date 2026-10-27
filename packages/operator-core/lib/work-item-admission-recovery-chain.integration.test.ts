@@ -771,16 +771,34 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     },
   );
 
-  it('refuses malformed persisted requests instead of silently falling through to recovery', async () => {
-    const original = await create();
-    await claimOriginal(original.id);
-    await review(original.id);
+  it('isolates a malformed blocked review request while delivering unrelated recovery and recording its refusal', async () => {
+    const original = await create('Protected blocked review request');
+    await parkForReview(original.id);
+    await review(original.id, reviewLeader);
     await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
       '{_admissionReviewRequest}', ${db.sql.typed(JSON.stringify('malformed'), 25)}::jsonb)
       WHERE feature_id = ${original.id}`;
     const before = await row(original.id);
-    await expect(tick()).rejects.toThrow('malformed admission review request');
+    const [protectedBytes] = await db.sql`SELECT (payload->'_admissionReviewRequest')::text AS request,
+        (payload->'externalBlockers')::text AS blocker
+      FROM harness_shared.work_items WHERE feature_id = ${original.id}`;
+    const unrelated = await create('Unrelated queued recovery');
+    await request(unrelated.id);
+
+    const result = await tick();
+    const refusal = expect.objectContaining({ itemId: original.id, canonicalId: null,
+      reason: 'review-gated', detail: expect.stringContaining('malformed admission review request') });
+    expect(result.guardRefusals).toContainEqual(refusal);
     expect(await row(original.id)).toEqual(before);
+    const [protectedAfter] = await db.sql`SELECT (payload->'_admissionReviewRequest')::text AS request,
+        (payload->'externalBlockers')::text AS blocker
+      FROM harness_shared.work_items WHERE feature_id = ${original.id}`;
+    expect(protectedAfter).toEqual(protectedBytes);
+    expect(await row(unrelated.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+    const [ledger] = await db.sql`SELECT detail FROM harness_shared.admission_runs
+      WHERE id = ${`${result.runId}:recovery:${unrelated.id}`}`;
+    expect(ledger!.detail.status).toBe('complete');
+    expect(ledger!.detail.guardRefusals).toContainEqual(refusal);
     expect(h.model).not.toHaveBeenCalled();
   });
 
@@ -794,8 +812,28 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     h.kernelDenied = false;
     await review(original.id);
     h.kernelDenied = true;
-    await expect(tick()).rejects.toThrow('revoked');
+    const refusalResult = await tick();
+    expect(refusalResult.guardRefusals).toContainEqual(expect.objectContaining({
+      itemId: original.id, canonicalId: null, reason: 'review-gated', detail: expect.stringContaining('revoked'),
+    }));
     expect((await row(original.id)).admission).toBe('pending');
+    h.kernelDenied = false;
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('keeps unavailable review authority fatal so unrelated recovery is not dispatched', async () => {
+    const original = await create('Unavailable review authority');
+    await claimOriginal(original.id);
+    await review(original.id);
+    const unrelated = await create('Recovery behind unavailable authority');
+    await request(unrelated.id);
+    h.kernelUnavailable = true;
+
+    await expect(tick()).rejects.toThrow('session authority reader unavailable');
+    expect((await row(unrelated.id)).payload._admissionRecovery).toMatchObject({ state: 'queued' });
+    expect((await row(original.id)).payload).not.toHaveProperty('_admissionReviewReceipt');
+    expect(h.model).not.toHaveBeenCalled();
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.wake).not.toHaveBeenCalled();
   });
@@ -842,7 +880,10 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
         await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
           '{_admissionReviewRequest,signature}', ${db.sql.typed(JSON.stringify('0'.repeat(64)), 25)}::jsonb)
           WHERE feature_id = ${original.id}`;
-        await expect(tick()).rejects.toThrow('signature');
+        const result = await tick();
+        expect(result.guardRefusals).toContainEqual(expect.objectContaining({
+          itemId: original.id, canonicalId: null, reason: 'review-gated', detail: expect.stringContaining('signature'),
+        }));
       }
       expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: reviewerOwnerId, status: 'wip' });
       expect(h.model).not.toHaveBeenCalled();

@@ -2711,6 +2711,8 @@ export interface ExpiredPickupRow {
   eventKey: string;
   channel: string | null;
   source: string | null;
+  /** Present only when the await's adv-session handle still names this owner's latest resumable session. */
+  wakeHandle: WakeHandle | null;
   deliveredAtMs: number;
   pickupDeadlineAtMs: number;
 }
@@ -2728,16 +2730,36 @@ export async function listExpiredPickups(limit = 200): Promise<ExpiredPickupRow[
       event_key: string;
       channel: string | null;
       source: string | null;
+      wake_handle: unknown;
       delivered_at: Date;
       pickup_deadline_at: Date;
     }>
   >`
-    SELECT id, await_id, subscriber_id, event_key, channel, source, delivered_at, pickup_deadline_at
-      FROM harness_shared.event_wake_deliveries
-     WHERE workspace_id = ${ws}
-       AND turn_proof = 'awaiting'
-       AND pickup_deadline_at <= now()
-     ORDER BY pickup_deadline_at ASC, id ASC
+    SELECT d.id, d.await_id, d.subscriber_id, d.event_key, d.channel, d.source,
+           CASE WHEN resumable.id IS NULL THEN NULL ELSE a.wake_handle END AS wake_handle,
+           d.delivered_at, d.pickup_deadline_at
+      FROM harness_shared.event_wake_deliveries d
+      JOIN harness_shared.event_awaits a
+        ON a.workspace_id = d.workspace_id AND a.id = d.await_id
+      LEFT JOIN LATERAL (
+        SELECT s.id
+          FROM harness_shared.adv_sessions s
+         WHERE a.wake_handle->>'kind' = 'adv-session'
+           AND s.id::text = a.wake_handle->>'advSessionId'
+           AND s.coord_owner_id = d.subscriber_id
+           AND s.retired_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1
+               FROM harness_shared.adv_sessions successor
+              WHERE successor.coord_owner_id = s.coord_owner_id
+                AND successor.id > s.id
+           )
+         LIMIT 1
+      ) resumable ON true
+     WHERE d.workspace_id = ${ws}
+       AND d.turn_proof = 'awaiting'
+       AND d.pickup_deadline_at <= now()
+     ORDER BY d.pickup_deadline_at ASC, d.id ASC
      LIMIT ${limit}
   `;
   return rows.map((r) => ({
@@ -2747,6 +2769,7 @@ export async function listExpiredPickups(limit = 200): Promise<ExpiredPickupRow[
     eventKey: r.event_key,
     channel: r.channel,
     source: r.source,
+    wakeHandle: parseJsonb<WakeHandle>(r.wake_handle),
     deliveredAtMs: new Date(r.delivered_at).getTime(),
     pickupDeadlineAtMs: new Date(r.pickup_deadline_at).getTime(),
   }));

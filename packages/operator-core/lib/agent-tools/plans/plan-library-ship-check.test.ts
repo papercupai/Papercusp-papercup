@@ -238,6 +238,47 @@ describe('ship check — decision (R-6)', () => {
     expect(imports).toEqual([{ path: 'src/small.ts', line1: 1, specifier: 'pkg-0' }]);
   });
 
+  it('uses the bounded TypeScript fallback when one file exceeds the simulated facade site cap', async () => {
+    const file = 'src/over-cap.ts';
+    const staticImports = Array.from({ length: 4 }, (_, index) => `pkg-${index}`);
+    const specifiers = [...staticImports, 'pkg-export', 'pkg-require', 'pkg-dynamic'];
+    writeFileSync(join(root, file), [
+      ...staticImports.map((pkg, index) => `import x${index} from '${pkg}';`),
+      "export { exported } from 'pkg-export';",
+      "const required = require('pkg-require');",
+      "const dynamic = import('pkg-dynamic');",
+    ].join('\n'));
+
+    const { imports, unread } = await readJsImports({
+      files: [file], repoRoot: root, search: cappedSearch(3, { [file]: staticImports.length }),
+    });
+
+    expect(unread).toEqual([]);
+    expect(imports.map((site) => site.specifier)).toEqual(specifiers);
+    expect(imports.every((site) => site.path === file)).toBe(true);
+  });
+
+  it('keeps a truncated file unread when the bounded fallback cannot read, fit, or parse it', async () => {
+    const alwaysTruncated: ImportSearch = async () => ({
+      sites: [], error: null, truncation: { truncated: true, totalAvailable: 1, continuation: null },
+    });
+    const missing = await readJsImports({ files: ['src/missing.ts'], repoRoot: root, search: alwaysTruncated });
+    expect(missing.imports).toEqual([]);
+    expect(missing.unread[0]).toMatchObject({ path: 'src/missing.ts', reason: expect.stringContaining('read failed') });
+
+    const oversizedPath = 'src/oversized.ts';
+    writeFileSync(join(root, oversizedPath), Buffer.alloc(1024 * 1024 + 1, 0x20));
+    const oversized = await readJsImports({ files: [oversizedPath], repoRoot: root, search: alwaysTruncated });
+    expect(oversized.imports).toEqual([]);
+    expect(oversized.unread[0]).toMatchObject({ path: oversizedPath, reason: expect.stringContaining('exceeds') });
+
+    const malformedPath = 'src/malformed.ts';
+    writeFileSync(join(root, malformedPath), "import x from 'pkg';\nconst = ;\n");
+    const malformed = await readJsImports({ files: [malformedPath], repoRoot: root, search: alwaysTruncated });
+    expect(malformed.imports).toEqual([]);
+    expect(malformed.unread[0]).toMatchObject({ path: malformedPath, reason: expect.stringContaining('parse failed') });
+  });
+
   it('warns, without refusing, about a declared reuse entry no inspected file references', async () => {
     const reuse = {
       searched: [{ where: 'src', how: 'grep' }],

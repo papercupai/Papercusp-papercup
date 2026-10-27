@@ -37,7 +37,7 @@ registerSystemAction('consult-expiry-sweep', async () => {
       consultExpiryFileReviewWorkItem,
       consultExpiryStopAnsweringSession,
     },
-    { makeConsultReachDispatcher },
+    { makeConsultReachDispatcher, rejudgeFirstTurn },
     { upsertConditionWorkItem },
     { listLiveTasks, listTasks },
     { killTask },
@@ -78,6 +78,11 @@ registerSystemAction('consult-expiry-sweep', async () => {
     // their transcript) instead of waking them. notifyAgents is no longer on
     // this binding at all, so the sweep cannot silently regain a wake.
     dispatch: consultExpiryDispatch((ctx) => makeConsultReachDispatcher(ctx)),
+    // EI-27111739698817170: a first reply that lands after the dispatcher's
+    // first-turn window is judged here by the dispatcher's own classifier, so a
+    // late provider refusal (model_not_found, a usage wall) advances the cascade
+    // instead of holding the slot until bounded pickup recovery.
+    rejudgeFirstTurn: (unjudged) => rejudgeFirstTurn(unjudged),
     // P-014: a silent review consult at half its TTL becomes a pullable work item
     // (filed in the consult's harness, else the workspace's home pot) instead of
     // cascading to another silent responder.

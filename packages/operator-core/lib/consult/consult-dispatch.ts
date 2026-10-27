@@ -355,6 +355,26 @@ export interface ConsultDispatchAttempt {
   launchError?: string;
   /** The durable launch log used to identify a failed spawned rank. */
   launchLogPath?: string;
+  /**
+   * Set on a `dispatched` rank whose first reply had not landed when the
+   * first-turn window closed (EI-27111739698817170). It names what the consult
+   * expiry sweep re-reads to judge that reply later, with the same classifier.
+   */
+  firstTurnUnjudged?: FirstTurnUnjudged;
+}
+
+/**
+ * A dispatched answering session whose first reply was not judged inside
+ * {@link FIRST_TURN_WAIT_MS}. A provider refusal can land later than that — a
+ * Codex convert's model_not_found arrived ~48s after its launch — so the expiry
+ * sweep re-judges it (see {@link rejudgeFirstTurn}).
+ */
+export interface FirstTurnUnjudged {
+  agent: 'claude' | 'codex';
+  /** The kickoff proof's native transcript (Claude JSONL or Codex rollout). */
+  transcriptPath: string;
+  /** When the kickoff receipt was seen; bounds how long the sweep re-judges. */
+  kickoffAt: string;
 }
 
 export interface ConsultDispatchResult {
@@ -518,6 +538,136 @@ export function codexFirstTurnAnalysis(analysis: CodexRolloutOverflowAnalysis | 
     lastMissingToolReferenceName: null,
     trailingProviderErrorTurns: outcome === 'error' ? 1 : 0,
     lastProviderErrorEvidence: outcome === 'error' ? evidence : null,
+  };
+}
+
+/** A first reply that makes an answering session dead on arrival. */
+export interface FirstTurnRejection {
+  turns: number;
+  tool: string | null;
+  contextEvidence?: string;
+  accountEvidence?: string;
+  providerEvidence?: string;
+}
+
+/**
+ * The ONE first-turn classifier (EI-27111739698817170). The dispatcher's bounded
+ * first-turn poll and the expiry sweep's later re-judge both call it, so a reply
+ * that lands after {@link FIRST_TURN_WAIT_MS} is judged by exactly the rule a
+ * reply inside the window would have been. Null while there is no reply yet, or
+ * when the reply is not a rejection.
+ */
+export function firstTurnRejection(analysis: FirstTurnAnalysis): FirstTurnRejection | null {
+  if (analysis.assistantTurnsSinceLastPrompt <= 0) return null;
+  if ((analysis.trailingAccountWallTurns ?? 0) > 0) {
+    return {
+      turns: analysis.trailingAccountWallTurns!, tool: null,
+      accountEvidence: analysis.lastAccountWallEvidence ?? 'provider billing rejection',
+    };
+  }
+  if ((analysis.trailingContextLimitTurns ?? 0) > 0) {
+    return {
+      turns: analysis.trailingContextLimitTurns!,
+      tool: null,
+      contextEvidence: analysis.lastContextLimitEvidence ?? 'Prompt is too long',
+    };
+  }
+  if (analysis.trailingMissingToolReferenceTurns > 0) {
+    return {
+      turns: analysis.trailingMissingToolReferenceTurns,
+      tool: analysis.lastMissingToolReferenceName,
+    };
+  }
+  if ((analysis.trailingProviderErrorTurns ?? 0) > 0) {
+    // WI-6554700010018146: a transient provider failure ("API Error: Server
+    // error mid-response…") is a synthetic assistant record, so it read as the
+    // answerer's first reply and the session parked with no answer, no retry
+    // and no cascade. The fault is the provider's, not the responder's.
+    return {
+      turns: analysis.trailingProviderErrorTurns!,
+      tool: null,
+      providerEvidence: analysis.lastProviderErrorEvidence ?? 'provider error',
+    };
+  }
+  return null;
+}
+
+/** The attempt reason a {@link FirstTurnRejection} records. */
+export function firstTurnRejectionReason(
+  rejection: FirstTurnRejection,
+): 'account-walled' | 'first-turn-provider-error' | 'first-turn-rejected' {
+  // Billing cannot poison the expert's transcript or other ranks: reuse the
+  // existing account-wall disposition.
+  return rejection.accountEvidence
+    ? 'account-walled'
+    : rejection.providerEvidence ? 'first-turn-provider-error' : 'first-turn-rejected';
+}
+
+/**
+ * "its first reply was …" — the evidence clause both judges record. The
+ * dispatcher's poll calls a provider error transient because it relaunches the
+ * rank once on it; the sweep cannot relaunch, so it names the error plainly.
+ */
+export function describeFirstTurnRejection(
+  rejection: FirstTurnRejection,
+  providerErrorLabel: 'provider error' | 'transient provider error' = 'provider error',
+): string {
+  return (rejection.accountEvidence
+    ? `its first reply was a provider account rejection (${rejection.accountEvidence})`
+    : rejection.providerEvidence
+    ? `its first reply was a ${providerErrorLabel} (${rejection.providerEvidence})`
+    : rejection.contextEvidence
+    ? `its first reply was a provider context-limit rejection (${rejection.contextEvidence})`
+    : `its first reply was a provider "Tool reference not found" rejection`) +
+    (rejection.tool ? ` ('${rejection.tool}')` : '');
+}
+
+/** Read one answering session's native transcript into first-turn fields; null when unreadable. */
+function readFirstTurnAnalysis(
+  agent: 'claude' | 'codex',
+  transcriptPath: string,
+  read: Pick<ConsultDispatchDeps, 'analyzeClaudeTranscript' | 'analyzeCodexRollout'>,
+): FirstTurnAnalysis | null {
+  try {
+    return agent === 'codex'
+      ? codexFirstTurnAnalysis(read.analyzeCodexRollout(transcriptPath))
+      : read.analyzeClaudeTranscript(transcriptPath);
+  } catch {
+    return null;
+  }
+}
+
+/** What a later re-judge of an unjudged first turn found. */
+export type FirstTurnRejudge =
+  | { status: 'rejected'; rejection: FirstTurnRejection; reason: ReturnType<typeof firstTurnRejectionReason>; evidence: string }
+  | { status: 'replied' }
+  | { status: 'pending' }
+  | { status: 'unreadable' };
+
+/**
+ * Re-judge a dispatched session's first reply after the dispatcher's window
+ * closed (EI-27111739698817170). Same reader and same classifier as the
+ * dispatcher's poll; only the time differs. `pending` (no reply yet),
+ * `replied` (a reply that is not a rejection) and `unreadable` are never
+ * evidence of a rejection.
+ */
+export function rejudgeFirstTurn(
+  unjudged: Pick<FirstTurnUnjudged, 'agent' | 'transcriptPath'>,
+  read: Pick<ConsultDispatchDeps, 'analyzeClaudeTranscript' | 'analyzeCodexRollout'> = {
+    analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
+    analyzeCodexRollout: analyzeCodexRolloutFile,
+  },
+): FirstTurnRejudge {
+  const analysis = readFirstTurnAnalysis(unjudged.agent, unjudged.transcriptPath, read);
+  if (!analysis) return { status: 'unreadable' };
+  if (analysis.assistantTurnsSinceLastPrompt <= 0) return { status: 'pending' };
+  const rejection = firstTurnRejection(analysis);
+  if (!rejection) return { status: 'replied' };
+  return {
+    status: 'rejected',
+    rejection,
+    reason: firstTurnRejectionReason(rejection),
+    evidence: `${describeFirstTurnRejection(rejection)} in ${unjudged.transcriptPath}`,
   };
 }
 
@@ -783,6 +933,17 @@ export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: s
       detail: clip(a.detail),
       ...(a.launchError ? { launchError: clip(a.launchError, 300) } : {}),
       ...(a.launchLogPath ? { launchLogPath: clip(a.launchLogPath) } : {}),
+      // A clipped path would name no file, so an over-long one is dropped rather
+      // than clipped; the sweep then leaves that slot to bounded pickup recovery.
+      ...(a.firstTurnUnjudged && a.firstTurnUnjudged.transcriptPath.length <= DISPATCH_RECORD_TEXT_MAX
+        ? {
+            firstTurnUnjudged: {
+              agent: a.firstTurnUnjudged.agent,
+              transcriptPath: a.firstTurnUnjudged.transcriptPath,
+              kickoffAt: a.firstTurnUnjudged.kickoffAt,
+            },
+          }
+        : {}),
     })),
   };
 }
@@ -852,7 +1013,13 @@ export type AnswerFailureReason =
   /** Bounded pickup recovery found no consult post before the window (implicit decline). */
   | 'answer-pickup-stalled'
   /** A silent review consult was converted to pullable work at half its window. */
-  | 'answer-window-converted';
+  | 'answer-window-converted'
+  /**
+   * The session's first reply, landing after the dispatcher's first-turn window,
+   * was a provider rejection (EI-27111739698817170), so the slot was advanced
+   * without waiting for bounded pickup recovery.
+   */
+  | 'answer-first-turn-rejected';
 
 export interface AnswerFailureRecordInput {
   workspaceId: string;
@@ -949,7 +1116,9 @@ export interface PersistedDispatchRecord {
   at: string;
   sourceOwnerId?: string;
   dispatched?: boolean;
+  answeringOwnerId?: string | null;
   attempts?: Array<{
+    firstTurnUnjudged?: Partial<FirstTurnUnjudged>;
     outcome?: string;
     reason?: string;
     agent?: string;
@@ -2240,6 +2409,8 @@ async function launchAnsweringSession(
   // Set when the transcript was readable but no reply had landed by the bound;
   // the dispatch stands, and its record says the first turn was not judged.
   let firstTurnUnjudgedAfterMs: number | null = null;
+  // What the expiry sweep re-reads to judge that reply later (EI-27111739698817170).
+  let firstTurnUnjudged: FirstTurnUnjudged | undefined;
   // Set when a Claude rank's first reply could not be judged at all: the kickoff
   // proof named no native transcript, or the transcript was unreadable. Neither
   // is evidence of a rejection, so the dispatch stands — but the record must say
@@ -2254,9 +2425,8 @@ async function launchAnsweringSession(
     firstTurnUncheckedReason = 'the kickoff proof named no native transcript';
   }
   if (judgesFirstTurn && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
-    let rejection: {
-      turns: number; tool: string | null; contextEvidence?: string; accountEvidence?: string; providerEvidence?: string;
-    } | null = null;
+    const judgedAgent = rank.agent as 'claude' | 'codex';
+    let rejection: FirstTurnRejection | null = null;
     const deadline = kickoffSeenAtMs + FIRST_TURN_WAIT_MS;
     // The read-count bound is independent of the clock, so a stalled clock
     // cannot turn this into an unbounded loop.
@@ -2264,14 +2434,7 @@ async function launchAnsweringSession(
     let readable = true;
     let replied = false;
     for (let poll = 0; ; poll += 1) {
-      let analysis: FirstTurnAnalysis | null = null;
-      try {
-        analysis = rank.agent === 'codex'
-          ? codexFirstTurnAnalysis(d.analyzeCodexRollout(answeringTranscript))
-          : d.analyzeClaudeTranscript(answeringTranscript);
-      } catch {
-        analysis = null;
-      }
+      const analysis = readFirstTurnAnalysis(judgedAgent, answeringTranscript, d);
       if (!analysis) {
         // Unreadable is not evidence of a rejection; keep the dispatch.
         readable = false;
@@ -2279,41 +2442,25 @@ async function launchAnsweringSession(
       }
       if (analysis.assistantTurnsSinceLastPrompt > 0) {
         replied = true;
-        if ((analysis.trailingAccountWallTurns ?? 0) > 0) {
-          rejection = {
-            turns: analysis.trailingAccountWallTurns!, tool: null,
-            accountEvidence: analysis.lastAccountWallEvidence ?? 'provider billing rejection',
-          };
-        } else if ((analysis.trailingContextLimitTurns ?? 0) > 0) {
-          rejection = {
-            turns: analysis.trailingContextLimitTurns!,
-            tool: null,
-            contextEvidence: analysis.lastContextLimitEvidence ?? 'Prompt is too long',
-          };
-        } else if (analysis.trailingMissingToolReferenceTurns > 0) {
-          rejection = {
-            turns: analysis.trailingMissingToolReferenceTurns,
-            tool: analysis.lastMissingToolReferenceName,
-          };
-        } else if ((analysis.trailingProviderErrorTurns ?? 0) > 0) {
-          // WI-6554700010018146: a transient provider failure ("API Error: Server
-          // error mid-response…") is a synthetic assistant record, so it read as the
-          // answerer's first reply and the session parked with no answer, no retry
-          // and no cascade. The fault is the provider's, not the responder's: stop
-          // it, and the walk relaunches this rank once before moving on.
-          rejection = {
-            turns: analysis.trailingProviderErrorTurns!,
-            tool: null,
-            providerEvidence: analysis.lastProviderErrorEvidence ?? 'provider error',
-          };
-        }
+        // A transient provider error stops this session, and the walk relaunches
+        // this rank once before moving on (WI-6554700010018146).
+        rejection = firstTurnRejection(analysis);
         break;
       }
       const remainingMs = deadline - d.nowMs();
       if (poll >= maxPolls || remainingMs <= 0) break;
       await d.sleepMs(Math.min(FIRST_TURN_POLL_MS, remainingMs));
     }
-    if (readable && !replied) firstTurnUnjudgedAfterMs = Math.max(0, d.nowMs() - kickoffSeenAtMs);
+    if (readable && !replied) {
+      firstTurnUnjudgedAfterMs = Math.max(0, d.nowMs() - kickoffSeenAtMs);
+      // EI-27111739698817170: the window closing is not the end of the check. The
+      // expiry sweep re-judges this transcript with the same classifier.
+      firstTurnUnjudged = {
+        agent: judgedAgent,
+        transcriptPath: answeringTranscript,
+        kickoffAt: new Date(kickoffSeenAtMs).toISOString(),
+      };
+    }
     if (!readable) firstTurnUncheckedReason = `its transcript ${answeringTranscript} could not be read`;
     if (rejection) {
       const stopped = await d.stopFailedLaunch(spawn.taskId);
@@ -2321,21 +2468,11 @@ async function launchAnsweringSession(
         record: {
           ...base,
           outcome: 'failed',
-          // Billing cannot poison the expert's transcript or other ranks.
-          // Reuse the existing account-wall disposition, then walk onward.
-          reason: rejection.accountEvidence
-            ? 'account-walled'
-            : rejection.providerEvidence ? 'first-turn-provider-error' : 'first-turn-rejected',
+          // Walk onward after recording the rejection.
+          reason: firstTurnRejectionReason(rejection),
           detail:
             `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
-            (rejection.accountEvidence
-              ? `its first reply was a provider account rejection (${rejection.accountEvidence})`
-              : rejection.providerEvidence
-              ? `its first reply was a transient provider error (${rejection.providerEvidence})`
-              : rejection.contextEvidence
-              ? `its first reply was a provider context-limit rejection (${rejection.contextEvidence})`
-              : `its first reply was a provider "Tool reference not found" rejection`) +
-            (rejection.tool ? ` ('${rejection.tool}')` : '') +
+            describeFirstTurnRejection(rejection, 'transient provider error') +
             ` in ${answeringTranscript}; ${stopped}`,
         },
         answeringOwnerId: null,
@@ -2346,7 +2483,7 @@ async function launchAnsweringSession(
 
   const firstTurnNote = firstTurnUnjudgedAfterMs !== null
     ? ` First reply not written ${firstTurnUnjudgedAfterMs}ms after kickoff, so it was not checked for a ` +
-      'provider rejection.'
+      'provider rejection yet; the consult expiry sweep re-checks it.'
     : firstTurnUncheckedReason
       ? ` First reply not checked for a provider rejection: ${firstTurnUncheckedReason}.`
       : '';
@@ -2360,6 +2497,7 @@ async function launchAnsweringSession(
         : `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
           `spawned, no live host after ${verify.waitedMs}ms — still booting (NOT a failure; the cascade ` +
           `expiry guards the reply). Log ${spawn.logPath ?? '?'}.`) + firstTurnNote,
+      ...(firstTurnUnjudged ? { firstTurnUnjudged } : {}),
     },
     answeringOwnerId,
     verified: verify.started ? true : null,

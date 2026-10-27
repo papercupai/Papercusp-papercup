@@ -13,7 +13,7 @@ import {
 import type { AdmissionRecoveryScope } from './work-item-admission-recovery';
 import {
   readAdmissionMergeSnapshots, runWorkItemAdmissionPromoter, admissionReviewSubjectEligible,
-  WORK_ITEM_ADMISSION_PROMOTER, type PromoterLlmCall, type PromoterRunResult,
+  WORK_ITEM_ADMISSION_PROMOTER, type AdmissionMergeGuardRefusal, type PromoterLlmCall, type PromoterRunResult,
 } from './work-items-admission-promoter';
 
 const requestSchema = z.object({
@@ -130,7 +130,7 @@ export async function requestAdmissionReview(
 export async function runAdmissionReviews(
   options: { workspaceId: string; harnessSlug: string; runId: string; targetItemIds?: readonly string[] },
   sql: Sql, llmCall: PromoterLlmCall,
-): Promise<PromoterRunResult | null> {
+): Promise<{ result: PromoterRunResult | null; guardRefusals: AdmissionMergeGuardRefusal[] }> {
   const rows = await sql<{ feature_id: string; request: unknown }[]>`
     SELECT feature_id, payload->'_admissionReviewRequest' AS request FROM harness_shared.work_items
      WHERE workspace_id = ${options.workspaceId} AND harness_slug = ${options.harnessSlug}
@@ -142,45 +142,55 @@ export async function runAdmissionReviews(
            payload #>> '{_admissionReviewRequest,requestId}')
        AND (${options.targetItemIds === undefined} OR feature_id = ANY(${[...(options.targetItemIds ?? [])]}::text[]))
      ORDER BY feature_id LIMIT 20`;
+  const guardRefusals: AdmissionMergeGuardRefusal[] = [];
   for (const row of rows) {
     const scope = { workspaceId: options.workspaceId, harnessSlug: options.harnessSlug, workItemId: row.feature_id };
+    const refuse = (detail: string) => guardRefusals.push({
+      itemId: scope.workItemId, canonicalId: null, reason: 'review-gated', detail,
+    });
     const parsed = requestSchema.safeParse(row.request);
-    if (!parsed.success) throw new AdmissionAuthorityRefused(`malformed admission review request: ${
-      parsed.error.issues.map(issue => issue.path.join('.')).join(', ')}`);
+    if (!parsed.success) {
+      refuse(`malformed admission review request: ${parsed.error.issues.map(issue => issue.path.join('.')).join(', ')}`);
+      continue;
+    }
     const request = parsed.data;
+    let initial: Awaited<ReturnType<typeof authorize>>;
     try {
       await verify(sql, scope, request);
-      const initial = await authorize(sql, scope, request);
-      return await runWorkItemAdmissionPromoter({
-        ...options, sql, llmCall, runId: `${options.runId}:review:${request.requestId}`,
-        targetItemIds: [scope.workItemId],
-        reviewOnly: {
-          itemId: scope.workItemId,
-          beforeWrite: async tx => {
-            await verify(tx, scope, request);
-            const current = await authorize(tx, scope, request);
-            if (current.item.fingerprint !== initial.item.fingerprint ||
-                canonical((current.item.payload as Record<string, unknown>)._admissionReviewRequest) !== canonical(row.request)) {
-              throw new AdmissionAuthorityRefused('review request or custody changed during judging');
-            }
-            if (current.revision !== initial.revision) throw new AdmissionAuthorityRefused('review policy changed during judging');
-          },
-          afterWrite: async tx => {
-            await tx`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
-              '{_admissionReviewReceipt}', ${tx.typed(JSON.stringify({ requestId: request.requestId,
-                purpose: request.purpose, runId: `${options.runId}:review:${request.requestId}`,
-                pickupConfirmed: false }), 25)}::jsonb)
-              WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
-                AND feature_id = ${scope.workItemId}`;
-          },
-        },
-      });
+      initial = await authorize(sql, scope, request);
     } catch (error) {
       if (!(error instanceof AdmissionAuthorityRefused)) throw error;
-      // Refusals do not mutate custody, requests, admission, parks or receipts.
-      // The owning routine's invocation records the concrete current denial.
-      throw error;
+      refuse(error.message);
+      continue;
     }
+
+    // Keep model work and its final beforeWrite revalidation outside the preflight
+    // catch: late custody, request, or policy drift must still abort the run.
+    const result = await runWorkItemAdmissionPromoter({
+      ...options, sql, llmCall, runId: `${options.runId}:review:${request.requestId}`,
+      targetItemIds: [scope.workItemId],
+      reviewOnly: {
+        itemId: scope.workItemId,
+        beforeWrite: async tx => {
+          await verify(tx, scope, request);
+          const current = await authorize(tx, scope, request);
+          if (current.item.fingerprint !== initial.item.fingerprint ||
+              canonical((current.item.payload as Record<string, unknown>)._admissionReviewRequest) !== canonical(row.request)) {
+            throw new AdmissionAuthorityRefused('review request or custody changed during judging');
+          }
+          if (current.revision !== initial.revision) throw new AdmissionAuthorityRefused('review policy changed during judging');
+        },
+        afterWrite: async tx => {
+          await tx`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
+            '{_admissionReviewReceipt}', ${tx.typed(JSON.stringify({ requestId: request.requestId,
+              purpose: request.purpose, runId: `${options.runId}:review:${request.requestId}`,
+              pickupConfirmed: false }), 25)}::jsonb)
+            WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+              AND feature_id = ${scope.workItemId}`;
+        },
+      },
+    });
+    return { result, guardRefusals };
   }
-  return null;
+  return { result: null, guardRefusals };
 }

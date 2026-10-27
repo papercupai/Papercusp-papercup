@@ -38,7 +38,7 @@ import { FAIR_CORPUS, FAIR_CORPUS_COMMIT, initialKeys } from './fair-comparison-
 import { createCbmFairArm, createCgcArm, createCodegraphArm, createGitnexusFairArm, createTraceMcpArm } from './fair-comparison-engines';
 import { createLspQueryArm, createNoThirdPartyArm, loadVendoredTypescript } from './fair-comparison-first-party';
 import { acquireArmRunLock } from './fair-comparison-lock';
-import { runArm, scoreRuns, type ArmRun, type FairArmFactory, type PendingSites, type ResourceStage, type ArmResourceSample } from './fair-comparison-run';
+import { NATIVE_PROTOCOL_UNKNOWN, runArm, scoreRuns, type ArmRun, type FairArmFactory, type PendingSites, type ResourceStage, type ArmResourceSample } from './fair-comparison-run';
 import type { ArmAnswer, FairCase } from './fair-comparison';
 import { readProcessIdentity } from '../process-identity';
 import { absCgroupDir, readProcessCgroupPath, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
@@ -732,7 +732,7 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         if (id === 'lsp-query' && !fairLspTasksObserved(treeRoot, lspTasks,
           observation.witness?.cgroupPaths ?? [], qualified.peakChildProcesses))
           unknown.push('language-server-task-costs-not-in-worker-scope');
-        unknown.push('native-tool-seam-and-configuration-invalidation-not-verified');
+        unknown.push(NATIVE_PROTOCOL_UNKNOWN);
         return { sampledAt: new Date().toISOString(), memoryCurrentBytes: costs.memoryCurrentBytes,
           memoryPeakBytes: costs.memoryPeakBytes, memoryPeakBasis: costs.memoryPeakBasis,
           scopeCosts: costs.scopes, peakChildProcesses: qualified.peakChildProcesses,

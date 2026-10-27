@@ -41,4 +41,4 @@ export const ALLOWLIST: Map<string, string>;
  * a tracking ref, and `main()` prints this list LOUDLY on every run — including a
  * clean one — so a parked defect cannot go quiet the way the old blind spot did.
  */
-export const KNOWN_DEFECTS: Map<any, any>;
+export const KNOWN_DEFECTS: Map<string, string>;

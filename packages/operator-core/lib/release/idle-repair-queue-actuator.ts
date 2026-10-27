@@ -41,7 +41,11 @@
 
 import type { Sql } from 'postgres';
 import type { ReleaseFixerDispatchSkip } from '../harness/routines/release-actions';
-import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import {
+  DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
+  type FrozenCandidateRepairQueue,
+  type FrozenRepairQueueLimits,
+} from './frozen-candidate-repair-queue';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 import {
   currentRepairLimbExecutor,
@@ -379,7 +383,19 @@ export function idleQueueFixerDispatch<T, R>(
 export async function dispatchIdleQueueFixer(
   queue: FrozenCandidateRepairQueue,
   deps: IdleQueueFixerHandoffDeps,
+  limits: FrozenRepairQueueLimits = DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
 ): Promise<IdleRungResult> {
+  // WI-6554700010030357 (blind review 112 G-2): the attempt budget is enforced at finalize
+  // (markFrozenRepairFixerDispatched), which runs AFTER the spawn — so an exhausted queue used to
+  // launch a fixer the queue then refused to record. Refuse before reserving or spawning; the
+  // refusal is nonretryable, so the ladder moves on to waking the gate owner.
+  if (queue.attempts >= limits.maxAttempts) {
+    return {
+      ok: false,
+      retryable: false,
+      detail: `repair queue attempt budget is exhausted (${queue.attempts} of ${limits.maxAttempts} attempts used); no fixer launched`,
+    };
+  }
   const reserved = await deps.reserve(queue);
   if (!reserved) return { ok: false, detail: 'queue reservation was unavailable or the queue changed' };
 

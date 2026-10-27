@@ -3488,17 +3488,24 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
       return { kind: 'failed', reason: 'session_confinement_unavailable' };
     }
   }
-  return {
-    kind: spawnRes.kind,
-    spawnRes,
-    listings: applyCompactTier(
-      filterListingsByAllowlist(result, allow),
-      compact,
-      compactInputSchema,
-      summaryGuidanceDescription,
-      getSessionUsedTools(surfaceKey),
-    ),
-  };
+  const listings = applyCompactTier(
+    filterListingsByAllowlist(result, allow),
+    compact,
+    compactInputSchema,
+    summaryGuidanceDescription,
+    getSessionUsedTools(surfaceKey),
+  );
+  // code-intel-delivery-and-outcomes-2026-10-26 P-006 (SPEC-P-006-B): pushes and task briefs
+  // name a follow-up tool only when this session was listed it. Record the final listing
+  // durably (a hook push can land on another process); off the response path, never fatal.
+  if (spawnRes.kind === 'ok') {
+    const ownerId = resolveAgentIdentity(spawnRes.ctx).ownerId;
+    const names = listings.flatMap(listing => typeof listing.name === 'string' ? [listing.name] : []);
+    void import('../../../code-intelligence/push-toolset')
+      .then(({ rememberExposedTools }) => rememberExposedTools({ workspace: spawnRes.ctx.workspaceId, owner: ownerId, tools: names }))
+      .catch(() => { /* advisory: an unrecorded listing reads as an unknown toolset */ });
+  }
+  return { kind: spawnRes.kind, spawnRes, listings };
 }
 
 /**

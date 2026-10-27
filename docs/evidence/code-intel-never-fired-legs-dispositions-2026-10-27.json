@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "plan": "code-intel-delivery-and-outcomes-2026-10-26",
+  "item": "P-002",
+  "workItem": "WI-6554700010029476",
+  "spec": "SPEC-P-002-B@1",
+  "clause": "Every never-fired push leg carries a recorded disposition.",
+  "falsifier": "A never-fired leg (interface, incident, completion, notes, cochange or provenance) is still ON with neither a fix proven by a replayed push nor a switch to OFF with a reason.",
+  "measuredBy": "su-fc263bb4-f17b-422d-b2ad-e21ff0e1332f",
+  "authority": "[self-imposed, under owner directive #2460]",
+  "environment": {
+    "runtime": "papercusp-staging-api :3170",
+    "buildSha": "e88347a92c",
+    "ledger": "harness_shared.code_intel_pushes (postgres:5432, workspace papercusp-workspace)"
+  },
+  "dispositions": [
+    {
+      "leg": "interface",
+      "disposition": "fixed-replayed",
+      "evidence": "code_intel_pushes id 6702 (leg=interface) at 2026-10-27T16:04:39Z from a replayed exported-signature edit; procedure in docs/evidence/code-intel-interface-push-live-2026-10-27.json"
+    },
+    {
+      "leg": "incident",
+      "disposition": "fixed-replayed",
+      "evidence": "code_intel_pushes leg=incident at 2026-10-27T14:42:44.657Z, subject failed-tests:packages/operator-core/lib/code-intelligence/push-channel.test.ts (incident leg moved ahead of the resume/notes reads; push-channel.ts gather loop)"
+    },
+    {
+      "leg": "notes",
+      "disposition": "works-when-input-exists-replayed",
+      "evidence": "code_intel_pushes id 6714 (leg=notes) at 2026-10-27T16:32:09Z from the replay below",
+      "cause": "No code note had ever been asserted: 0 code-note:* rows in harness_shared.agent_facts for papercusp-workspace at 2026-10-27T16:31Z. The leg is wired (push-channel.ts defaults.notesContext -> readPushNotesContext) and needs a code note anchored on a first-touched file.",
+      "replay": {
+        "script": ".papercusp/scratch/fc263-planA/p002-notes-replay.mjs",
+        "steps": [
+          "facts:assert {scope:harness, scopeRef:papercusp, key:code-note:p002-notes-leg-replay-20261027, ttlSec:900, dependsOn:[file:docs/evidence/code-intel-liveness-scheduled-live-2026-10-27.json]} via :3170",
+          "POST :3170 /api/agent-mcp/mid-turn-context with a Read toolCall on that file (the hook's own endpoint)",
+          "facts:retract the note"
+        ],
+        "observed": {
+          "midTurnContextStatus": 200,
+          "responseContained": "Code note code-note:p002-notes-leg-replay-20261027 on docs/evidence/code-intel-liveness-scheduled-live-2026-10-27.json — its file anchors still match the content it was written against",
+          "pushRow": { "id": 6714, "leg": "notes", "subject": "note:code-note:p002-notes-leg-replay-20261027", "pushedAt": "2026-10-27T16:32:09.19896Z" },
+          "retracted": true
+        }
+      }
+    },
+    {
+      "leg": "cochange",
+      "disposition": "switched-off-with-reason",
+      "flag": "papercusp-code-intel-reuse-cochange",
+      "switchedOffAt": "2026-10-27T16:41Z",
+      "backend": "pg-override (flags:set via :3170, read back enabled:false)",
+      "reason": "0 reuse-cochange rows over 3 days. The in-process history read is capped at 1000 commits against a ~36.7k-commit window and takes 1.5-2.3s against a 750ms deadline, so it cannot measure on this repository and costs the completion brief a read that always fails.",
+      "fixTrackedBy": "WI-6554700010030353",
+      "reEnable": "flags:set enabled:null once the full-window index lands and a replayed reuse-cochange row is recorded"
+    },
+    {
+      "leg": "provenance",
+      "disposition": "switched-off-with-reason",
+      "flag": "papercusp-code-intel-reuse-provenance",
+      "switchedOffAt": "2026-10-27T16:41Z",
+      "backend": "pg-override (flags:set via :3170, read back enabled:false)",
+      "reason": "0 reuse-provenance rows over 3 days. The provider itself answers (graph:query op:provenance 290-378ms on :3170), but it has no live surface: a plan-item claim brief is unscoped (work_items:claim of WI-6554700010029478 returned taskBrief.status unknown, scope.paths []) because scope comes only from payload.paths, and the intent brief returns null while the owner holds any claim.",
+      "fixTrackedBy": "WI-6554700010030367",
+      "reEnable": "flags:set enabled:null once claim briefs of plan items are scoped and a replayed reuse-provenance row is recorded"
+    },
+    {
+      "leg": "completion",
+      "disposition": "switched-off-with-reason",
+      "flag": "papercusp-code-intel-push-completion",
+      "switchedOffAt": "2026-10-27T17:33Z",
+      "backend": "pg-override (flags:set via :3170, read back enabled:false)",
+      "reason": "The ledger wiring (recordCompletionTimeBrief in complete.ts) is live on :3170 5475dc1b4b, but the completion brief can never measure on this repository: each exported symbol's change report spawns a cold callers worker that builds a whole-repo program (6034 ms against a 4950 ms budget), so getCompletionTimeBrief always hits its 6000 ms deadline with no change, and complete.ts's equal 6000 ms outer bound then drops the brief as null (:3170 journal 17:26:21Z 'work_items:complete:change-brief exceeded 6000ms'). Replays WI-6554700010030383 and WI-6554700010030384 wrote no leg=completion row. Left ON, every close with filesChanged paid up to 6 s for nothing.",
+      "fixTrackedBy": "WI-6554700010030397",
+      "reEnable": "flags:set enabled:null once the brief runs on a warm graph backend and a replayed measured leg=completion row is recorded on :3170"
+    }
+  ]
+}

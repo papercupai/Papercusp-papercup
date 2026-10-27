@@ -28,6 +28,7 @@ import {
   poolCandidates,
   scoreCase,
   shuffledArmOrder,
+  siteKey,
   type AdjudicationVerdict,
   type AnswerKey,
   type ArmAggregate,
@@ -320,11 +321,48 @@ async function runFreshArm(
     ...(nativeProtocolProofError ? { nativeProtocolProofError } : {}) };
 }
 
-const NATIVE_PROTOCOL_UNKNOWN = 'native-tool-seam-and-configuration-invalidation-not-verified';
+export const NATIVE_PROTOCOL_UNKNOWN = 'native-tool-seam-and-configuration-invalidation-not-verified';
 const sha256Json = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const sha256Pattern = /^[a-f0-9]{64}$/;
 
-function validNativeProtocolProof(run: ArmRun, cases: readonly FairCase[], prereg: Preregistration): boolean {
+function nativeReplayMatchesKey(replay: NativeGraphReplay, kase: FairCase, key: AnswerKey, sourceCommit: string): boolean {
+  const response = replay.response;
+  const freshness = response.freshness;
+  const expectedStale = kase.sourceState === 'stale' || kase.sourceState === 'deleted';
+  const expectedError = kase.sourceState === 'deleted';
+  if (response.intent !== kase.intent || response.truncation.truncated ||
+    (freshness.health !== 'healthy' && freshness.health !== 'degraded') ||
+    !freshness.indexedAt || !Number.isFinite(Date.parse(freshness.indexedAt)) ||
+    freshness.indexedCommit !== sourceCommit || freshness.staleVsDisk !== expectedStale ||
+    (expectedError ? typeof response.error !== 'string' || !response.error.trim() : response.error !== null)) return false;
+
+  const expectedSites = new Set(key.sites);
+  const neutralSites = new Set(key.neutral);
+  const rejectedSites = new Set(key.rejected);
+  const observedSites = new Set<SiteKey>();
+  for (const site of response.sites) {
+    if (!site || typeof site.path !== 'string' || !site.path.trim() ||
+      !Number.isSafeInteger(site.line1) || site.line1 < 1) return false;
+    const reported = siteKey(site);
+    if (rejectedSites.has(reported)) return false;
+    if (expectedSites.has(reported)) {
+      observedSites.add(reported);
+      continue;
+    }
+    if (neutralSites.has(reported)) continue;
+    const canonical = key.aliases[reported];
+    if (!canonical || !expectedSites.has(canonical)) return false;
+    observedSites.add(canonical);
+  }
+  return observedSites.size === expectedSites.size && [...expectedSites].every(site => observedSites.has(site));
+}
+
+function validNativeProtocolProof(
+  run: ArmRun,
+  cases: readonly FairCase[],
+  prereg: Preregistration,
+  adjudicatedKeys: readonly AnswerKey[],
+): boolean {
   const proof = run.nativeProtocolProof;
   const protocol = prereg.protocol;
   if (!proof || !protocol || proof.schemaVersion !== 'native-protocol-proof-v1' ||
@@ -343,7 +381,10 @@ function validNativeProtocolProof(run: ArmRun, cases: readonly FairCase[], prere
     proof.sourceStateReplays.length !== sourceCases.length || proof.configurationReplays.length !== configCases.length) return false;
   const allReplays = [...proof.repositoryTaskReplays, ...proof.sourceStateReplays, ...proof.configurationReplays];
   const callIds = new Set<string>();
+  const keyByCase = new Map(adjudicatedKeys.map(key => [key.caseId, key]));
   const validReplay = (replay: NativeGraphReplay, kase: FairCase): boolean => {
+    const key = keyByCase.get(kase.id);
+    if (!key) return false;
     if (!replay || JSON.stringify(replay.question) !== JSON.stringify(kase) || replay.tool !== 'graph:query' ||
       replay.dispatchWitness?.entrypoint !== 'dispatchProjectedTool' || replay.dispatchWitness.transport !== 'in_process' ||
       replay.dispatchWitness.toolName !== 'graph:query' || !replay.dispatchWitness.callId?.trim() ||
@@ -356,7 +397,8 @@ function validNativeProtocolProof(run: ArmRun, cases: readonly FairCase[], prere
     if (callIds.has(replay.dispatchWitness.callId)) return false;
     callIds.add(replay.dispatchWitness.callId);
     if (kase.source === 'repository-task') return replay.control === null &&
-      replay.sourceWitness.contentHash === kase.sourceFingerprint;
+      replay.sourceWitness.contentHash === kase.sourceFingerprint &&
+      nativeReplayMatchesKey(replay, kase, key, protocol.sourceCommit);
     const control = replay.control as { path?: string; configuration?: string; sourceState?: string;
       originalSourceHash?: string; currentSourceHash?: string | null;
       configurationFiles?: readonly { path: string; hash: string | null }[] } | null;
@@ -366,10 +408,12 @@ function validNativeProtocolProof(run: ArmRun, cases: readonly FairCase[], prere
     if (kase.configuration === 'unconfigured') {
       if (control.configurationFiles.some(file => file.hash !== null)) return false;
     } else if (control.configurationFiles.some(file => !sha256Pattern.test(file.hash ?? ''))) return false;
-    if (kase.sourceState === 'deleted') return control.currentSourceHash === null && replay.response.error !== null;
-    if (!sha256Pattern.test(control.currentSourceHash ?? '') || replay.response.error !== null) return false;
-    return kase.sourceState === 'stale' ? control.currentSourceHash !== control.originalSourceHash
-      : control.currentSourceHash === control.originalSourceHash;
+    if (kase.sourceState === 'deleted') {
+      if (control.currentSourceHash !== null) return false;
+    } else if (!sha256Pattern.test(control.currentSourceHash ?? '') ||
+      (kase.sourceState === 'stale' ? control.currentSourceHash === control.originalSourceHash
+        : control.currentSourceHash !== control.originalSourceHash)) return false;
+    return nativeReplayMatchesKey(replay, kase, key, protocol.sourceCommit);
   };
   if (!proof.repositoryTaskReplays.every((replay, i) => validReplay(replay, repositoryCases[i]!)) ||
     !proof.sourceStateReplays.every((replay, i) => validReplay(replay, sourceCases[i]!)) ||
@@ -381,12 +425,17 @@ function validNativeProtocolProof(run: ArmRun, cases: readonly FairCase[], prere
 }
 
 /** Missing or over-budget measurements keep a protocol verdict inconclusive. */
-function protocolMeasurementResidue(runs: readonly ArmRun[], cases: readonly FairCase[], prereg: Preregistration): string[] {
+function protocolMeasurementResidue(
+  runs: readonly ArmRun[],
+  cases: readonly FairCase[],
+  prereg: Preregistration,
+  adjudicatedKeys: readonly AnswerKey[],
+): string[] {
   const residue: string[] = [];
   const measured = (value: number | null | undefined): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
   for (const run of runs.filter(run => run.unavailable === null)) {
     const label = run.capabilities.armId;
-    const nativeProofValid = validNativeProtocolProof(run, cases, prereg);
+    const nativeProofValid = validNativeProtocolProof(run, cases, prereg, adjudicatedKeys);
     if (run.measurementMode !== 'fresh-repetitions') { residue.push(`${label}:legacy-measurements`); continue; }
     if (JSON.stringify(run.reps.map(rep => rep.rep)) !== JSON.stringify(Array.from({ length: prereg.reps }, (_, i) => i + 1)))
       residue.push(`${label}:missing-repetitions`);
@@ -512,7 +561,7 @@ export function scoreRuns(
         })),
       ),
     );
-  const residue = prereg.protocol ? protocolMeasurementResidue(runs, cases, prereg) : [];
+  const residue = prereg.protocol ? protocolMeasurementResidue(runs, cases, prereg, keys) : [];
   const decision: BackendDecision = residue.length
     ? { kind: 'inconclusive', reason: `protocol measurements unqualified: ${residue.join(', ')}` }
     : decideBackend(aggregates, prereg);

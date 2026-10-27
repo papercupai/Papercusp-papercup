@@ -85,6 +85,7 @@ import { classifyGateAbort, isRecordedInconclusiveStatus } from '../../release/g
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission';
 import {
+  DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
   FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
   FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
   describeUnreadableFrozenCandidateRepairQueue,
@@ -7178,6 +7179,10 @@ export async function reserveFrozenCandidateRepairFixer(
   options: FrozenRepairDispatchReservationOptions = {},
 ): Promise<FrozenCandidateRepairQueue | null> {
   if (queue.phase !== 'awaiting-fixer') return null;
+  // WI-6554700010030357: no launch lease past the attempt budget. markFrozenRepairFixerDispatched
+  // enforces the budget only at finalize, after the spawn, so a lease granted here would let a
+  // caller launch a fixer the queue then refuses to record.
+  if (queue.attempts >= DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAttempts) return null;
   const nowMs = options.nowMs ?? Date.now();
   if (queue.dispatchReservation && queue.dispatchReservation.expiresAtMs > nowMs) return null;
 

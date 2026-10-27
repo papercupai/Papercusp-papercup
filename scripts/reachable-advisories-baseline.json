@@ -108,6 +108,7 @@
     "@browserbasehq/stagehand",
     "@bundled-es-modules/glob",
     "@excalidraw/excalidraw",
+    "@grpc/grpc-js",
     "@modelcontextprotocol/sdk",
     "astro-robots-txt",
     "body-parser",
@@ -130,6 +131,7 @@
     "sass",
     "style-dictionary",
     "undici",
+    "vite",
     "zod"
   ],
   "entries": {
@@ -279,6 +281,18 @@
       "disposition": "patch-eligible",
       "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). Gates only on the frozen lineage (8c03b5dcd156 lockfile); the staging lockfile already carries the fix, so the checker reports this entry STALE at tip. Remove it once main has advanced past the frozen lineage.",
       "owners": ["@papercusp/web"]
+    },
+    "@grpc/grpc-js": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). Gates only on the frozen lineage (8c03b5dcd156 lockfile): measured NEW at repairHead 3b3fdab5 (fix=patch-compatible, owners UNATTRIBUTED, failed closed as shipping) and absent at staging tip, whose lockfile already carries a fixed copy, so the checker reports this entry STALE at tip. Remove it once main has advanced past the frozen lineage.",
+      "owners": ["UNATTRIBUTED"]
+    },
+    "vite": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). Gates only on the frozen lineage (8c03b5dcd156 lockfile): measured NEW at repairHead 3b3fdab5 (fix=patch-compatible) and absent at staging tip, whose lockfile already carries a fixed copy, so the checker reports this entry STALE at tip. Remove it once main has advanced past the frozen lineage.",
+      "owners": ["@papercusp/ast-fingerprint", "@papercusp/test-config"]
     },
     "mem0ai": {
       "severity": "high",

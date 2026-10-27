@@ -15370,6 +15370,9 @@ describe("quiet-cut — never judge a tip younger than the quiet window (2026-07
     expect(r).toMatchObject({ advanced: true, candidate: c2 });
   });
 
+  // b469b1b698 (fresh-cut-prewarm-ordering-2026-10-22): an explicit candidate is PINNED only
+  // when the caller says so (candidateSource:'pinned'); a bare opts.candidate is a tip hint.
+  // The CLI keeps a raw --candidate pinned (checkpointCandidateSourceFromCli).
   it("an explicit opts.candidate pin bypasses the quiet cut", async () => {
     const c1 = await datedCommit("a.txt", "c1", 600);
     await git(repo, ["branch", "ready", c1]);
@@ -15379,8 +15382,24 @@ describe("quiet-cut — never judge a tip younger than the quiet window (2026-07
     const r = await runGreenCheckpoint(cfg(), deps, {
       noPush: true,
       candidate: c3,
+      candidateSource: "pinned",
     });
-    expect(r).toMatchObject({ advanced: true, candidate: c3 });
+    // A pinned run judges exactly c3 (the quiet cut did not step back to c2). Whether a pinned
+    // (candidate-pinned diagnostic) run may promote is owned by the promotion tests, not this one.
+    expect(r).toMatchObject({ candidate: c3 });
+  });
+
+  it("a bare opts.candidate without pinned provenance is a tip hint the quiet cut still steps back from", async () => {
+    const c1 = await datedCommit("a.txt", "c1", 600);
+    await git(repo, ["branch", "ready", c1]);
+    const c2 = await datedCommit("b.txt", "c2", 300);
+    const c3 = await commit("c.txt", "now\n", "c3");
+    const { deps } = stubDeps(true);
+    const r = await runGreenCheckpoint(cfg(), deps, {
+      noPush: true,
+      candidate: c3,
+    });
+    expect(r).toMatchObject({ advanced: true, candidate: c2 });
   });
 
   // P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the first fresh cut after a retire

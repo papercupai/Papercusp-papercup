@@ -27,7 +27,7 @@
  * file falsifies.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FrozenRepairAdmission } from './frozen-candidate-repair-queue';
@@ -56,6 +56,18 @@ export function frozenLineageRef(candidate: string): string {
     throw new Error(`frozenLineageRef: candidate must be a full sha, got ${JSON.stringify(candidate)}`);
   }
   return `${FROZEN_LINEAGE_REF_PREFIX}${candidate}`;
+}
+
+/**
+ * The submodule-local ref that marks (and keeps from gc) a commit an inner-path admission
+ * built inside a submodule (EI-27153389932897217). Promotion publishes a gate-pin tag for every
+ * gitlink whose commit carries this ref or a gen-heal ref, before main may reference it.
+ */
+export function repairAdmissionSubmoduleRef(sha: string): string {
+  if (!SHA_RE.test(sha)) {
+    throw new Error(`repairAdmissionSubmoduleRef: sha must be a full sha, got ${JSON.stringify(sha)}`);
+  }
+  return `refs/papercusp/repair-admission/${sha}`;
 }
 
 export interface AdmissionGitResult {
@@ -429,6 +441,11 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
 
   const atSource = new Map<string, AdmissionTreeEntry>();
   const atHead = new Map<string, AdmissionTreeEntry>();
+  /** Inner paths grouped by the submodule gitlink that holds them (EI-27153389932897217). */
+  const submoduleGroups = new Map<
+    string,
+    { gitlink: string; headPin: string; sourcePin: string; candidatePin: string; inner: string[] }
+  >();
   for (const path of allowlist) {
     const s = lsTree(sourceSha, path);
     if (!s.ok) return s.refusal;
@@ -443,6 +460,30 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const headGitlink = gitlinkAncestor(repairHeadSha, path);
     if (!headGitlink.ok) return headGitlink.refusal;
     if (candidateGitlink.entry || sourceGitlink.entry || headGitlink.entry) {
+      // EI-27153389932897217: a path inside ONE submodule that is a gitlink at the candidate,
+      // the source and repairHead is admitted narrowly — a commit is built inside the submodule
+      // on repairHead's pin carrying only the named inner paths, and only the gitlink moves.
+      // Anything else (a submodule added/removed across the three, or a different gitlink
+      // per side) keeps the refusal: there is no single pin to build on.
+      const headLink = headGitlink.entry;
+      const sourceLink = sourceGitlink.entry;
+      const candidateLink = candidateGitlink.entry;
+      if (
+        headLink && sourceLink && candidateLink &&
+        headLink.sha && sourceLink.sha &&
+        sourceLink.path === headLink.path && candidateLink.path === headLink.path
+      ) {
+        const group = submoduleGroups.get(headLink.path) ?? {
+          gitlink: headLink.path,
+          headPin: headLink.sha,
+          sourcePin: sourceLink.sha,
+          candidatePin: candidateLink.sha ?? '(none)',
+          inner: [] as string[],
+        };
+        group.inner.push(path.slice(headLink.path.length + 1));
+        submoduleGroups.set(headLink.path, group);
+        continue;
+      }
       const describe = (entry: AdmissionTreeEntry | null) =>
         entry ? `${entry.path}@${entry.sha}` : '(no gitlink ancestor)';
       const ancestorPaths = [candidateGitlink.entry, sourceGitlink.entry, headGitlink.entry]
@@ -469,8 +510,10 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const rt = run(['read-tree', repairHeadSha], indexEnv);
     if (rt.status !== 0) return gitFailed('read-tree', rt);
     for (const path of allowlist) {
-      const s = atSource.get(path)!;
-      const h = atHead.get(path)!;
+      const s = atSource.get(path);
+      const h = atHead.get(path);
+      // A path inside a submodule has no superproject entry; its group is built below.
+      if (!s || !h) continue;
       if (s.kind === 'absent') {
         if (h.kind === 'absent') {
           // An absent path on both sides is a valid already-reflected deletion only when the
@@ -495,6 +538,127 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
       const ui = run(['update-index', '--add', '--replace', '--cacheinfo', `${s.mode},${s.sha},${path}`], indexEnv);
       if (ui.status !== 0) return gitFailed(`update-index --cacheinfo ${path}`, ui);
     }
+
+    // EI-27153389932897217: one commit per submodule, built on repairHead's pin with only the
+    // named inner paths taken from the source pin, proved like the superproject commit, then
+    // staged as the new gitlink. Fixed identity and dates make it a pure function of tree,
+    // parent and message, so a dry run and its confirm build the same submodule commit.
+    const submoduleAdmitted: string[] = [];
+    const submoduleUnchanged: string[] = [];
+    const submoduleGitlinks: string[] = [];
+    const submoduleCommits: Array<{ gitlink: string; repo: string; commit: string }> = [];
+    const submoduleBlobs: Record<string, string | null> = {};
+    let subIndexes = 0;
+    for (const group of submoduleGroups.values()) {
+      if (allowlist.includes(group.gitlink)) {
+        return {
+          ok: false,
+          code: 'invalid-paths',
+          detail:
+            `${group.gitlink} is named both as a whole submodule pointer and through paths inside it ` +
+            `(${group.inner.map((p) => `${group.gitlink}/${p}`).join(', ')}); admit one or the other`,
+          paths: [group.gitlink],
+        };
+      }
+      const repo = join(input.root, group.gitlink);
+      const runSub = (argv: readonly string[], env?: NodeJS.ProcessEnv): AdmissionGitResult =>
+        git(argv, { cwd: repo, env: env ? { ...process.env, ...env } : undefined });
+      const outer = (inner: string) => `${group.gitlink}/${inner}`;
+      // The inner commit is built in the submodule's own repository, so it must be checked
+      // out here and hold both pins. Otherwise keep the original refusal, naming every pin.
+      for (const pin of [group.headPin, group.sourcePin]) {
+        const checkedOut = existsSync(join(repo, '.git'));
+        const has = checkedOut ? runSub(['cat-file', '-e', `${pin}^{commit}`]) : null;
+        if (!has || has.status !== 0) {
+          return {
+            ok: false,
+            code: 'path-under-gitlink',
+            detail:
+              `${group.inner.map(outer).join(', ')} is inside submodule gitlink ${group.gitlink}, and ${repo} ` +
+              `${checkedOut ? `does not hold commit ${pin.slice(0, 12)}` : 'is not a checked-out submodule'}, so it ` +
+              `cannot be admitted narrowly. Gitlink commits: candidate ${group.gitlink}@${group.candidatePin}, ` +
+              `source ${group.gitlink}@${group.sourcePin}, repairHead ${group.gitlink}@${group.headPin}. ` +
+              `Initialize or fetch the submodule, or if the whole submodule pointer is intended, retry with ` +
+              `paths: [${JSON.stringify(group.gitlink)}].`,
+          };
+        }
+      }
+      const subIndexEnv: NodeJS.ProcessEnv = { GIT_INDEX_FILE: join(scratch, `sub-index-${subIndexes++}`) };
+      const srt = runSub(['read-tree', group.headPin], subIndexEnv);
+      if (srt.status !== 0) return gitFailed(`read-tree ${group.gitlink}@${group.headPin.slice(0, 12)}`, srt);
+      for (const inner of group.inner) {
+        const ls = runSub(['ls-tree', '-z', group.sourcePin, '--', inner]);
+        if (ls.status !== 0) return gitFailed(`ls-tree ${group.gitlink}@${group.sourcePin.slice(0, 12)} -- ${inner}`, ls);
+        const line = ls.stdout.split('\0').find((l) => l.endsWith(`\t${inner}`));
+        if (!line) {
+          submoduleBlobs[outer(inner)] = null;
+          const rm = runSub(['update-index', '--force-remove', '--', inner], subIndexEnv);
+          if (rm.status !== 0) return gitFailed(`update-index --force-remove ${outer(inner)}`, rm);
+          continue;
+        }
+        const m = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40,64})\t/.exec(line);
+        if (!m || m[2] !== 'blob') {
+          return {
+            ok: false,
+            code: m?.[2] === 'commit' ? 'path-under-gitlink' : 'invalid-paths',
+            detail:
+              `${outer(inner)} is ${m ? `a ${m[2]}` : 'unparseable'} inside submodule ${group.gitlink} at ` +
+              `${group.sourcePin.slice(0, 12)}; only files can be admitted inside a submodule`,
+            paths: [outer(inner)],
+          };
+        }
+        submoduleBlobs[outer(inner)] = m[3]!;
+        const ui = runSub(['update-index', '--add', '--replace', '--cacheinfo', `${m[1]},${m[3]},${inner}`], subIndexEnv);
+        if (ui.status !== 0) return gitFailed(`update-index --cacheinfo ${outer(inner)}`, ui);
+      }
+      const swt = runSub(['write-tree'], subIndexEnv);
+      const subTree = swt.stdout.trim();
+      if (swt.status !== 0 || !SHA_RE.test(subTree)) return gitFailed(`write-tree ${group.gitlink}`, swt);
+      const pinTree = runSub(['rev-parse', '--verify', `${group.headPin}^{tree}`]);
+      if (pinTree.status !== 0) return gitFailed(`rev-parse ${group.gitlink}@${group.headPin.slice(0, 12)}^{tree}`, pinTree);
+      if (subTree === pinTree.stdout.trim()) {
+        submoduleUnchanged.push(...group.inner.map(outer));
+        continue;
+      }
+      const subMessage =
+        `admit ${group.inner.length} path(s) onto ${group.gitlink}@${group.headPin.slice(0, 12)} ` +
+        `for frozen candidate ${input.candidate.slice(0, 12)}\n\n` +
+        `source: ${recordedSourceRef} (${group.gitlink}@${group.sourcePin})\n` +
+        `actor: ${input.actor.trim()}\n\npaths:\n` +
+        [...group.inner].sort().map((p) => `- ${p}`).join('\n') +
+        '\n';
+      const subIdentity: NodeJS.ProcessEnv = {
+        GIT_AUTHOR_NAME: ADMISSION_GIT_IDENTITY.name,
+        GIT_AUTHOR_EMAIL: ADMISSION_GIT_IDENTITY.email,
+        GIT_AUTHOR_DATE: ADMISSION_GIT_DATE,
+        GIT_COMMITTER_NAME: ADMISSION_GIT_IDENTITY.name,
+        GIT_COMMITTER_EMAIL: ADMISSION_GIT_IDENTITY.email,
+        GIT_COMMITTER_DATE: ADMISSION_GIT_DATE,
+      };
+      const sct = runSub(['commit-tree', subTree, '-p', group.headPin, '-m', subMessage], subIdentity);
+      const subCommit = sct.stdout.trim();
+      if (sct.status !== 0 || !SHA_RE.test(subCommit)) return gitFailed(`commit-tree ${group.gitlink}`, sct);
+      const sdt = runSub(['diff-tree', '-r', '--name-only', '--no-commit-id', '-z', group.headPin, subCommit]);
+      if (sdt.status !== 0) return gitFailed(`diff-tree proof ${group.gitlink}`, sdt);
+      const subProof = proveAdmissionDiff({ diff: sdt.stdout.split('\0').filter(Boolean), allowlist: group.inner });
+      if (!subProof.ok) {
+        return {
+          ok: false,
+          code: 'stray-paths',
+          stray: subProof.stray.map(outer),
+          detail:
+            `REFUSED: the built ${group.gitlink} admission ${subCommit.slice(0, 12)} touches paths outside the ` +
+            `allowlist (${subProof.stray.map(outer).join(', ')}); it was NOT published and repairHead did not move`,
+        };
+      }
+      submoduleAdmitted.push(...subProof.admitted.map(outer));
+      submoduleUnchanged.push(...subProof.unchanged.map(outer));
+      const gl = run(['update-index', '--add', '--replace', '--cacheinfo', `160000,${subCommit},${group.gitlink}`], indexEnv);
+      if (gl.status !== 0) return gitFailed(`update-index --cacheinfo ${group.gitlink}`, gl);
+      submoduleGitlinks.push(group.gitlink);
+      submoduleCommits.push({ gitlink: group.gitlink, repo, commit: subCommit });
+    }
+
     const wt = run(['write-tree'], indexEnv);
     const tree = wt.stdout.trim();
     if (wt.status !== 0 || !SHA_RE.test(tree)) return gitFailed('write-tree', wt);
@@ -535,7 +699,23 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const dt = run(['diff-tree', '-r', '--name-only', '--no-commit-id', '-z', repairHeadSha, commit]);
     if (dt.status !== 0) return gitFailed('diff-tree proof', dt);
     const diff = dt.stdout.split('\0').filter(Boolean);
-    const proof = proveAdmissionDiff({ diff, allowlist });
+    // A submodule group's superproject footprint is its gitlink; its admitted/unchanged paths
+    // are the inner paths its own proof established above.
+    const innerNamed = new Set(
+      [...submoduleGroups.values()].flatMap((g) => g.inner.map((p) => `${g.gitlink}/${p}`)),
+    );
+    const movedGitlinks = new Set(submoduleGitlinks);
+    const superProof = proveAdmissionDiff({
+      diff,
+      allowlist: [...allowlist.filter((p) => !innerNamed.has(p)), ...submoduleGitlinks],
+    });
+    const proof = superProof.ok
+      ? {
+          ok: true as const,
+          admitted: [...superProof.admitted.filter((p) => !movedGitlinks.has(p)), ...submoduleAdmitted].sort(),
+          unchanged: [...superProof.unchanged.filter((p) => !movedGitlinks.has(p)), ...submoduleUnchanged].sort(),
+        }
+      : superProof;
     if (!proof.ok) {
       return {
         ok: false,
@@ -593,7 +773,11 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
       };
     }
     const blobs: Record<string, string | null> = {};
-    for (const path of allowlist) blobs[path] = atSource.get(path)!.sha;
+    for (const path of allowlist) {
+      blobs[path] = Object.prototype.hasOwnProperty.call(submoduleBlobs, path)
+        ? submoduleBlobs[path]!
+        : atSource.get(path)!.sha;
+    }
     const entry: FrozenRepairAdmission = {
       atMs: input.nowMs,
       actor: input.actor.trim(),
@@ -616,6 +800,13 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
         published: false,
         entry,
       };
+    }
+    // Pin every submodule commit this admission built BEFORE the lineage can reference it: the
+    // ref keeps it from gc, lets the verification checkouts fetch it from this repository, and
+    // is what promotion's gate-pin publication looks for (publishGenHealGitlinks).
+    for (const built of submoduleCommits) {
+      const pin = git(['update-ref', repairAdmissionSubmoduleRef(built.commit), built.commit], { cwd: built.repo });
+      if (pin.status !== 0) return gitFailed(`update-ref ${built.gitlink} ${repairAdmissionSubmoduleRef(built.commit)}`, pin);
     }
     const ur = run([
       'update-ref',

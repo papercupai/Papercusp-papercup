@@ -11,7 +11,8 @@ import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { readPushIncidentAttribution, readPushPriorWork, priorWorkSubject, pushLegRank, type PushInput, type PushLegId, type ReadPriorWorkContextDeps } from './push-channel';
 import { priorWorkReport, type PriorWorkLedgerRow } from './change-history';
 import { classifyShellLookup } from './native-adoption';
-import { cachedLegFollowThrough, formatPushFact, LEG_FOLLOW_THROUGH_REFRESH_MS, rankPushFacts, resetLegFollowThroughCache, type LegFollowThrough } from './push-channel';
+import { cachedLegFollowThrough, formatPushFact, LEG_FOLLOW_THROUGH_REFRESH_MS, rankPushFacts, reachedTestsText, resetLegFollowThroughCache, withCallableSuggestion, type LegFollowThrough } from './push-channel';
+import { toolsetFromNames, UNKNOWN_TOOLSET } from './push-toolset';
 
 const now = Date.now();
 const raw = () => ({ schema: 'graph-dependency-snapshot-v1', index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
@@ -141,12 +142,21 @@ describe('shared snapshot-backed push channel', () => {
     d.legs = () => new Map([['incident', snapshotIncidentLeg]]);
     d.incidentContext = vi.fn(async (_input: PushInput, _paths: string[]) => ({ status: 'measured' as const, changedSymbols: ['target:lib/target.ts:7'],
       workItems: [{ id: 'WI-42', state: 'open', paths: ['lib/target.ts'], relation: 'file-edit-ledger' as const }] }));
-    const delivered = await codeIntelPushText({ ...input, calls: [{ tool: 'testing:run', toolResponse: 'truncated recall',
-      incidentResult: { byFile: { 'lib/target.test.ts': { failed: 1, runId: 42 } } } }] }, d);
+    d.toolset = async () => toolsetFromNames(['testing:run', 'testing:runs']);
+    const calls = [{ tool: 'testing:run', toolResponse: 'truncated recall',
+      incidentResult: { byFile: { 'lib/target.test.ts': { failed: 1, runId: 42 } } } }];
+    const delivered = await codeIntelPushText({ ...input, calls }, d);
     expect(delivered).toContain('target:lib/target.ts:7');
     expect(delivered).toContain('WI-42 [open] (file-edit-ledger)');
     expect(delivered).toContain('"testRunIds":[42]');
     expect(d.incidentContext).toHaveBeenCalledWith(expect.anything(), expect.arrayContaining(['lib/target.ts']));
+    // P-006: a session never listed the testing tools still gets the run ids, but no call.
+    const unlisted = deps();
+    unlisted.legs = d.legs; unlisted.incidentContext = d.incidentContext;
+    unlisted.toolset = async () => toolsetFromNames(['graph:query']);
+    const bare = await codeIntelPushText({ ...input, owner: 'agent-unlisted', calls }, unlisted);
+    expect(bare).toContain('Recorded failure rows: test run ids 42.');
+    expect(bare).not.toMatch(/testing:runs?\b/);
   });
   const editCall = () => ({ tool: 'Edit', toolInput: { file_path: 'lib/target.ts' }, interfaceEdit: {
     path: 'lib/target.ts', base: 'a'.repeat(40), changes: ['signature target', 'required Result.name', 'behavioural strand risk'],
@@ -169,7 +179,53 @@ describe('shared snapshot-backed push channel', () => {
     d.legs = () => new Map([['first-touch', snapshotFirstTouchLeg], ['interface', snapshotInterfaceLeg]]);
     const delivered = await codeIntelPushText(changed, d);
     expect(delivered).toContain('signature target');
-    expect(d.commit).toHaveBeenCalledWith(changed, snap, [facts[0]], 1500, expect.any(AbortSignal), [], []);
+    // P-006: the covering tests are inline; with no listed toolset the call is not kept.
+    expect(facts[0].text).toMatch(/\nTests with static import reach(?: \(bounded\))?: app\/use\.test\.ts\.\n/);
+    const { suggestedCall: _call, ...unsuggested } = facts[0];
+    expect(d.commit).toHaveBeenCalledWith(changed, snap, [unsuggested], 1500, expect.any(AbortSignal), [], []);
+  });
+
+  it('P-006: keeps a follow-up call only for a tool the recipient was listed, and renders Next: only then', async () => {
+    const snap = snapshot();
+    snap.importers = new Map([['lib/target.ts', ['app/use.ts']], ['app/use.ts', ['app/use.test.ts']]]);
+    const changed = { ...input, calls: [editCall()] };
+    const [raw] = snapshotInterfaceLeg(changed, snap);
+    const call = 'testing:run {"files":["app/use.test.ts"],"harness":"papercusp"}';
+    expect(raw.text).not.toContain('testing:run');
+    expect(withCallableSuggestion(raw, toolsetFromNames(['mcp__papercusp-su__testing_run'])).suggestedCall).toBe(call);
+    for (const toolset of [UNKNOWN_TOOLSET, toolsetFromNames([]), toolsetFromNames(['testing:runs', 'graph:query'])]) {
+      const kept = withCallableSuggestion(raw, toolset);
+      expect(kept.suggestedCall).toBeUndefined();
+      expect(formatPushFact(kept, snap)).not.toContain('Next:');
+      expect(formatPushFact(kept, snap)).toContain('app/use.test.ts');
+    }
+    expect(formatPushFact(withCallableSuggestion(raw, toolsetFromNames(['testing:run'])), snap)).toContain(`Next: ${call}`);
+
+    const listed = deps();
+    listed.snapshot = async () => snap;
+    listed.legs = () => new Map([['interface', snapshotInterfaceLeg]]);
+    listed.toolset = vi.fn(async () => toolsetFromNames(['testing:run']));
+    await codeIntelPushText(changed, listed);
+    expect(listed.toolset).toHaveBeenCalledWith(expect.objectContaining({ owner: 'agent-A', workspace: 'ws-A' }));
+    expect(vi.mocked(listed.commit).mock.calls[0][2][0].suggestedCall).toBe(call);
+
+    // A failed or slow toolset read is unknown: the push still goes out, naming no tool.
+    for (const toolset of [async () => { throw new Error('pool exhausted'); },
+      () => new Promise<never>(() => {})] as PushChannelDeps['toolset'][]) {
+      const failing = deps();
+      failing.snapshot = async () => snap;
+      failing.legs = listed.legs;
+      failing.toolset = toolset;
+      const text = await codeIntelPushText(changed, failing);
+      expect(text).toContain('signature target');
+      expect(vi.mocked(failing.commit).mock.calls[0][2][0].suggestedCall).toBeUndefined();
+    }
+  });
+
+  it('P-006: names covering tests inline, capped at two with a count of the rest', () => {
+    expect(reachedTestsText([])).toBe('unknown');
+    expect(reachedTestsText(['a.test.ts'])).toBe('a.test.ts');
+    expect(reachedTestsText(['a.test.ts', 'b.test.ts', 'c.test.ts', 'd.test.ts'])).toBe('a.test.ts, b.test.ts (+2 more)');
   });
 
   it('pushes an observed failing-test incident with static hypotheses and explicit unknowns', () => {
@@ -183,11 +239,16 @@ describe('shared snapshot-backed push channel', () => {
       sha256: 'b'.repeat(64), signature: 'function target()', aliases: ['target'], sources: undefined,
       callers: [],
     }]]]);
-    const fact = snapshotIncidentLeg({ ...input, calls: [{
+    const failedCall = {
       tool: 'testing:run',
       toolInput: { files: ['app/use.test.ts'], harness: 'papercusp' },
       toolResponse: { status: 'failed', byFile: { 'app/use.test.ts': { passed: 0, failed: 1, skipped: 0, runId: 42 } } },
-    }] }, snap)[0];
+    };
+    const fact = snapshotIncidentLeg({ ...input, recipientToolset: toolsetFromNames(['testing:runs']), calls: [failedCall] }, snap)[0];
+    // P-006: no listed testing:runs, no recovery call; the run id itself stays.
+    const unlistedText = snapshotIncidentLeg({ ...input, calls: [failedCall] }, snap)[0]?.text;
+    expect(unlistedText).toContain('Recorded failure rows: test run ids 42.');
+    expect(unlistedText).not.toContain('testing:runs');
     expect(fact).toMatchObject({ leg: 'incident', subject: 'failed-tests:app/use.test.ts',
       suggestedCall: 'testing:run {"files":["app/use.test.ts"],"harness":"papercusp"}' });
     expect(fact?.citedPaths).toEqual(expect.arrayContaining(['app/use.test.ts', 'app/use.ts', 'lib/target.ts']));
@@ -207,7 +268,7 @@ describe('shared snapshot-backed push channel', () => {
     }, testRunIds: [43, 42] };
     const call = { tool: 'mcp__papercusp_su__testing_run', toolInput: JSON.stringify({ harness: 'papercusp' }),
       toolResponse: { content: [{ type: 'text', text: JSON.stringify(response) }] } };
-    const facts = snapshotIncidentLeg({ ...input, calls: [call] }, snapshot());
+    const facts = snapshotIncidentLeg({ ...input, recipientToolset: toolsetFromNames(['testing:runs']), calls: [call] }, snapshot());
     expect(facts).toHaveLength(1);
     expect(facts[0].citedPaths).not.toContain('app/pass.test.ts');
     expect(facts[0].text).toContain('"testRunIds":[42]');

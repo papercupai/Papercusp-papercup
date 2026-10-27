@@ -16,10 +16,13 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
-import { sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
+import { FIRST_TURN_REJUDGE_WINDOW_MS, sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
+import { rejudgeFirstTurn } from './consult-dispatch';
 import { continueCascadeDispatchCore } from './cascade-core';
 import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
@@ -1537,6 +1540,157 @@ describe('P-003 idle answering sessions end at the consult window (WI-10003199)'
 
     expect(r.answerFailures.find((f) => f.conversationId === id)).toMatchObject({ recorded: true, stopOutcome: 'stop threw: ledger down' });
     expect(String((await attemptsOf(id)).at(-1)?.detail)).toContain('stop threw: ledger down');
+  });
+});
+
+// EI-27111739698817170 (measured 2026-10-27, conv-request-7488592c): a Codex convert's
+// model_not_found refusal landed ~48s after launch, after the dispatcher's 20s
+// first-turn window, so the dispatch stood and the consult waited 18 min with zero
+// posts. The sweep now re-judges that first turn with the dispatcher's own
+// classifier, reading a REAL rollout file through the production reader.
+describe('a first-turn rejection that lands after the dispatch window (EI-27111739698817170)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'consult-rejudge-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const started = { type: 'event_msg', payload: { type: 'task_started' } };
+  const modelNotFound = {
+    type: 'event_msg',
+    payload: {
+      type: 'task_complete',
+      last_agent_message: null,
+      error: { code: 'model_not_found', message: "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account." },
+    },
+  };
+  function rolloutFile(name: string, ...records: object[]): string {
+    const path = join(dir, `rollout-${name}.jsonl`);
+    writeFileSync(path, `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
+    return path;
+  }
+  /** One persisted walk exactly as dispatchRecordEntry writes a dispatched Codex convert. */
+  async function recordDispatch(id: string, opts: { transcriptPath: string; kickoffAt: string; answeringOwnerId?: string }) {
+    const record = {
+      at: opts.kickoffAt,
+      sourceOwnerId: 'resp-1',
+      dispatched: true,
+      answeringOwnerId: opts.answeringOwnerId ?? 'resp-1-codex',
+      operation: 'convert',
+      agent: 'codex',
+      model: 'sol',
+      verified: true,
+      detail: 'convert of resp-1 → codex/sol',
+      attempts: [{
+        rank: 3, agent: 'codex', model: 'sol', operation: 'convert', outcome: 'dispatched', detail: 'dispatched',
+        firstTurnUnjudged: { agent: 'codex', transcriptPath: opts.transcriptPath, kickoffAt: opts.kickoffAt },
+      }],
+    };
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET dispatch_attempts = ${JSON.stringify([record])}::text::jsonb
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+  }
+  async function attemptsOf(id: string): Promise<Array<Record<string, unknown>>> {
+    const rows = (await rootSql`
+      SELECT dispatch_attempts FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}
+    `) as unknown as Array<{ dispatch_attempts: unknown }>;
+    const v = rows[0]!.dispatch_attempts;
+    return (typeof v === 'string' ? JSON.parse(v) : v) as Array<Record<string, unknown>>;
+  }
+  const kickoff = new Date(NOW.getTime() - 2 * 60_000).toISOString();
+  const nonDue = () => seedConsult({
+    latency: 'hard-blocked',
+    expiresAt: FUTURE,
+    // Selection carries no answeringOwnerId stamp, as on the measured consults.
+    routing: menuSnapshot(['resp-1', 'resp-2']),
+  });
+
+  it('advances the slot, stops the session and records why, from a real rollout ending in model_not_found', async () => {
+    const id = await nonDue();
+    await recordDispatch(id, { transcriptPath: rolloutFile(`nf-${id}`, started, modelNotFound), kickoffAt: kickoff });
+    const { deps, reachCalls, alerts } = makeDeps({ withReach: true });
+    deps.rejudgeFirstTurn = (u) => rejudgeFirstTurn(u);
+    const stops: Array<Parameters<NonNullable<ExpirySweepDeps['stopAnsweringSession']>>[0]> = [];
+    deps.stopAnsweringSession = async (t) => { stops.push(t); return 'stopped task for resp-1'; };
+
+    const r = await sweepExpiredConsults(deps);
+
+    // Rows left by earlier suites share this database, so assert on THIS row only.
+    expect(r.advanced).toBeGreaterThanOrEqual(1);
+    const row = await cascadeRow(id);
+    expect(row).toMatchObject({ state: 'awaiting_responder', responder_id: 'resp-2', cascade_cursor: 1 });
+    const digest = row.cascade_digest as Array<{ ownerId: string; kind: string; excerpt: string }>;
+    expect(digest[0]).toMatchObject({ ownerId: 'resp-1', kind: 'dispatch_failed' });
+    expect(digest[0]!.excerpt).toContain("was a provider rejection (resp-1-codex: its first reply was a provider error (The 'gpt-5.6-sol' model");
+    expect(reachCalls.filter((c) => c.conversationId === id).map((c) => c.responder)).toEqual(['resp-2']);
+    expect(alerts.filter((a) => a.conversationId === id)).toHaveLength(1);
+    expect(stops.filter((s) => s.conversationId === id))
+      .toEqual([{ workspaceId: WS, conversationId: id, answeringOwnerId: null, sourceOwnerId: 'resp-1' }]);
+    expect(r.answerFailures.filter((f) => f.conversationId === id)).toEqual([
+      { conversationId: id, reason: 'answer-first-turn-rejected', stopOutcome: 'stopped task for resp-1', recorded: true },
+    ]);
+    const failure = (await attemptsOf(id)).at(-1)!;
+    expect(failure).toMatchObject({
+      dispatched: false,
+      answerFailure: { reason: 'answer-first-turn-rejected', cascadeCursor: 0 },
+      attempts: [{ outcome: 'failed', reason: 'answer-first-turn-rejected' }],
+    });
+    expect(String(failure.detail)).toContain('gpt-5.6-sol');
+  });
+
+  it('leaves a slot whose first turn is still running, or ended cleanly, to wait (silence is not rejection)', async () => {
+    const pending = await nonDue();
+    await recordDispatch(pending, { transcriptPath: rolloutFile(`run-${pending}`, started), kickoffAt: kickoff });
+    const clean = await nonDue();
+    await recordDispatch(clean, {
+      transcriptPath: rolloutFile(`ok-${clean}`, started, { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'answered' } }),
+      kickoffAt: kickoff,
+    });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.rejudgeFirstTurn = (u) => rejudgeFirstTurn(u);
+
+    const r = await sweepExpiredConsults(deps);
+
+    for (const id of [pending, clean]) {
+      expect(await cascadeRow(id)).toMatchObject({ responder_id: 'resp-1', cascade_cursor: 0 });
+      expect(r.answerFailures.filter((f) => f.conversationId === id)).toEqual([]);
+    }
+    expect(reachCalls.filter((c) => c.conversationId === pending || c.conversationId === clean)).toEqual([]);
+  });
+
+  it('does not re-judge past the re-judge window, a walk for a different stamped answerer, or an engaged consult', async () => {
+    const old = await nonDue();
+    await recordDispatch(old, {
+      transcriptPath: rolloutFile(`old-${old}`, started, modelNotFound),
+      kickoffAt: new Date(NOW.getTime() - FIRST_TURN_REJUDGE_WINDOW_MS - 60_000).toISOString(),
+    });
+    const stale = await seedConsult({
+      latency: 'hard-blocked', expiresAt: FUTURE, routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-current']),
+    });
+    await recordDispatch(stale, {
+      transcriptPath: rolloutFile(`stale-${stale}`, started, modelNotFound), kickoffAt: kickoff, answeringOwnerId: 'resp-1-earlier',
+    });
+    const engaged = await nonDue();
+    await recordDispatch(engaged, { transcriptPath: rolloutFile(`eng-${engaged}`, started, modelNotFound), kickoffAt: kickoff });
+    await rootSql`UPDATE harness_shared.consult_state SET exchanges_used = 1 WHERE workspace_id = ${WS} AND conversation_id = ${engaged}`;
+    const judged: string[] = [];
+    const { deps } = makeDeps({ withReach: true });
+    deps.rejudgeFirstTurn = (u) => { judged.push(u.transcriptPath); return rejudgeFirstTurn(u); };
+
+    await sweepExpiredConsults(deps);
+
+    expect(judged.filter((p) => [old, stale, engaged].some((id) => p.includes(id)))).toEqual([]);
+    for (const id of [old, stale, engaged]) expect((await cascadeRow(id)).cascade_cursor).toBe(0);
+  });
+
+  it('fails closed when the re-judge throws: the slot keeps waiting for bounded pickup recovery', async () => {
+    const id = await nonDue();
+    await recordDispatch(id, { transcriptPath: rolloutFile(`thr-${id}`, started, modelNotFound), kickoffAt: kickoff });
+    const { deps } = makeDeps({ withReach: true });
+    deps.rejudgeFirstTurn = () => { throw new Error('reader down'); };
+
+    const r = await sweepExpiredConsults(deps);
+
+    expect(await cascadeRow(id)).toMatchObject({ responder_id: 'resp-1', cascade_cursor: 0 });
+    expect(r.answerFailures.filter((f) => f.conversationId === id)).toEqual([]);
   });
 });
 

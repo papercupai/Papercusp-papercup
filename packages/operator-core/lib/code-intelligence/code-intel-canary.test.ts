@@ -12,6 +12,7 @@ import {
   CODE_INTEL_CANARY_OWNER,
   canaryCases,
   canaryDispatchContext,
+  canaryTool,
   judgeCanary,
   runCodeIntelCanary,
   type CanaryCaseSpec,
@@ -214,6 +215,48 @@ describe('canaryDispatchContext', () => {
     expect(r.error).toBeUndefined();
     expect(r.ok).toBe(true);
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  // 2026-10-27: every live probe run failed 5-7 forced timeout/cancelled cases. The dispatcher
+  // delivers a late-completion-safe read that RETURNS after its signal aborted, and the native
+  // handlers ignore the signal, so they were correctly recorded measured. canaryTool runs a forced
+  // exit under an abort-cooperative shim so the real dispatcher takes its timeout/abort exit.
+  const lateRead = () => vi.fn(async () => {
+    await new Promise(r => setTimeout(r, 40));
+    return { content: [{ type: 'text' as const, text: 'late' }] };
+  });
+
+  it('a 1 ms timeout alone does not force a timeout exit for a late-completing read', async () => {
+    const t = { ...tool(lateRead()), timeoutSec: 0.001 };
+    const r = await dispatchProjectedTool(t, 'graph:query', {}, ctxFor(t.capabilities), { readQuotaState: undefined, recordInvocation: undefined });
+    expect(r.ok).toBe(true);
+  });
+
+  it('canaryTool forces the real timeout exit for a late-completing read', async () => {
+    const spec = canaryCases(['graph:query']).find(c => c.forced === 'timeout')!;
+    const t = canaryTool(tool(lateRead()), spec);
+    expect(t.timeoutSec).toBe(spec.timeoutSec);
+    const r = await dispatchProjectedTool(t, 'graph:query', {}, ctxFor(t.capabilities), { readQuotaState: undefined, recordInvocation: undefined });
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('timeout');
+  });
+
+  it('canaryTool forces the real parent-signal exit for a late-completing read', async () => {
+    const spec = canaryCases(['graph:query']).find(c => c.forced === 'cancelled')!;
+    const t = canaryTool(tool(lateRead()), spec);
+    const controller = new AbortController();
+    const ctx = canaryDispatchContext({ workspaceId: 'w', harnessSlug: 'papercusp', capabilities: t.capabilities, signal: controller.signal });
+    setTimeout(() => controller.abort(new Error('forced')), spec.abortAfterMs);
+    const r = await dispatchProjectedTool(t, 'graph:query', {}, ctx, { readQuotaState: undefined, recordInvocation: undefined });
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('aborted');
+  });
+
+  it('canaryTool leaves the return and scope-refused cases on the registered handler', () => {
+    const base = tool(lateRead());
+    for (const spec of canaryCases(['graph:query']).filter(c => c.forced === 'return' || c.forced === 'scope-refused')) {
+      expect(canaryTool(base, spec)).toBe(base);
+    }
   });
 
   it('grants exactly the capabilities it is given, nothing wider', async () => {

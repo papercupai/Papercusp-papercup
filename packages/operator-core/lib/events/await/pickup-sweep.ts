@@ -29,9 +29,21 @@ import {
   type SettleExpiredPickupResult,
 } from './store';
 import { judgeExpiredPickup, pickupHostView, type PickupHostView, type PickupRecoverable } from './turn-proof';
+import type { LivenessVerdict } from '../../agent-tools/coordination/liveness-oracle';
 
 /** The emitter the sweep reports through (engine.ts passes `emitAwaitedEvent`). */
 export type PickupEmit = (opts: { key: string; payload: unknown; summary: string; source: string }) => Promise<unknown>;
+
+type PickupLivenessVerdict = Pick<LivenessVerdict, 'sessionState' | 'signalMissing' | 'confirmLiveness'>;
+type PickupLivenessReader = (ownerIds: readonly string[]) => Promise<ReadonlyMap<string, PickupLivenessVerdict>>;
+
+const resolvePickupSessionStates: PickupLivenessReader = async (ownerIds) => {
+  const { resolveSessionStates } = await import('../../agent-tools/coordination/liveness-oracle');
+  return resolveSessionStates(
+    ownerIds.map((ownerId) => ({ ownerId })),
+    { hydrateBatch: true, psuHostPositiveAuthority: true },
+  );
+};
 
 export interface PickupSweepDeps {
   emit: PickupEmit;
@@ -39,6 +51,8 @@ export interface PickupSweepDeps {
   listExpired?: (limit: number) => Promise<ExpiredPickupRow[]>;
   settle?: (input: Parameters<typeof settleExpiredPickup>[0]) => Promise<SettleExpiredPickupResult>;
   readHost?: (subscriberId: string) => Promise<PickupHostView | null>;
+  /** One batched, authoritative session-state read for eligible inbox fallbacks. */
+  readSessionStates?: PickupLivenessReader;
   log?: (line: string) => void;
 }
 
@@ -81,6 +95,7 @@ export async function runPickupSweep(
   const listExpired = deps.listExpired ?? listExpiredPickups;
   const settle = deps.settle ?? settleExpiredPickup;
   const readHost = deps.readHost ?? readPickupHostView;
+  const readSessionStates = deps.readSessionStates ?? resolvePickupSessionStates;
   const log = deps.log ?? (() => {});
 
   const stats: PickupSweepStats = { observed: 0, observedByHost: 0, notPickedUp: 0, escalated: 0, emitted: 0 };
@@ -91,6 +106,31 @@ export async function runPickupSweep(
 
   const expired = await listExpired(opts.expiredLimit ?? DEFAULT_EXPIRED_LIMIT);
   if (expired.length === 0) return stats;
+
+  // Inbox fallback only records delivery into the inbox; it does not itself wake the
+  // recipient. Requeue only when the persisted handle names that owner's current
+  // adv-session and the shared liveness oracle positively confirms it has ended.
+  const inboxOwners = [...new Set(
+    expired
+      .filter((row) => row.channel === 'inbox' && row.wakeHandle?.kind === 'adv-session')
+      .map((row) => row.subscriberId),
+  )];
+  const confirmedEndedInboxOwners = new Set<string>();
+  if (inboxOwners.length > 0) {
+    try {
+      const verdicts = await readSessionStates(inboxOwners);
+      for (const ownerId of inboxOwners) {
+        const verdict = verdicts.get(ownerId);
+        if (
+          verdict?.sessionState === 'ended' &&
+          verdict.signalMissing !== true &&
+          verdict.confirmLiveness === false
+        ) confirmedEndedInboxOwners.add(ownerId);
+      }
+    } catch (e) {
+      log('pickup sweep: session-state read failed: ' + (e instanceof Error ? e.message : e));
+    }
+  }
 
   const hosts = new Map<string, PickupHostView | null>();
   const reports = new Map<string, SubscriberReport>();
@@ -113,13 +153,24 @@ export async function runPickupSweep(
       continue;
     }
 
-    const res = await settle({ id: row.id, proof: 'not-picked-up', escalate: verdict.escalate });
+    const retryEndedInbox =
+      row.channel === 'inbox' &&
+      row.wakeHandle?.kind === 'adv-session' &&
+      confirmedEndedInboxOwners.has(row.subscriberId);
+    const res = await settle({
+      id: row.id,
+      proof: 'not-picked-up',
+      escalate: verdict.escalate || retryEndedInbox,
+    });
     if (!res.settled) continue; // a concurrent observe/ack won the row
     stats.notPickedUp++;
     const report = reports.get(row.subscriberId) ?? { deliveryIds: [], channels: [], escalated: [], reasons: [] };
     report.deliveryIds.push(row.id);
     if (row.channel && !report.channels.includes(row.channel)) report.channels.push(row.channel);
     if (!report.reasons.includes(verdict.reason)) report.reasons.push(verdict.reason);
+    if (retryEndedInbox && !report.reasons.includes('confirmed-ended-session')) {
+      report.reasons.push('confirmed-ended-session');
+    }
     if (res.requeuedDeliveryId != null) {
       stats.escalated++;
       report.escalated.push({

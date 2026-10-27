@@ -131,7 +131,96 @@ export function isImmutableSpaAssetPath(relPath: string): boolean {
   return relPath.startsWith(IMMUTABLE_ASSET_PREFIX) || isHashedAssetPath(relPath);
 }
 
-function serveFile(absPath: string, status = 200, cacheControl?: string): Response {
+type SpaAssetTrace = {
+  record: (
+    stage: 'arrival' | 'response' | 'finish' | 'close' | 'error' | 'cancel',
+    fields?: Record<string, unknown>,
+  ) => void;
+};
+
+function createSpaAssetTrace(
+  request: Request,
+  pathname: string,
+  startedAt: bigint,
+): SpaAssetTrace | null {
+  const requestId = new URL(request.url).searchParams.get('__pc_trace_id');
+  if (!requestId || !/^[A-Za-z0-9._:-]{1,128}$/.test(requestId)) return null;
+
+  const host = request.headers.get('host');
+  return {
+    record(stage, fields = {}) {
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      const entry = {
+        ...fields,
+        event: 'spa_asset_request',
+        stage,
+        requestId,
+        host,
+        path: pathname,
+        durationMs: Number(durationMs.toFixed(3)),
+      };
+      try {
+        console.info('[spa-asset-trace] ' + JSON.stringify(entry));
+      } catch {
+        // Diagnostic output must never affect the asset response.
+      }
+    },
+  };
+}
+
+function traceSpaAssetResponse(response: Response, trace: SpaAssetTrace): Response {
+  trace.record('response', {
+    status: response.status,
+    contentLength: response.headers.get('content-length'),
+    contentType: response.headers.get('content-type'),
+  });
+  const reader = response.body?.getReader();
+  if (!reader) {
+    trace.record('finish', { bytes: 0 });
+    return response;
+  }
+
+  let bytes = 0;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          trace.record('finish', { bytes });
+          controller.close();
+          return;
+        }
+        bytes += value.byteLength;
+        controller.enqueue(value);
+      } catch (error) {
+        trace.record('error', {
+          bytes,
+          errorName: error instanceof Error ? error.name : 'UnknownError',
+        });
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      trace.record('cancel', {
+        bytes,
+        reasonType: reason instanceof Error ? reason.name : typeof reason,
+      });
+      await reader.cancel(reason);
+    },
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+function serveFile(
+  absPath: string,
+  status = 200,
+  cacheControl?: string,
+  trace?: SpaAssetTrace | null,
+): Response {
   const ext = extname(absPath).toLowerCase();
   const contentType = EXT_CONTENT_TYPE[ext] ?? 'application/octet-stream';
   // Do not read the whole bundle into the event-loop thread for every request.
@@ -140,7 +229,15 @@ function serveFile(absPath: string, status = 200, cacheControl?: string): Respon
   // full byte length by the number of concurrent cold page loads. Text assets
   // still decode correctly in Response.text() because their content type keeps
   // the UTF-8 charset above.
-  const body = Readable.toWeb(createReadStream(absPath)) as ReadableStream<Uint8Array>;
+  const fileStream = createReadStream(absPath);
+  if (trace) {
+    let sourceEnded = false;
+    fileStream.once('end', () => {
+      sourceEnded = true;
+    });
+    fileStream.once('close', () => trace.record('close', { sourceEnded }));
+  }
+  const body = Readable.toWeb(fileStream) as ReadableStream<Uint8Array>;
   const headers = new Headers({
     'content-type': contentType,
     'content-length': String(statSync(absPath).size),
@@ -434,26 +531,31 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
 
     // (1) Extension'd path → static asset from dist/. Miss = real 404.
     if (rel && extname(rel)) {
+      const assetTrace = createSpaAssetTrace(c.req.raw, pathname, requestStartedAt);
+      assetTrace?.record('arrival', { method: c.req.method });
       const abs = safeDistPath(rel);
       if (abs && existsSync(abs) && statSync(abs).isFile()) {
+        const response = serveFile(
+          abs,
+          200,
+          isImmutableSpaAssetPath(rel) ? IMMUTABLE_CACHE_CONTROL : undefined,
+          assetTrace,
+        );
         return traceFirstSessionChatCssResponse(
           c.req.raw,
           pathname,
-          serveFile(
-            abs,
-            200,
-            isImmutableSpaAssetPath(rel) ? IMMUTABLE_CACHE_CONTROL : undefined,
-          ),
+          assetTrace ? traceSpaAssetResponse(response, assetTrace) : response,
           requestStartedAt,
         );
       }
+      const response = new Response('Not found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
       return traceFirstSessionChatCssResponse(
         c.req.raw,
         pathname,
-        new Response('Not found', {
-          status: 404,
-          headers: { 'content-type': 'text/plain; charset=utf-8' },
-        }),
+        assetTrace ? traceSpaAssetResponse(response, assetTrace) : response,
         requestStartedAt,
       );
     }

@@ -25,6 +25,12 @@ const discovery = await import('./psu-pty-discovery');
 import type { ExpiredPickupRow } from './store';
 import type { PickupHostView } from './turn-proof';
 
+type PickupSessionVerdict = {
+  sessionState: string | null;
+  signalMissing?: true;
+  confirmLiveness: boolean | null;
+};
+
 const T0 = Date.parse('2026-10-10T19:00:00Z');
 
 function row(id: number, subscriberId: string, channel: string | null, extra: Partial<ExpiredPickupRow> = {}): ExpiredPickupRow {
@@ -41,7 +47,27 @@ function row(id: number, subscriberId: string, channel: string | null, extra: Pa
   };
 }
 
-function harness(rows: ExpiredPickupRow[], hosts: Record<string, PickupHostView | null>, opts: { lose?: number[] } = {}) {
+function advSessionHandle(advSessionId: number): NonNullable<ExpiredPickupRow['wakeHandle']> {
+  return {
+    kind: 'adv-session',
+    advSessionId,
+    agent: 'codex',
+    sessionId: 'session-' + advSessionId,
+    ompThreadId: null,
+    cwd: '/repo',
+    pid: null,
+  };
+}
+
+function harness(
+  rows: ExpiredPickupRow[],
+  hosts: Record<string, PickupHostView | null>,
+  opts: {
+    lose?: number[];
+    sessionStates?: Record<string, PickupSessionVerdict>;
+    livenessError?: Error;
+  } = {},
+) {
   const settled: Array<{ id: number; proof: string; escalate?: boolean; turnStartedAtMs?: number | null }> = [];
   const emits: Array<{ key: string; payload: unknown; summary: string; source: string }> = [];
   const hostReads: string[] = [];
@@ -57,6 +83,15 @@ function harness(rows: ExpiredPickupRow[], hosts: Record<string, PickupHostView 
     readHost: vi.fn(async (sub: string) => {
       hostReads.push(sub);
       return hosts[sub] ?? null;
+    }),
+    readSessionStates: vi.fn(async (ownerIds: readonly string[]) => {
+      if (opts.livenessError) throw opts.livenessError;
+      const verdicts = new Map<string, PickupSessionVerdict>();
+      for (const ownerId of ownerIds) {
+        const verdict = opts.sessionStates?.[ownerId];
+        if (verdict) verdicts.set(ownerId, verdict);
+      }
+      return verdicts;
     }),
     emit: vi.fn(async (o: { key: string; payload: unknown; summary: string; source: string }) => {
       emits.push(o);
@@ -143,6 +178,69 @@ describe('runPickupSweep', () => {
     expect(stats).toMatchObject({ notPickedUp: 2, escalated: 0, emitted: 1 });
     expect(lines.some((l) => l.includes('host read failed') && l.includes('EIO'))).toBe(true);
     expect(lines.some((l) => l.includes('emit failed') && l.includes('pg down'))).toBe(true);
+  });
+
+  it.each([
+    ['ended', { sessionState: 'ended', confirmLiveness: false }, true],
+    ['recorded', { sessionState: 'recorded', confirmLiveness: false }, false],
+    ['parked', { sessionState: 'parked', confirmLiveness: false }, false],
+    ['unknown', { sessionState: null, signalMissing: true as const, confirmLiveness: true }, false],
+    ['unconfirmed ended', { sessionState: 'ended', signalMissing: true as const, confirmLiveness: true }, false],
+  ])('retries an inbox fallback only for a confirmed ended session (%s)', async (_name, verdict, shouldRetry) => {
+    const h = harness(
+      [row(1, 'su-a', 'inbox', { wakeHandle: advSessionHandle(10) })],
+      {},
+      { sessionStates: { 'su-a': verdict } },
+    );
+
+    const stats = await runPickupSweep(h.deps);
+
+    expect(h.deps.readSessionStates).toHaveBeenCalledTimes(1);
+    expect(h.deps.readSessionStates).toHaveBeenCalledWith(['su-a']);
+    expect(h.settled).toEqual([{ id: 1, proof: 'not-picked-up', escalate: shouldRetry }]);
+    expect(stats.escalated).toBe(shouldRetry ? 1 : 0);
+  });
+
+  it('batches unique eligible owners and ignores missing, non-adv, and non-inbox handles', async () => {
+    const h = harness(
+      [
+        row(1, 'su-a', 'inbox', { wakeHandle: advSessionHandle(10) }),
+        row(2, 'su-a', 'inbox', { wakeHandle: advSessionHandle(10) }),
+        row(3, 'su-b', 'inbox'),
+        row(4, 'su-c', 'inbox', { wakeHandle: { kind: 'plan-run', runId: 4 } }),
+        row(5, 'su-d', 'psu-socket-inject', { wakeHandle: advSessionHandle(11) }),
+      ],
+      {},
+      { sessionStates: { 'su-a': { sessionState: 'ended', confirmLiveness: false } } },
+    );
+
+    const stats = await runPickupSweep(h.deps);
+
+    expect(h.deps.readSessionStates).toHaveBeenCalledTimes(1);
+    expect(h.deps.readSessionStates).toHaveBeenCalledWith(['su-a']);
+    expect(h.settled).toEqual([
+      { id: 1, proof: 'not-picked-up', escalate: true },
+      { id: 2, proof: 'not-picked-up', escalate: true },
+      { id: 3, proof: 'not-picked-up', escalate: false },
+      { id: 4, proof: 'not-picked-up', escalate: false },
+      { id: 5, proof: 'not-picked-up', escalate: false },
+    ]);
+    expect(stats.escalated).toBe(2);
+  });
+
+  it('does not retry inbox fallbacks when the liveness batch fails', async () => {
+    const h = harness(
+      [row(1, 'su-a', 'inbox', { wakeHandle: advSessionHandle(10) })],
+      {},
+      { livenessError: new Error('oracle unavailable') },
+    );
+    const lines: string[] = [];
+
+    const stats = await runPickupSweep({ ...h.deps, log: (line) => lines.push(line) });
+
+    expect(h.settled).toEqual([{ id: 1, proof: 'not-picked-up', escalate: false }]);
+    expect(stats.escalated).toBe(0);
+    expect(lines.some((line) => line.includes('session-state read failed') && line.includes('oracle unavailable'))).toBe(true);
   });
 });
 

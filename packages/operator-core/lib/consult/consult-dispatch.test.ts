@@ -50,6 +50,7 @@ import {
   sourceCooldownFrom,
   answerFailureRecordEntry,
   resolveConsultBackendAvailability,
+  rejudgeFirstTurn,
   type ConsultDispatchContext,
   type ConsultDispatchDeps,
   type ConsultDispatchRecordInput,
@@ -1207,6 +1208,13 @@ describe('dispatchConsultResponder — the walk', () => {
       expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
       expect(slept).toBe(FIRST_TURN_WAIT_MS);
       expect(r.attempts[0]!.detail).toContain(`First reply not written ${FIRST_TURN_WAIT_MS}ms after kickoff`);
+      expect(r.attempts[0]!.detail).toContain('the consult expiry sweep re-checks it');
+      // EI-27111739698817170: the window closing hands the judgement to the sweep.
+      expect(r.attempts[0]!.firstTurnUnjudged).toEqual({
+        agent: 'claude',
+        transcriptPath: '/native/answer.jsonl',
+        kickoffAt: new Date(NOW_MS).toISOString(),
+      });
       expect(calls.stopped).toEqual([]);
     });
 
@@ -1781,6 +1789,92 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
       outcome: 'skipped',
       detail: 'short',
     });
+  });
+
+  // EI-27111739698817170: the sweep re-judges from this persisted pointer.
+  it('persists an unjudged first turn verbatim, and drops (never clips) an over-long transcript path', () => {
+    const unjudged = (transcriptPath: string): ConsultDispatchRecordInput => ({
+      ...base,
+      result: {
+        ...base.result,
+        dispatched: true,
+        attempts: [{
+          rank: 1, agent: 'codex', model: 'sol', operation: 'convert', outcome: 'dispatched', detail: 'ok',
+          firstTurnUnjudged: { agent: 'codex', transcriptPath, kickoffAt: '2026-09-26T00:00:00.000Z' },
+        }],
+      },
+    });
+    const kept = dispatchRecordEntry(unjudged('/codex/rollout-a.jsonl'), '2026-09-26T00:00:01.000Z') as {
+      attempts: Array<Record<string, unknown>>;
+    };
+    expect(kept.attempts[0]!.firstTurnUnjudged).toEqual({
+      agent: 'codex', transcriptPath: '/codex/rollout-a.jsonl', kickoffAt: '2026-09-26T00:00:00.000Z',
+    });
+    const long = `/${'p'.repeat(DISPATCH_RECORD_TEXT_MAX)}.jsonl`;
+    const dropped = dispatchRecordEntry(unjudged(long), '2026-09-26T00:00:01.000Z') as {
+      attempts: Array<Record<string, unknown>>;
+    };
+    expect(dropped.attempts[0]).not.toHaveProperty('firstTurnUnjudged');
+  });
+});
+
+// EI-27111739698817170: a provider refusal that lands after FIRST_TURN_WAIT_MS was
+// never judged. The sweep re-judges with the dispatcher's own classifier. Real
+// analyzers over the measured shapes: the Codex convert ended its turn with
+// task_complete carrying model_not_found ~48s after launch.
+describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', () => {
+  const codex = (...records: object[]) => ({
+    analyzeClaudeTranscript: () => null,
+    analyzeCodexRollout: () => analyzeCodexRolloutText(records.map((r) => JSON.stringify(r)).join('\n')),
+  });
+  const started = { type: 'event_msg', payload: { type: 'task_started' } };
+  const target = { agent: 'codex' as const, transcriptPath: '/codex/rollout-a.jsonl' };
+
+  it('a Codex first turn that ended on model_not_found is a rejection with the dispatcher reason', () => {
+    const verdict = rejudgeFirstTurn(target, codex(started, {
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        last_agent_message: null,
+        error: {
+          code: 'model_not_found',
+          message: "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+        },
+      },
+    }));
+    expect(verdict).toMatchObject({ status: 'rejected', reason: 'first-turn-provider-error' });
+    expect(verdict.status === 'rejected' && verdict.evidence).toBe(
+      "its first reply was a provider error (The 'gpt-5.6-sol' model is not supported when using Codex " +
+        'with a ChatGPT account.) in /codex/rollout-a.jsonl',
+    );
+  });
+
+  it('a usage-limit first turn is an account wall', () => {
+    const verdict = rejudgeFirstTurn(target, codex(started, {
+      type: 'event_msg', payload: { type: 'task_complete', error: { message: 'You’ve hit your usage limit. Upgrade to Pro' } },
+    }));
+    expect(verdict).toMatchObject({ status: 'rejected', reason: 'account-walled' });
+  });
+
+  it('a turn still running is pending, a clean turn is replied, an unreadable file is unreadable', () => {
+    expect(rejudgeFirstTurn(target, codex(started))).toEqual({ status: 'pending' });
+    expect(rejudgeFirstTurn(target, codex(started, {
+      type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'answered' },
+    }))).toEqual({ status: 'replied' });
+    expect(rejudgeFirstTurn(target, { analyzeClaudeTranscript: () => null, analyzeCodexRollout: () => null }))
+      .toEqual({ status: 'unreadable' });
+  });
+
+  it('a Claude first reply is judged by the Claude reader, never the Codex one', () => {
+    const verdict = rejudgeFirstTurn({ agent: 'claude', transcriptPath: '/native/answer.jsonl' }, {
+      analyzeClaudeTranscript: (path) => path === '/native/answer.jsonl' ? {
+        trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null,
+        assistantTurnsSinceLastPrompt: 1, trailingContextLimitTurns: 1, lastContextLimitEvidence: 'Prompt is too long',
+      } : null,
+      analyzeCodexRollout: () => { throw new Error('codex reader must not be used for a claude rank'); },
+    });
+    expect(verdict).toMatchObject({ status: 'rejected', reason: 'first-turn-rejected' });
+    expect(verdict.status === 'rejected' && verdict.evidence).toContain('provider context-limit rejection (Prompt is too long)');
   });
 });
 

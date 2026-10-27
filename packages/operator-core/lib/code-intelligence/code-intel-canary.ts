@@ -22,7 +22,7 @@
  */
 import { CODE_INTEL_UNKNOWN_REASONS, type CodeIntelResultStatus, type CodeIntelUnknownReason } from './code-intel-result-status';
 import { NATIVE_CODE_INTEL_TOOLS } from './native-adoption';
-import type { UnifiedToolContext } from '@papercusp/tooldef';
+import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
 
 /** Owner id the canary dispatches as; its rows never enter the unknown share. */
 export const CODE_INTEL_CANARY_OWNER = 'system:code-intel-canary';
@@ -72,6 +72,38 @@ export function canaryCases(tools: readonly string[] = NATIVE_CODE_INTEL_TOOLS):
     cases.push({ toolName, forced: 'cancelled', args, abortAfterMs: CANARY_ABORT_AFTER_MS });
   }
   return cases;
+}
+
+/**
+ * The dispatcher takes its timeout / parent-signal exit only when the handler THROWS after the
+ * dispatch signal aborted. A late-completion-safe read that RETURNS after the abort is delivered
+ * as ok (dispatch-stack.ts invokeStep), and graph:query, lsp:query and code:pack do not observe the
+ * signal. So a 1 ms timeout alone ran them to completion and they were correctly recorded
+ * `measured`: every probe run on 2026-10-27 reported 5-7 false canary failures (graph:query timeout
+ * case 2544 ms, status ok). A forced timeout or cancellation therefore runs the registered handler
+ * under this shim, which rejects as soon as the dispatch signal aborts. The real dispatcher then
+ * takes its real exit and the real recorder classifies it.
+ */
+export function abortCooperative(tool: ProjectedTool): ProjectedTool {
+  const fn = ((input: unknown, ctx: { signal?: AbortSignal }) => {
+    const run = Promise.resolve((tool.fn as (i: unknown, c: unknown) => unknown)(input, ctx));
+    const signal = ctx?.signal;
+    if (!signal) return run;
+    return new Promise((resolve, reject) => {
+      const onAbort = () => reject(signal.reason ?? new Error('code-intel canary: dispatch signal aborted'));
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
+      run.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+  }) as unknown as ProjectedTool['fn'];
+  return { ...tool, fn };
+}
+
+/** The tool a case dispatches: forced exits run abort-cooperatively, a forced timeout with its cap. */
+export function canaryTool(tool: ProjectedTool, spec: CanaryCaseSpec): ProjectedTool {
+  if (spec.forced !== 'timeout' && spec.forced !== 'cancelled') return tool;
+  const cooperative = abortCooperative(tool);
+  return spec.timeoutSec === undefined ? cooperative : { ...cooperative, timeoutSec: spec.timeoutSec };
 }
 
 export interface CanaryRow {
@@ -219,7 +251,7 @@ export async function realCanaryDeps(workspaceId: string, harnessSlug: string = 
     dispatch: async spec => {
       const tool = lookupByMcpName(spec.toolName);
       if (!tool) throw new Error(`native tool ${spec.toolName} is not registered`);
-      const effective = spec.timeoutSec === undefined ? tool : { ...tool, timeoutSec: spec.timeoutSec };
+      const effective = canaryTool(tool, spec);
       const controller = new AbortController();
       const ctx = canaryDispatchContext({ workspaceId, harnessSlug, capabilities: tool.capabilities, signal: controller.signal });
       let callId: string | null = null;

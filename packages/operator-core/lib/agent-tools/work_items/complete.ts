@@ -6400,6 +6400,13 @@ async function completeOneTracked(
       });
     }, { timeoutMs: 6_000, fallback: null, label: 'work_items:complete:change-brief', signal: ctx.signal })).value
     : null;
+  // code-intel-delivery-and-outcomes-2026-10-26 P-002: the delivered brief is the completion
+  // push leg's own ledger row (like the intent leg). Best-effort; it never gates the close.
+  if (completionBrief) {
+    const { recordCompletionTimeBrief } = await import('../../code-intelligence/push-channel');
+    await recordCompletionTimeBrief({ workspace: ctx.workspaceId ?? activeWorkspaceId(), owner: ident.ownerId,
+      workItem: it.id }, completionBrief).catch(() => false);
+  }
 
   // EI-15982: every LOUD signal (anything the caller must not miss — a hard failure
   // OR a soft "recorded but not closed"/"evidence dropped"/etc warning) is placed

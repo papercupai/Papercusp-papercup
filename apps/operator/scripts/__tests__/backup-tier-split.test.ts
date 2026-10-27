@@ -114,6 +114,10 @@ function producerHarness(extra: string[]): string {
     'set -uo pipefail',
     'PGOUT="$FIXTURE_ROOT"; JOBS=4; TIMEOUT_SEC=60; TIMEOUT_MAX_SEC=120',
     'db=fixture; BACKUP_USER=nobody; BACKUP_MIGRATION_ADVISORY_DATABASE=migration-fixture',
+    'PSQL=fixture_psql',
+    'fixture_psql() { printf 12345; }',
+    src.match(/^declare -A ARTIFACT_DUMP_START_EPOCHS=.*$/m)![0],
+    src.match(/^declare -A ARTIFACT_DUMP_SYSTEM_IDENTIFIERS=.*$/m)![0],
     'PC_BACKUP_SPACE_SAFETY=150; PC_BACKUP_MIN_FREE_GB=0; HOST_BACKUP_APPLICATION_NAME=pcbackup',
     src.match(/^readonly DISPOSABLE_SCHEMA_PATTERN=.*$/m)![0],
     src.match(/^PC_BACKUP_TRANSCRIPT_TABLES=.*$/m)![0],
@@ -747,7 +751,7 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
 
 describe('papercusp-db-backup globals failure diagnostics', () => {
   it('records the command exit and bounded stderr without leaving the private temp file', () => {
-    const start = src.indexOf('if [[ -z "$GLOBALS_STDERR" ]]; then');
+    const start = src.indexOf('GLOBALS_STDERR=$(mktemp ');
     const end = src.indexOf('# ── per-database, parallel directory format', start);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);

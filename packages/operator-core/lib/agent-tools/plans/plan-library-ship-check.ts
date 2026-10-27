@@ -20,8 +20,9 @@
  * baseline, an undeclared package is UNVERIFIED, never refused.
  */
 import { builtinModules } from 'node:module';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import ts from 'typescript';
 import { astGrepFacade, type AstGrepLanguage } from '../../code-intelligence/ast-grep-facade';
 import type { CodeIntelAnswer } from '../../code-intelligence/contracts';
 import {
@@ -116,8 +117,114 @@ const defaultImportSearch: ImportSearch = ({ pattern, language, paths, rootPath 
  * dozens of imports) overflow it. A truncated batch is therefore split and re-read.
  */
 const IMPORT_BATCH_SIZE = 20;
+const MAX_IMPORT_FALLBACK_BYTES = 1024 * 1024;
 
 type UnreadFile = { path: string; reason: string };
+
+type TypeScriptImportFallback =
+  | { ok: true; imports: ImportSite[] }
+  | { ok: false; reason: string };
+
+/** Read one truncated source file with a strict byte bound before parsing it. */
+function readBoundedImportSource(path: string, repoRoot: string): { ok: true; text: string } | { ok: false; reason: string } {
+  let descriptor: number | undefined;
+  try {
+    const canonicalRoot = realpathSync(repoRoot);
+    const absolutePath = realpathSync(resolve(canonicalRoot, path));
+    const relativePath = relative(canonicalRoot, absolutePath);
+    if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+      return { ok: false, reason: 'TypeScript fallback refused a path outside the repository root' };
+    }
+
+    descriptor = openSync(absolutePath, 'r');
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile()) return { ok: false, reason: 'TypeScript fallback input is not a regular file' };
+    if (metadata.size > MAX_IMPORT_FALLBACK_BYTES) {
+      return { ok: false, reason: `TypeScript fallback source exceeds the ${MAX_IMPORT_FALLBACK_BYTES}-byte limit` };
+    }
+
+    // Read at most limit + 1 bytes so a file that grows after fstat remains bounded too.
+    const bytes = Buffer.allocUnsafe(MAX_IMPORT_FALLBACK_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(descriptor, bytes, length, bytes.length - length, length);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > MAX_IMPORT_FALLBACK_BYTES) {
+      return { ok: false, reason: `TypeScript fallback source exceeds the ${MAX_IMPORT_FALLBACK_BYTES}-byte limit` };
+    }
+    return { ok: true, text: bytes.subarray(0, length).toString('utf8') };
+  } catch (error) {
+    return { ok: false, reason: `TypeScript fallback read failed: ${error instanceof Error ? error.message : String(error)}` };
+  } finally {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch { /* the read result is authoritative */ }
+    }
+  }
+}
+
+function scriptKindForImportPath(path: string): ts.ScriptKind {
+  const extension = /\.[^./]+$/.exec(path)?.[0]?.toLowerCase();
+  if (extension === '.tsx') return ts.ScriptKind.TSX;
+  if (extension === '.jsx') return ts.ScriptKind.JSX;
+  if (extension === '.js' || extension === '.mjs' || extension === '.cjs') return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+/** Use the TypeScript parser only when ast-grep cannot return a whole single-file result. */
+function readSingleFileImportsWithTypeScript(path: string, repoRoot: string): TypeScriptImportFallback {
+  const source = readBoundedImportSource(path, repoRoot);
+  if (!source.ok) return source;
+
+  let sourceFile: ts.SourceFile;
+  try {
+    sourceFile = ts.createSourceFile(path, source.text, ts.ScriptTarget.Latest, true, scriptKindForImportPath(path));
+  } catch (error) {
+    return { ok: false, reason: `TypeScript fallback parse failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (sourceFile.parseDiagnostics.length > 0) {
+    const detail = ts.flattenDiagnosticMessageText(sourceFile.parseDiagnostics[0]!.messageText, ' ');
+    return { ok: false, reason: `TypeScript fallback parse failed: ${detail}` };
+  }
+
+  const imports: ImportSite[] = [];
+  const seen = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    let specifier: string | null = null;
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      const moduleSpecifier = node.moduleSpecifier;
+      if (moduleSpecifier && (ts.isStringLiteral(moduleSpecifier) || ts.isNoSubstitutionTemplateLiteral(moduleSpecifier))) {
+        specifier = moduleSpecifier.text;
+      }
+    } else if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const isRequire = ts.isIdentifier(callee) && callee.text === 'require';
+      const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
+      const firstArgument = node.arguments[0];
+      if ((isRequire || isDynamicImport) && firstArgument &&
+          (ts.isStringLiteral(firstArgument) || ts.isNoSubstitutionTemplateLiteral(firstArgument))) {
+        specifier = firstArgument.text;
+      }
+    }
+    if (specifier) {
+      const line1 = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+      const key = `${line1}\u0000${specifier}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        imports.push({ path, line1, specifier });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  try {
+    visit(sourceFile);
+    return { ok: true, imports };
+  } catch (error) {
+    return { ok: false, reason: `TypeScript fallback parse failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
 
 /**
  * Read one batch. A search error is terminal for the batch (a smaller batch fails the same
@@ -147,7 +254,10 @@ async function readImportBatch(
       await readImportBatch(batch.slice(middle), language, repoRoot, search, imports, unread);
       return;
     }
-    unread.push({ path: batch[0]!, reason: 'import read truncated: this file has more import sites than one structural search returns' });
+    const path = batch[0]!;
+    const fallback = readSingleFileImportsWithTypeScript(path, repoRoot);
+    if (fallback.ok) imports.push(...fallback.imports);
+    else unread.push({ path, reason: `import read truncated; ${fallback.reason}` });
     return;
   }
   const batchSet = new Set(batch);

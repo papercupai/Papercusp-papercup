@@ -43,7 +43,8 @@ const alertRow: DueConsultRow = {
   workspace_id: ROW_WS, conversation_id: 'conv-alert', requester_id: 'su-requester',
   responder_id: 'su-reviewer', state: 'awaiting_responder', is_due: true,
   expires_at: '2026-09-19T23:59:00Z',
-  updated_at: '2026-09-20T00:00:00Z', latency_contract: 'hard-blocked',
+  updated_at: '2026-09-20T00:00:00Z', snapshot_updated_at: '2026-09-20T00:00:00.000000Z',
+  latency_contract: 'hard-blocked',
   question: 'review this', routing: {}, cascade_cursor: 0, cascade_digest: [],
 };
 

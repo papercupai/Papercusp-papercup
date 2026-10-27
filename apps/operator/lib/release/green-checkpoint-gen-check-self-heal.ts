@@ -27,6 +27,7 @@ import {
   ADMISSION_GIT_DATE,
   admitPathsOntoRepairHead,
   realAdmissionGit,
+  repairAdmissionSubmoduleRef,
   type AdmissionGitRunner,
   type AdmissionOutcome,
   type AdmissionRefusal,
@@ -492,7 +493,13 @@ export async function publishGenHealGitlinks(input: {
       const [, sha, path] = m as unknown as [string, string, string];
       // An uninitialized or absent submodule cannot hold the ref, so it is skipped here too.
       const subRepo = join(repo, path);
-      if ((await git(["rev-parse", "--verify", "--quiet", genHealRef(sha)], subRepo)).code !== 0) continue;
+      // Gate-built submodule commits carry one of two local refs: a gen self-heal commit, or an
+      // inner-path repair admission (EI-27153389932897217). Anything else is an ordinary
+      // submodule commit that git-sync already published.
+      const gateBuilt =
+        (await git(["rev-parse", "--verify", "--quiet", genHealRef(sha)], subRepo)).code === 0 ||
+        (await git(["rev-parse", "--verify", "--quiet", repairAdmissionSubmoduleRef(sha)], subRepo)).code === 0;
+      if (!gateBuilt) continue;
       const pushed = await git(["push", "origin", `${sha}:${genHealPinTag(sha)}`], subRepo);
       if (pushed.code !== 0) {
         throw new Error(

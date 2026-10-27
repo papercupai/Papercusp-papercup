@@ -1076,9 +1076,12 @@ describe('routines:list', () => {
   // OBJECTS. `stringList` dropped every one, so the real row always read skipped_count: 0, and a
   // migration-guard deferral was labelled with the writer's hard-coded 'locked-path'.
   it('counts the OBJECT entries the writer actually persists and names each guard reason', () => {
+    const sweepAt = Date.now();
     const out = deriveGitSyncExclusions({
       last_status: 'synced',
       last_skip_reason: 'locked-path',
+      last_exclusions_at: sweepAt,
+      last_synced_at: sweepAt,
       last_skipped_paths: [
         { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: 'edit a' },
         { scope: 'superproject', path: 'b.ts', reason: 'migration-dependency-fence', detail: 'fenced' },
@@ -1105,6 +1108,74 @@ describe('routines:list', () => {
     expect(out.warning).not.toContain('release the corresponding file lock(s)');
   });
 
+  it('marks a degraded skip-only sweep stale and suppresses remedies for its old paths', () => {
+    const now = Date.parse('2026-10-23T01:00:00.000Z');
+    const sweepAt = now - 4 * 60 * 60_000;
+    const out = deriveGitSyncExclusions(
+      {
+        last_status: 'synced',
+        last_skip_reason: 'locked-path',
+        last_skipped_at: sweepAt,
+        last_exclusions_at: sweepAt,
+        last_synced_at: sweepAt,
+        last_skipped_paths: [
+          { scope: 'superproject', path: 'packages/app/old.ts', owner: 'su-a', intent: 'edit old.ts' },
+        ],
+      },
+      { status: 'degraded' },
+      now,
+    );
+
+    expect(out).toMatchObject({
+      sweep_stale: true,
+      skipped_count: 1,
+      skipped_sample: ['superproject:packages/app/old.ts'],
+    });
+    expect(out.warning).toContain('stale or unknown sweep vintage');
+    expect(out.warning).toContain('Wait for a fresh completed sweep');
+    expect(out.warning).not.toContain('release the corresponding file lock(s)');
+    expect(out.warning).not.toContain("completionAuthority:'proposed'");
+  });
+
+  it('treats legacy skip records without an exclusion stamp as stale even when freshness is recent', () => {
+    const now = Date.parse('2026-10-23T01:00:00.000Z');
+    const out = deriveGitSyncExclusions(
+      {
+        last_status: 'synced',
+        last_skip_reason: 'locked-path',
+        last_skipped_at: now - 30 * 60_000,
+        last_synced_at: now - 60_000,
+        last_skipped_paths: ['packages/app/legacy.ts'],
+      },
+      { status: 'fresh' },
+      now,
+    );
+
+    expect(out).toMatchObject({ sweep_stale: true, skipped_count: 1 });
+    expect(out.warning).toContain('stale or unknown sweep vintage');
+    expect(out.warning).not.toContain('release the corresponding file lock(s)');
+  });
+
+  it('keeps byte-exclusion remedies gated by whole-sweep freshness', () => {
+    const now = Date.parse('2026-10-23T01:00:00.000Z');
+    const sweepAt = now - 60_000;
+    const metadata = {
+      last_status: 'synced',
+      last_exclusions_at: sweepAt,
+      last_synced_at: sweepAt,
+      last_oversized: ['superproject:artifacts/huge.bin'],
+    };
+
+    const stale = deriveGitSyncExclusions(metadata, { status: 'degraded' }, now);
+    expect(stale).toMatchObject({ sweep_stale: true, oversized_count: 1 });
+    expect(stale.warning).toContain('byte-exclusion data is from a stale or unknown sweep vintage');
+    expect(stale.warning).not.toContain('gitignore or remove the per-file oversized blob(s)');
+
+    const fresh = deriveGitSyncExclusions(metadata, { status: 'fresh' }, now);
+    expect(fresh).toMatchObject({ sweep_stale: false, oversized_count: 1 });
+    expect(fresh.warning).toContain('gitignore or remove the per-file oversized blob(s)');
+  });
+
   // git-sync-turn-scoped-commit-hold-2026-10-11 P-003: a turn hold is not a lock. It is
   // reported with its holder and age, and its holder is never told to locks:release.
   it('reports turn-held paths with holder and age, and never tells their holder to release a lock', () => {
@@ -1113,6 +1184,8 @@ describe('routines:list', () => {
       {
         last_status: 'synced',
         last_skip_reason: 'locked-path',
+        last_exclusions_at: now,
+        last_synced_at: now,
         last_skipped_paths: [
           { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: TURN_HOLD_INTENT, heldSince: '2026-10-11T04:50:00.000Z' },
           { scope: 'superproject', path: 'b.ts', owner: 'su-a', intent: TURN_HOLD_INTENT },
@@ -1139,8 +1212,11 @@ describe('routines:list', () => {
   });
 
   it('still tells a real lock holder to release, beside a turn hold', () => {
+    const sweepAt = Date.now();
     const out = deriveGitSyncExclusions({
       last_status: 'synced',
+      last_exclusions_at: sweepAt,
+      last_synced_at: sweepAt,
       last_skipped_paths: [
         { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: 'edit a' },
         { scope: 'superproject', path: 'b.ts', owner: 'su-b', intent: TURN_HOLD_INTENT },

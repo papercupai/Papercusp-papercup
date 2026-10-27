@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "an exported-signature edit on staging produces an interface push to the editing agent (SPEC-P-002)",
+  "plan": "code-intel-delivery-and-outcomes-2026-10-26",
+  "specId": "SPEC-P-002",
+  "workItemId": "WI-6554700010029476",
+  "host": "127.0.0.1:3170",
+  "buildSha": "1699b8bed1",
+  "command": [
+    "1. Under a held 'mutation probe' file lock on packages/operator-core/lib/code-intelligence/interface-eligibility.ts, make an exported-signature edit (add an optional field to the input of the exported function captureInterfaceEligibility) through tools:invoke { name:'capability:edit', args:{ file_path, old_string, new_string } } on POST http://127.0.0.1:3170/api/mcp?superuser=1&client=su-fc263bb4-f17b-422d-b2ad-e21ff0e1332f.",
+    "2. Build the PostToolUse hook body for that edit and run the hook's own collectInterfaceEdits(body) from apps/operator/scripts/hooks/inject/core.mjs, which fills toolCalls[].interfaceEdits (changes ['signature captureInterfaceEligibility'], base = the pre-edit blob).",
+    "3. POST that body to http://127.0.0.1:3170/api/agent-mcp/mid-turn-context (the hook's endpoint) and read the returned additional context.",
+    "4. Revert the edit (old_string/new_string swapped) and confirm git status --porcelain is empty for the file; release the lock.",
+    "5. Read the ledger row: SELECT * FROM harness_shared.code_intel_pushes WHERE workspace_id='papercusp-workspace' AND leg='interface' AND owner_id='su-fc263bb4-f17b-422d-b2ad-e21ff0e1332f' ORDER BY pushed_at DESC LIMIT 1"
+  ],
+  "startedAt": "2026-10-27T16:04:34Z",
+  "finishedAt": "2026-10-27T16:04:46Z",
+  "exitCode": 0,
+  "summary": "The replayed exported-signature edit on :3170 (build 1699b8bed1) produced an interface push. The mid-turn-context response carried the interface note, and code_intel_pushes id 6702 was written with leg=interface, owner_id = the editing agent, subject naming the changed signature. The edit was reverted and the file left clean.",
+  "observations": {
+    "codeIntelPushRow": {
+      "id": 6702,
+      "workspace_id": "papercusp-workspace",
+      "owner_id": "su-fc263bb4-f17b-422d-b2ad-e21ff0e1332f",
+      "epoch": 144,
+      "turn_id": "e180ee0b-f785-4b18-ae79-517fc794e8d9",
+      "leg": "interface",
+      "subject": "packages/operator-core/lib/code-intelligence/interface-eligibility.ts:signature captureInterfaceEligibility",
+      "snapshot_commit": "8eeb87efcef2f87be582cf8ddfae23ef16c59625",
+      "cited_paths": [
+        "packages/operator-core/lib/code-intelligence/interface-eligibility.ts",
+        "packages/operator-core/lib/code-intelligence/edit-eligibility-journal.integration.test.ts",
+        "packages/operator-core/lib/code-intelligence/edit-eligibility-journal.ts",
+        "packages/operator-core/lib/code-intelligence/edit-interface-capture.test.ts"
+      ],
+      "suggested_call": "testing:run {\"files\":[\"packages/operator-core/lib/code-intelligence/edit-eligibility-journal.integration.test.ts\",\"packages/operator-core/lib/code-intelligence/edit-interface-capture.test.ts\"],\"harness\":\"papercusp\"}",
+      "chars": 481,
+      "client": "claude",
+      "pushed_at": "2026-10-27T16:04:39.439855Z"
+    },
+    "pushPathSources": [
+      "apps/operator/scripts/hooks/inject/core.mjs",
+      "packages/operator-core/lib/code-intelligence/push-channel.ts",
+      "packages/operator-core/lib/code-intelligence/peer-edit-impact.ts",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts"
+    ]
+  },
+  "assertions": [
+    {
+      "id": "interface-push-recorded",
+      "passed": true,
+      "evidence": "code_intel_pushes id 6702 has leg='interface' and pushed_at 16:04:39Z, inside the replay window 16:04:34-16:04:46Z."
+    },
+    {
+      "id": "push-addressed-to-editing-agent",
+      "passed": true,
+      "evidence": "owner_id of row 6702 is su-fc263bb4-f17b-422d-b2ad-e21ff0e1332f, the owner that made the edit."
+    },
+    {
+      "id": "push-names-changed-signature",
+      "passed": true,
+      "evidence": "subject is 'packages/operator-core/lib/code-intelligence/interface-eligibility.ts:signature captureInterfaceEligibility'."
+    },
+    {
+      "id": "tree-restored",
+      "passed": true,
+      "evidence": "After the revert, git status --porcelain was empty for interface-eligibility.ts."
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import {
   normalizeAdmissionTargetIds,
   WORK_ITEM_ADMISSION_FAIL_OPEN,
   WORK_ITEM_ADMISSION_PROMOTER,
+  type AdmissionMergeGuardRefusal,
   type FailOpenRunResult,
   type PromoterRunResult,
   type PromoterLlmCall,
@@ -130,6 +131,31 @@ async function completedOrdinaryResult(
   return row?.result ?? null;
 }
 
+async function persistReviewGuardRefusals(
+  sql: Sql,
+  options: ReturnType<typeof admissionPromoterOptions>,
+  result: PromoterRunResult,
+  refusals: readonly AdmissionMergeGuardRefusal[],
+): Promise<PromoterRunResult> {
+  if (refusals.length === 0) return result;
+  const byIdentity = new Map<string, AdmissionMergeGuardRefusal>();
+  for (const refusal of [...(result.guardRefusals ?? []), ...refusals]) {
+    byIdentity.set(JSON.stringify([refusal.itemId, refusal.canonicalId, refusal.reason, refusal.detail]), refusal);
+  }
+  const guardRefusals = [...byIdentity.values()].sort((a, b) =>
+    a.itemId.localeCompare(b.itemId) || a.reason.localeCompare(b.reason) || a.detail.localeCompare(b.detail));
+  const rows = await sql<{ id: string }[]>`
+    UPDATE harness_shared.admission_runs
+       SET detail = jsonb_set(COALESCE(detail, '{}'::jsonb), '{guardRefusals}',
+         ${sql.typed(JSON.stringify(guardRefusals), 25)}::jsonb, true)
+     WHERE id = ${result.runId} AND workspace_id = ${options.workspaceId}
+       AND harness_slug = ${options.harnessSlug} AND run_kind = 'promoter-tick'
+       AND detail->>'mode' = 'promoter' AND detail->>'status' = 'complete'
+     RETURNING id`;
+  if (rows.length !== 1) throw new Error(`successful admission run ${result.runId} was not available for review refusal evidence`);
+  return { ...result, guardRefusals };
+}
+
 function positiveInteger(value: unknown, fallback: number): number {
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : fallback;
@@ -214,10 +240,15 @@ async function admissionPromoterPass(
   const completed = await completedOrdinaryResult(deps.sql, options, options.runId, true);
   if (completed) return completed;
   const { runAdmissionReviews } = await import('../../work-item-admission-review');
-  const reviewed = await runAdmissionReviews(options, deps.sql, deps.llmCall);
-  if (reviewed) return reviewed;
+  const reviewPass = await runAdmissionReviews(options, deps.sql, deps.llmCall);
+  const reviewGuardRefusals = reviewPass.guardRefusals;
+  if (reviewPass.result) {
+    return persistReviewGuardRefusals(deps.sql, options, reviewPass.result, reviewGuardRefusals);
+  }
   let ordinarySlot = options.targetItemIds === undefined ? await claimOrdinarySlot(deps.sql, options) : null;
-  if (ordinarySlot?.completedRunIds?.includes(options.runId) && ordinarySlot.result) return ordinarySlot.result;
+  if (ordinarySlot?.completedRunIds?.includes(options.runId) && ordinarySlot.result) {
+    return persistReviewGuardRefusals(deps.sql, options, ordinarySlot.result, reviewGuardRefusals);
+  }
   const recoveryRuns: PromoterRunResult[] = [];
   const recovered = ordinarySlot ? 0 : await runAdmissionRecoveries(options, {
     authorize: deps.authorize,
@@ -245,6 +276,11 @@ async function admissionPromoterPass(
       harnessSlug: options.harnessSlug,
       recoveryRunIds: recoveryRuns.map((run) => run.runId),
     });
+    if (reviewGuardRefusals.length > 0 && recoveryRuns.length > 0) {
+      recoveryRuns[0] = await persistReviewGuardRefusals(
+        deps.sql, options, recoveryRuns[0]!, reviewGuardRefusals,
+      );
+    }
     return recoveryRuns.reduce<PromoterRunResult>((total, run) => ({
       ...total,
       batchSize: total.batchSize + run.batchSize, flaggedPairs: total.flaggedPairs + run.flaggedPairs,
@@ -290,8 +326,11 @@ async function admissionPromoterPass(
       });
     } } : {}),
   });
-  if (ordinarySlot) await finishOrdinarySlot(deps.sql, options, result);
-  return result;
+  const resultWithReviewRefusals = await persistReviewGuardRefusals(
+    deps.sql, options, result, reviewGuardRefusals,
+  );
+  if (ordinarySlot) await finishOrdinarySlot(deps.sql, options, resultWithReviewRefusals);
+  return resultWithReviewRefusals;
 }
 
 /**

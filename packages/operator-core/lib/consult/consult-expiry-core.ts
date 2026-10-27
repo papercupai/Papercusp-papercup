@@ -38,7 +38,13 @@
 import type { Sql } from 'postgres';
 import { consultParkKey, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeDispatch } from './cascade-core';
-import { appendAnswerFailureRecord, type AnswerFailureReason } from './consult-dispatch';
+import {
+  appendAnswerFailureRecord,
+  type AnswerFailureReason,
+  type FirstTurnRejudge,
+  type FirstTurnUnjudged,
+  type PersistedDispatchRecord,
+} from './consult-dispatch';
 import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
 import { RUBRIC_VETTING_POLICY } from './selection-policies';
 
@@ -69,6 +75,54 @@ export interface DueConsultRow {
   /** True when the row has passed half of its TTL (created_at → expires_at)
    * with zero exchanges — the P-014 conversion trigger, computed in SQL. */
   is_half_silent?: boolean;
+  /** Persisted dispatch walks (migration 1225), newest last. */
+  dispatch_attempts?: unknown;
+}
+
+/**
+ * How long after its kickoff an unjudged first turn is re-judged
+ * (EI-27111739698817170). Past this, bounded pickup recovery owns the slot,
+ * which already uses the same window.
+ */
+export const FIRST_TURN_REJUDGE_WINDOW_MS = HARD_BLOCKED_EXPIRY_MS;
+
+/**
+ * The unjudged first turn of the slot's CURRENT dispatch, or null.
+ *
+ * The current dispatch is the newest persisted walk for this source that
+ * dispatched. The selection's `answeringOwnerId` stamp is absent on most
+ * consults (measured on the 2026-10-27 incident consults), so the walk is found
+ * by its source; when the selection IS stamped, the walk must name the same
+ * answerer, or a stale walk could be judged for the wrong session.
+ */
+export function currentUnjudgedFirstTurn(
+  row: Pick<DueConsultRow, 'dispatch_attempts' | 'responder_id'>,
+  stampedAnsweringOwnerId: string | null,
+  nowMs: number,
+): (FirstTurnUnjudged & { answeringOwnerId: string | null }) | null {
+  if (row.responder_id == null) return null;
+  let records: unknown = row.dispatch_attempts;
+  if (typeof records === 'string') {
+    try { records = JSON.parse(records); } catch { return null; }
+  }
+  if (!Array.isArray(records)) return null;
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i] as PersistedDispatchRecord | null;
+    if (!record || typeof record !== 'object' || record.sourceOwnerId !== row.responder_id) continue;
+    if (record.dispatched !== true) continue;
+    const answerer = typeof record.answeringOwnerId === 'string' ? record.answeringOwnerId : null;
+    if (stampedAnsweringOwnerId !== null && answerer !== stampedAnsweringOwnerId) return null;
+    const attempt = (record.attempts ?? []).find((a) => a?.outcome === 'dispatched');
+    const unjudged = attempt?.firstTurnUnjudged;
+    if (!unjudged) return null;
+    const { agent, transcriptPath, kickoffAt } = unjudged;
+    if ((agent !== 'claude' && agent !== 'codex') || typeof transcriptPath !== 'string' || !transcriptPath) return null;
+    const kickoffMs = typeof kickoffAt === 'string' ? Date.parse(kickoffAt) : Number.NaN;
+    if (!Number.isFinite(kickoffMs) || !Number.isFinite(nowMs)) return null;
+    if (nowMs - kickoffMs > FIRST_TURN_REJUDGE_WINDOW_MS) return null;
+    return { agent, transcriptPath, kickoffAt: kickoffAt as string, answeringOwnerId: answerer };
+  }
+  return null;
 }
 
 /**
@@ -202,6 +256,15 @@ export interface ExpirySweepDeps {
   findSilentResponders?: (
     rows: readonly SilentResponderCandidate[],
   ) => Promise<ReadonlySet<string>>;
+  /**
+   * EI-27111739698817170: judge the first reply of a dispatched answering session
+   * whose reply had not landed inside the dispatcher's first-turn window. Prod
+   * binds the dispatcher's own `rejudgeFirstTurn`, so this is the same classifier,
+   * run later. A `rejected` verdict advances the slot at once instead of after
+   * bounded pickup recovery; any other verdict, or a throw, changes nothing.
+   * Absent ⇒ no re-judge.
+   */
+  rejudgeFirstTurn?: (unjudged: FirstTurnUnjudged) => FirstTurnRejudge | Promise<FirstTurnRejudge>;
   /** P-014: file (or adopt) the pullable review work item for a silent review
    * consult. MUST be idempotent per conversation — the sweep may call it again on
    * a later tick when a subsequent step failed. Absent ⇒ no conversion leg (review
@@ -291,7 +354,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
            updated_at,
            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS snapshot_updated_at,
            latency_contract, question, routing, cascade_cursor, cascade_digest,
-           exchanges_used,
+           exchanges_used, dispatch_attempts,
            COALESCE(
              exchanges_used = 0
                AND expires_at IS NOT NULL
@@ -343,6 +406,39 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     }
   }
 
+  // EI-27111739698817170: a provider refusal can land after the dispatcher's
+  // first-turn window (a Codex convert's model_not_found arrived ~48s after
+  // launch). Re-judge each non-due, unengaged slot whose current dispatch left
+  // its first turn unjudged; a rejection advances it now instead of after
+  // bounded pickup recovery (measured 13-27 min). A throw is not a rejection.
+  const firstTurnRejections = new Map<string, string>();
+  if (deps.rejudgeFirstTurn) {
+    const nowMs = Date.parse(nowIso);
+    for (const row of due) {
+      if (row.is_due === true || row.state !== 'awaiting_responder' || row.responder_id == null) continue;
+      if (Number(row.exchanges_used ?? 0) !== 0) continue;
+      const selection = currentSelectionAnswerer(row.routing, row.cascade_cursor, row.responder_id);
+      if (!selection) continue;
+      const unjudged = currentUnjudgedFirstTurn(row, selection.answeringOwnerId, nowMs);
+      if (!unjudged) continue;
+      try {
+        const verdict = await deps.rejudgeFirstTurn({
+          agent: unjudged.agent,
+          transcriptPath: unjudged.transcriptPath,
+          kickoffAt: unjudged.kickoffAt,
+        });
+        if (verdict.status === 'rejected') {
+          firstTurnRejections.set(
+            row.conversation_id,
+            `${unjudged.answeringOwnerId ?? 'the answering session'}: ${verdict.evidence}`,
+          );
+        }
+      } catch {
+        // Fail closed: the slot keeps waiting for bounded pickup recovery.
+      }
+    }
+  }
+
   let advanced = 0;
   let expiredCount = 0;
   const woke: string[] = [];
@@ -380,8 +476,10 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       // retried next tick, a due row falls through to the ordinary expiry path.
       if (!isDue) continue;
     }
+    const firstTurnRejection = isDue ? undefined : firstTurnRejections.get(row.conversation_id);
     const isSilentEarlyRow =
-      !isDue && row.state === 'awaiting_responder' && row.responder_id != null && silentResponderIds.has(row.conversation_id);
+      !isDue && row.state === 'awaiting_responder' && row.responder_id != null &&
+      (silentResponderIds.has(row.conversation_id) || firstTurnRejection !== undefined);
     if (!isDue && !isSilentEarlyRow) continue;
 
     // Detection can take long enough for a reply or close to win. Revalidate
@@ -438,6 +536,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
             nowIso,
             isDue
               ? `expired unanswered (${row.latency_contract} window elapsed)`
+              : firstTurnRejection !== undefined
+              ? `answering session's first reply, after the first-turn window, was a provider rejection (${firstTurnRejection})`
               : 'queued responder did not produce a consult post before bounded pickup recovery (implicit decline)',
           ),
           stateOnAdvance: 'awaiting_responder',
@@ -454,7 +554,11 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
         // The CAS above proved this slot was still owed a post when its window
         // ended, so its answering session is over (P-003).
         await endSilentAnsweringSession(
-          deps, sql, row, isDue ? 'answer-window-expired' : 'answer-pickup-stalled', nowIso, answerFailures,
+          deps, sql, row,
+          isDue
+            ? 'answer-window-expired'
+            : firstTurnRejection !== undefined ? 'answer-first-turn-rejected' : 'answer-pickup-stalled',
+          nowIso, answerFailures, firstTurnRejection,
         );
         continue;
       }
@@ -593,7 +697,10 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   };
 }
 
-const ANSWER_FAILURE_DETAIL: Record<AnswerFailureReason, (row: DueConsultRow) => string> = {
+const ANSWER_FAILURE_DETAIL: Record<AnswerFailureReason, (row: DueConsultRow, evidence?: string) => string> = {
+  'answer-first-turn-rejected': (row, evidence) =>
+    `answering session for ${row.responder_id} was rejected by its provider on its first reply, which landed ` +
+    `after the dispatcher's first-turn window (cascade position ${row.cascade_cursor + 1}): ${evidence ?? 'no evidence recorded'}`,
   'answer-window-expired': (row) =>
     `answering session for ${row.responder_id} did not post before its ${row.latency_contract} consult window expired ` +
     `(cascade position ${row.cascade_cursor + 1})`,
@@ -624,6 +731,7 @@ async function endSilentAnsweringSession(
   reason: AnswerFailureReason,
   nowIso: string,
   out: ExpirySweepResult['answerFailures'],
+  evidence?: string,
 ): Promise<void> {
   if (row.state !== 'awaiting_responder' || row.responder_id == null) return;
   const selection = currentSelectionAnswerer(row.routing, row.cascade_cursor, row.responder_id);
@@ -652,7 +760,7 @@ async function endSilentAnsweringSession(
         ...target,
         cascadeCursor: row.cascade_cursor,
         reason,
-        detail: ANSWER_FAILURE_DETAIL[reason](row),
+        detail: ANSWER_FAILURE_DETAIL[reason](row, evidence),
         stopOutcome,
       },
       nowIso,

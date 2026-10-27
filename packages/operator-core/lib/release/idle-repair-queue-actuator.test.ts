@@ -19,7 +19,7 @@ import {
 } from './idle-repair-queue-actuator';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 import { currentRepairLimbExecutor, parseRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
-import { createFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import { createFrozenCandidateRepairQueue, DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS } from './frozen-candidate-repair-queue';
 import { buildCandidateSnapshot, candidateSnapshotMatchesDispatch } from './candidate-snapshot';
 
 const MIN = 60_000;
@@ -176,6 +176,51 @@ describe('idle repair-queue fixer handoff', () => {
       ok: false,
       detail: 'dispatcher returned no spawn; reservation released',
     });
+  });
+
+  // WI-6554700010030357 (blind review 112 G-2): bg-host 2026-10-27 03:46Z spawned a fixer for a
+  // queue whose budget was already spent, then finalize refused to record it.
+  it('refuses an exhausted attempt budget before reserving or spawning anything', async () => {
+    const calls: string[] = [];
+    const exhausted = { ...queue, attempts: 3 };
+    const result = await dispatchIdleQueueFixer(exhausted, {
+      reserve: async () => { calls.push('reserve'); return exhausted; },
+      dispatch: async () => { calls.push('dispatch'); return { spawnId: 'spawn-x', runId: 'run-x' }; },
+      finalize: async () => { calls.push('finalize'); return exhausted; },
+    }, { maxAttempts: 3 });
+
+    expect(calls).toEqual([]);
+    expect(result).toEqual({
+      ok: false,
+      retryable: false,
+      detail: 'repair queue attempt budget is exhausted (3 of 3 attempts used); no fixer launched',
+    });
+  });
+
+  it('still dispatches the final attempt that remains inside the budget', async () => {
+    const calls: string[] = [];
+    const lastAttempt = { ...queue, attempts: 2 };
+    const result = await dispatchIdleQueueFixer(lastAttempt, {
+      reserve: async () => { calls.push('reserve'); return lastAttempt; },
+      dispatch: async () => { calls.push('dispatch'); return { spawnId: 'spawn-y', runId: 'run-y' }; },
+      finalize: async () => { calls.push('finalize'); return { ...lastAttempt, fixerSpawnId: 'spawn-y' }; },
+    }, { maxAttempts: 3 });
+
+    expect(calls).toEqual(['reserve', 'dispatch', 'finalize']);
+    expect(result.ok).toBe(true);
+  });
+
+  it('defaults to the shared queue limits when none are passed', async () => {
+    const calls: string[] = [];
+    const exhausted = { ...queue, attempts: DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAttempts };
+    const result = await dispatchIdleQueueFixer(exhausted, {
+      reserve: async () => { calls.push('reserve'); return exhausted; },
+      dispatch: async () => { calls.push('dispatch'); return { spawnId: 'spawn-z', runId: 'run-z' }; },
+      finalize: async () => { calls.push('finalize'); return exhausted; },
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.retryable).toBe(false);
   });
 });
 

@@ -275,6 +275,16 @@ export const KNOWN_DEFECTS = new Map([
   // The bar for a new entry: a real hazard AND a tracking ref. `main()` prints this
   // list LOUDLY on every run — including a clean one — so a parked defect cannot go
   // quiet the way the original blind spot did.
+  //
+  // FROZEN-LINEAGE ONLY (2026-10-27, WI-10006055). forkserver-client.ts is already
+  // enrolled at staging tip (managedSpawn, committed in b6953853c3), so at tip the
+  // enrolment-import check clears the file and this entry suppresses nothing. It exists
+  // for the frozen green-checkpoint candidate 8c03b5dcd156, which predates that
+  // enrolment: porting the tip client onto the repair head drags in the 120-file
+  // task-manager rework (sidecar-exec-process, resource-governor/execution,
+  // git-via-sidecar, spawner-sidecar-server, ...). Remove this entry once main has
+  // advanced past the frozen lineage (tracked on WI-6554700010030253).
+  ['packages/operator-core/lib/fleet/forkserver/forkserver-client.ts', 'frozen candidate 8c03b5dcd156 only: detached forkserver spawn predates its managedSpawn enrolment (fixed at tip by b6953853c3); remove once main passes the frozen lineage (WI-10006055, WI-6554700010030253)'],
 ]);
 
 /**

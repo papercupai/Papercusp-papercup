@@ -14,6 +14,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
@@ -217,10 +218,119 @@ describe('SPA shell pre-hydration globals', () => {
     expect(await mutable.text()).toBe('export const runtime = 1;');
   });
 
+  it('correlates tagged SPA asset arrival, response, stream finish, and close', async () => {
+    const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const routes = createSpaRoutes();
+      const untagged = await routes.request('/assets/runtime.js');
+      await untagged.text();
+      expect(trace).not.toHaveBeenCalled();
+
+      const response = await routes.request(
+        'http://localhost:33702/assets/runtime.js?__pc_trace_id=cold-run-1:runtime',
+        { headers: { host: 'localhost:33702' } },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('export const runtime = 1;');
+      await vi.waitFor(() => {
+        const stages = trace.mock.calls.map(([line]) =>
+          JSON.parse(String(line).replace(/^\[spa-asset-trace\] /, '')).stage,
+        );
+        expect(stages).toEqual(expect.arrayContaining(['arrival', 'response', 'finish', 'close']));
+      });
+
+      const records = trace.mock.calls.map(([line]) =>
+        JSON.parse(String(line).replace(/^\[spa-asset-trace\] /, '')),
+      );
+      expect(records.every((record) => record.requestId === 'cold-run-1:runtime')).toBe(true);
+      expect(records.find((record) => record.stage === 'arrival')).toMatchObject({
+        host: 'localhost:33702',
+        method: 'GET',
+        path: '/assets/runtime.js',
+      });
+      expect(records.find((record) => record.stage === 'response')).toMatchObject({
+        status: 200,
+        contentLength: String('export const runtime = 1;'.length),
+      });
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  it('records a tagged asset stream cancellation and source close', async () => {
+    const largeAssetPath = join(distDir, 'assets', 'large-fixture.js');
+    writeFileSync(largeAssetPath, Buffer.alloc(2 * 1024 * 1024, 0x61));
+    const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const routes = createSpaRoutes();
+      const response = await routes.request(
+        'http://localhost:33703/assets/large-fixture.js?__pc_trace_id=cold-run-2:large',
+        { headers: { host: 'localhost:33703' } },
+      );
+      const reader = response.body!.getReader();
+      const firstChunk = await reader.read();
+      expect(firstChunk.done).toBe(false);
+      await reader.cancel('fixture cancellation');
+      await vi.waitFor(() => {
+        const stages = trace.mock.calls.map(([line]) =>
+          JSON.parse(String(line).replace(/^\[spa-asset-trace\] /, '')).stage,
+        );
+        expect(stages).toEqual(expect.arrayContaining(['cancel', 'close']));
+      });
+
+      const records = trace.mock.calls.map(([line]) =>
+        JSON.parse(String(line).replace(/^\[spa-asset-trace\] /, '')),
+      );
+      expect(records.every((record) => record.requestId === 'cold-run-2:large')).toBe(true);
+      expect(records.find((record) => record.stage === 'close')).toMatchObject({
+        sourceEnded: false,
+      });
+    } finally {
+      trace.mockRestore();
+      rmSync(largeAssetPath, { force: true });
+    }
+  });
+
+  it('records a tagged asset stream error without changing the response contract', async () => {
+    const toWeb = vi.spyOn(Readable, 'toWeb').mockImplementation((source) => {
+      (source as Readable).destroy();
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error('fixture stream failure'));
+        },
+      });
+    });
+    const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const routes = createSpaRoutes();
+      const response = await routes.request(
+        'http://localhost:33704/assets/runtime.js?__pc_trace_id=cold-run-3:error',
+        { headers: { host: 'localhost:33704' } },
+      );
+      await expect(response.text()).rejects.toThrow('fixture stream failure');
+      await vi.waitFor(() => {
+        const stages = trace.mock.calls.map(([line]) =>
+          JSON.parse(String(line).replace(/^\[spa-asset-trace\] /, '')).stage,
+        );
+        expect(stages).toContain('error');
+      });
+
+      const records = trace.mock.calls.map(([line]) =>
+        JSON.parse(String(line).replace(/^\[spa-asset-trace\] /, '')),
+      );
+      expect(records.every((record) => record.requestId === 'cold-run-3:error')).toBe(true);
+    } finally {
+      trace.mockRestore();
+      toWeb.mockRestore();
+    }
+  });
+
   it('traces the first SessionChatModal CSS response once per Host when explicitly enabled', async () => {
     const previous = process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS;
     process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS = '1';
     const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const cssTraceCalls = () =>
+      trace.mock.calls.filter(([line]) => String(line).startsWith('[spa-css-response] '));
     try {
       const routes = createSpaRoutes();
       const first = await routes.request(
@@ -230,9 +340,9 @@ describe('SPA shell pre-hydration globals', () => {
       expect(first.status).toBe(200);
       expect(first.headers.get('content-length')).toBe(String('.modal{}'.length));
       expect(await first.text()).toBe('.modal{}');
-      expect(trace).toHaveBeenCalledTimes(1);
+      expect(cssTraceCalls()).toHaveLength(1);
 
-      const logLine = String(trace.mock.calls[0]?.[0]);
+      const logLine = String(cssTraceCalls()[0]?.[0]);
       const record = JSON.parse(logLine.replace(/^\[spa-css-response\] /, ''));
       expect(record).toMatchObject({
         event: 'spa_css_response',
@@ -249,23 +359,23 @@ describe('SPA shell pre-hydration globals', () => {
         { headers: { host: 'localhost:33701' } },
       );
       await second.text();
-      expect(trace).toHaveBeenCalledTimes(1);
+      expect(cssTraceCalls()).toHaveLength(1);
 
       const loopbackAlias = await routes.request(
         'http://127.0.0.1:33701/assets/SessionChatModal-fixture.css',
         { headers: { host: '127.0.0.1:33701' } },
       );
       await loopbackAlias.text();
-      expect(trace).toHaveBeenCalledTimes(2);
+      expect(cssTraceCalls()).toHaveLength(2);
 
       const repeatedHost = await routes.request(
         'http://localhost:33701/assets/SessionChatModal-fixture.css',
         { headers: { host: 'localhost:33701' } },
       );
       await repeatedHost.text();
-      expect(trace).toHaveBeenCalledTimes(2);
+      expect(cssTraceCalls()).toHaveLength(2);
 
-      const secondLogLine = String(trace.mock.calls[1]?.[0]);
+      const secondLogLine = String(cssTraceCalls()[1]?.[0]);
       const secondRecord = JSON.parse(secondLogLine.replace(/^\[spa-css-response\] /, ''));
       expect(secondRecord).toMatchObject({
         event: 'spa_css_response',
