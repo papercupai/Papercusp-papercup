@@ -64,6 +64,21 @@ describe('findFreeValueReferences', () => {
     expect(freeNames(code)).toEqual(['missingBrowserHelper', 'HTMLElement']);
   });
 
+  it('allows window globals such as requestAnimationFrame only inside serialized page callbacks (WI-6554700010030501)', () => {
+    // The browser-session.ts waitForFrame shape that refused every bg-host rebuild 19:25Z-22:30Z.
+    const code = [
+      'export async function waitForFrame(page: any, ms: number) {',
+      '  await page.evaluate((ms) => new Promise<void>((resolve) => {',
+      '    requestAnimationFrame(() => resolve());',
+      '    setTimeout(resolve, ms);',
+      '  }), ms);',
+      '  await page.evaluate(() => missingBrowserHelper());',
+      '  return requestAnimationFrame;',
+      '}',
+    ].join('\n');
+    expect(freeNames(code)).toEqual(['missingBrowserHelper', 'requestAnimationFrame']);
+  });
+
   it('does not exempt evaluated arguments or non-page methods', () => {
     expect(freeNames('export function f(page: any, service: any) { return [page.evaluate(() => 1, HTMLElement), service.evaluate(() => HTMLElement)]; }'))
       .toEqual(['HTMLElement', 'HTMLElement']);

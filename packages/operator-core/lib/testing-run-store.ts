@@ -39,6 +39,7 @@ import {
   captureConfigurationSnapshot,
   type ConfigurationSnapshot,
 } from '@papercusp/test-config/configuration-snapshot';
+import { redactSensitiveText } from './sensitive-text';
 import { resolveGitContext } from './testing-branch-resolve';
 import type { TestRunSource } from './testing-run-source';
 import { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
@@ -2208,10 +2209,14 @@ function relToRootPosix(absPath: string, rootAbs: string): string {
  * Pure + defensive: malformed JSON or an unexpected shape yields []. A
  * non-vitest report (no `testResults`) likewise yields [] — best-effort skip.
  */
-export function parseVitestJsonForHarnessRows(jsonText: string, rootAbs: string): HarnessTestFileRow[] {
+export function parseVitestJsonForHarnessRows(
+  jsonText: string,
+  rootAbs: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): HarnessTestFileRow[] {
   let parsed: { testResults?: VitestJsonFile[] };
   try {
-    parsed = JSON.parse(jsonText) as { testResults?: VitestJsonFile[] };
+    parsed = JSON.parse(redactSensitiveText(jsonText, [], environment)) as { testResults?: VitestJsonFile[] };
   } catch {
     return [];
   }
@@ -2382,10 +2387,14 @@ function stringifyFailureDetail(value: unknown): string | undefined {
  * JSON reporter schema: Vitest's JSON projection can elide object diffs while
  * TestCase.result().errors still carries the useful actual/expected values.
  */
-export function parseFailureDetailsSidecar(jsonText: string, rootAbs: string): TestFailureDetail[] {
+export function parseFailureDetailsSidecar(
+  jsonText: string,
+  rootAbs: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): TestFailureDetail[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(jsonText);
+    parsed = JSON.parse(redactSensitiveText(jsonText, [], environment));
   } catch {
     return [];
   }
@@ -2446,7 +2455,12 @@ function enrichFailure(failure: DistilledTestFailure, detail: TestFailureDetail 
 export function distillVitestRun(
   jsonText: string,
   rootAbs: string,
-  opts?: { maxFailures?: number; maxMessageChars?: number; failureDetails?: readonly TestFailureDetail[] },
+  opts?: {
+    maxFailures?: number;
+    maxMessageChars?: number;
+    failureDetails?: readonly TestFailureDetail[];
+    environment?: Readonly<Record<string, string | undefined>>;
+  },
 ): DistilledTestRun {
   const maxFailures = opts?.maxFailures ?? DEFAULT_MAX_FAILURES;
   const maxMessageChars = opts?.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
@@ -2463,7 +2477,9 @@ export function distillVitestRun(
 
   let parsed: { testResults?: VitestJsonFile[] };
   try {
-    parsed = JSON.parse(jsonText) as { testResults?: VitestJsonFile[] };
+    parsed = JSON.parse(
+      redactSensitiveText(jsonText, [], opts?.environment ?? process.env),
+    ) as { testResults?: VitestJsonFile[] };
   } catch {
     return empty;
   }

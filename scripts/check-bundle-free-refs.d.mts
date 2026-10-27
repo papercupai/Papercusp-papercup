@@ -73,3 +73,13 @@ export const SOURCE_EXTENSIONS: Set<string>;
  * Re-seed from a measuring `--all --json` run, never from a hand-run grep.
  */
 export const RUNTIME_PROVIDED_NAMES: Map<string, string>;
+/**
+ * Window globals a Playwright page callback (page.evaluate / evaluateHandle / $eval / $$eval)
+ * may reference. Those callbacks are serialized into the PAGE realm and run there, never in
+ * this Node process, so these names are known ONLY inside a page-callback range. Any other
+ * name inside the callback (a typo, a helper that exists only in host code) is still flagged.
+ * Curated, not derived: TypeScript 6 ships no lib.dom.d.ts file to read the list from. Add a
+ * name when a real page callback needs it (WI-6554700010030501: requestAnimationFrame in
+ * browser-session.ts waitForFrame refused every bg-host rebuild from 19:25Z to 22:30Z).
+ */
+export const PAGE_REALM_GLOBALS: Set<string>;

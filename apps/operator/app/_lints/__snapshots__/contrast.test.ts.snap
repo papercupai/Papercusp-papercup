@@ -687,6 +687,16 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(255, 255, 255, 0.075))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.075))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.07))",
+  "operator/app/quick-panel/quick-access.css :: .pc-qa__avatar :: color:--accent on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/quick-panel/quick-access.css :: .pc-qa__scopes button[aria-pressed=true] :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
   "operator/app/quick-panel/quick-panel.css :: .pc-qp__count :: color:--fg-mute on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))

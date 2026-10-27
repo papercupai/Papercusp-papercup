@@ -59,6 +59,25 @@ export const RUNTIME_PROVIDED_NAMES = new Map([
 ]);
 
 /**
+ * Window globals a Playwright page callback (page.evaluate / evaluateHandle / $eval / $$eval)
+ * may reference. Those callbacks are serialized into the PAGE realm and run there, never in
+ * this Node process, so these names are known ONLY inside a page-callback range. Any other
+ * name inside the callback (a typo, a helper that exists only in host code) is still flagged.
+ * Curated, not derived: TypeScript 6 ships no lib.dom.d.ts file to read the list from. Add a
+ * name when a real page callback needs it (WI-6554700010030501: requestAnimationFrame in
+ * browser-session.ts waitForFrame refused every bg-host rebuild from 19:25Z to 22:30Z).
+ */
+export const PAGE_REALM_GLOBALS = new Set([
+  'requestAnimationFrame', 'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback',
+  'getComputedStyle', 'getSelection', 'matchMedia', 'innerWidth', 'innerHeight', 'scrollX',
+  'scrollY', 'devicePixelRatio', 'screen', 'history', 'localStorage', 'sessionStorage',
+  'customElements', 'MutationObserver', 'ResizeObserver', 'IntersectionObserver', 'DOMParser',
+  'XMLSerializer', 'NodeFilter', 'Range', 'Selection', 'ShadowRoot', 'DocumentFragment', 'Text',
+  'KeyboardEvent', 'MouseEvent', 'PointerEvent', 'InputEvent', 'FocusEvent',
+]);
+const PAGE_REALM_CONSTRUCTOR = /^(?:HTMLElement|Element|Node|Document|HTML[A-Z]\w*Element|SVG[A-Z]\w*Element)$/;
+
+/**
  * Known global value names: the running Node's globalThis plus RUNTIME_PROVIDED_NAMES plus `extra`.
  * @param {Iterable<string>} [extra]
  * @returns {Set<string>}
@@ -129,7 +148,7 @@ export function findFreeValueReferences(code, { jsx = false, known = knownGlobal
     if (id.type !== 'Identifier') continue;
     if (typeofArgs.has(id) || typeOnly.has(id)) continue;
     if (known.has(id.name)) continue;
-    if (/^(?:HTMLElement|Element|Node|Document|HTML[A-Z]\w*Element|SVG[A-Z]\w*Element)$/.test(id.name)
+    if ((PAGE_REALM_CONSTRUCTOR.test(id.name) || PAGE_REALM_GLOBALS.has(id.name))
       && browserCallbacks.some(([start, end]) => id.range[0] >= start && id.range[1] <= end)) continue;
     found.push({ name: id.name, line: id.loc.start.line, column: id.loc.start.column + 1 });
   }
