@@ -15,8 +15,11 @@ export declare function collectBundleInputs(opts: {
   paths?: string[];
 }): { files: string[]; dirs: string[] };
 
+// `skipped` carries any reason: runGate admits only the reasons in BUNDLE_PREFLIGHT_SKIP_REASONS
+// and fails closed (a named refusal) on any other, so the undeclared case is part of the contract.
 export type GatePreflight = (opts: { repoRoot: string; inputsFile: string }) =>
   | { verdict: 'admit' }
+  | { verdict: 'skipped'; reason: string }
   | { verdict: 'refuse'; error: string; hint: string };
 
 export declare function runGate(opts: {

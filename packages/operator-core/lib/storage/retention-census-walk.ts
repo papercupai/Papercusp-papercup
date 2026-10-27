@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { z } from 'zod';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { inspectRetentionTrees, type RetentionTreeCensus } from './disk-consumer-census';
@@ -138,7 +138,7 @@ export async function inspectDetachedRetentionTrees(root: string,
       }
     })();
     try {
-      const worker = walk.workerPath ?? fileURLToPath(new URL('../../../../scripts/retention-census-worker.mjs', import.meta.url));
+      const worker = walk.workerPath ?? join(moduleRepoRoot(import.meta.url), 'scripts/retention-census-worker.mjs');
       return await runDetachedWalk(root, { ...walk, timeoutMs: RETENTION_CENSUS_LIFETIME_MS, maxAttempts: 1,
         attribution: { launchedBy: 'system:disk-retention-reclaim', workItemId: 'EI-26925507003255681', title: `retention metadata ${root}` },
         pollMs: Math.min(walk.pollMs ?? 250, 250), signal: controller.signal,

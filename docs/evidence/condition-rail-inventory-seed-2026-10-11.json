@@ -3692,28 +3692,28 @@
   "amendments": [
     {
       "rowId": "log-only-fallback|packages/operator-core/lib/dbos/in-process-periodic.ts|tick|1",
-      "change": { "disposition": "removed" },
+      "change": { "disposition": "removed", "relocatedTo": "log-only-fallback|packages/operator-core/lib/dbos/in-process-periodic.ts|replayConsequence|1" },
       "reason": "The historical tick identity relocated to replayConsequence|1. Targeted lock-release fallback still records observeFallback; the current scanner reports the live site on the rail.",
       "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
       "reviewerRef": "thread-post:1194179"
     },
     {
       "rowId": "owner-only-alarm|packages/operator-core/lib/dbos/in-process-periodic.ts|tick|1",
-      "change": { "disposition": "removed" },
+      "change": { "disposition": "removed", "relocatedTo": "owner-only-alarm|packages/operator-core/lib/dbos/in-process-periodic.ts|replayConsequence|1" },
       "reason": "The historical tick identity relocated to replayConsequence|1. Escalation still broadcasts the workspace/item conditionKey before the owner notice; the current scanner reports the live site on the rail.",
       "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
       "reviewerRef": "thread-post:1194179"
     },
     {
       "rowId": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesSweepTickImpl|1",
-      "change": { "disposition": "removed" },
+      "change": { "disposition": "removed", "relocatedTo": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesSweepPassImpl|1" },
       "reason": "The historical wrapper identity relocated to routinesSweepPassImpl|1. The hive watchdog call and conditional backup-wake warning remain intact, with the existing not-applicable disposition for normal backup-wake arming.",
       "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
       "reviewerRef": "thread-post:1194179"
     },
     {
       "rowId": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesSweepTickImpl|2",
-      "change": { "disposition": "removed" },
+      "change": { "disposition": "removed", "relocatedTo": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesSweepPassImpl|2" },
       "reason": "The historical wrapper identity relocated to routinesSweepPassImpl|2. The overwatch watchdog call and conditional backup-wake warning remain intact, with the existing not-applicable disposition for normal backup-wake arming.",
       "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
       "reviewerRef": "thread-post:1194179"
@@ -3721,7 +3721,8 @@
     {
       "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|<module>|1",
       "change": {
-        "disposition": "removed"
+        "disposition": "removed",
+        "relocatedTo": "log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|runProjectHistoryRefreshAction|1"
       },
       "reason": "The historical module identity relocated to runProjectHistoryRefreshAction|1. The live branch still records failure and returns before spawning, explicitly refusing ambient PATH fallback; its exact current identity retains the reviewed not-applicable disposition.",
       "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
@@ -3730,7 +3731,8 @@
     {
       "rowId": "owner-only-alarm|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|<module>|1",
       "change": {
-        "disposition": "removed"
+        "disposition": "removed",
+        "relocatedTo": "owner-only-alarm|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|persistProjectHistoryHealth|1"
       },
       "reason": "The historical module identity relocated to persistProjectHistoryHealth|1. The live producer remains on the condition rail: it persists health, broadcasts failures with conditionKey, and resolves the alarm on recovery; the maintained migration fixture covers the current identity.",
       "author": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",

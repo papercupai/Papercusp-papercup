@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   register: vi.fn(), recover: vi.fn(), watch: vi.fn(), reviews: vi.fn(), gates: vi.fn(), blockers: vi.fn(),
-  backfill: vi.fn(),
+  backfill: vi.fn(), parkBackfill: vi.fn(), parkSweep: vi.fn(),
 }));
 vi.mock('../harness/routines/system-actions', () => ({ registerSystemAction: h.register }));
 vi.mock('../owner-directive-recovery', () => ({ sweepOwnerDirectiveRecovery: h.recover }));
@@ -10,6 +10,9 @@ vi.mock('./review-stall-reaper', () => ({ sweepOmittedReviews: h.reviews }));
 vi.mock('./gate-reaper', () => ({ sweepSessionIndependentGates: h.gates }));
 vi.mock('./work-item-blocker-reaper', () => ({
   sweepWorkItemBlockerDefaults: h.blockers, backfillUnprovableWaitRecheckDates: h.backfill,
+}));
+vi.mock('./durable-park-recheck', () => ({
+  backfillUnprovableParkRecheckDates: h.parkBackfill, sweepDueParkRechecks: h.parkSweep,
 }));
 const { UNPROVABLE_WAIT_BACKFILL_EVERY_MS, resetUnprovableWaitBackfillThrottleForTest } = await import('./gate-watch-action');
 const action = h.register.mock.calls.find(([name]) => name === 'gate-watcher-tick')?.[1];
@@ -23,7 +26,65 @@ beforeEach(() => {
   h.backfill.mockReset().mockResolvedValue({
     items: 0, examined: 0, unprovable: 0, stamped: 0, provable: 0, skipped: {}, byReason: {}, truncatedByLimit: false,
   });
+  h.parkBackfill.mockReset().mockResolvedValue({
+    parks: 0, unprovable: 0, stamped: 0, provable: 0, skipped: {}, byReason: {}, nextAfterId: null, truncatedByLimit: false,
+  });
+  h.parkSweep.mockReset().mockResolvedValue({ examined: 0, escalated: 0, provable: 0, skipped: {}, truncatedByLimit: false });
   resetUnprovableWaitBackfillThrottleForTest();
+});
+describe('gate-watcher durable-park re-check legs (WI-6554700010030346)', () => {
+  it('stamps unprovable parks inside the throttled backfill window and sweeps due parks on every tick', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const start = Date.parse('2026-10-27T15:00:00Z');
+      vi.setSystemTime(start);
+      await action(ctx);
+      expect(h.parkBackfill).toHaveBeenCalledOnce();
+      expect(h.parkSweep).toHaveBeenCalledOnce();
+      // The stamp lands before the sweep, so a park stamped `now` is escalated on the same tick.
+      expect(h.parkBackfill.mock.invocationCallOrder[0]).toBeLessThan(h.parkSweep.mock.invocationCallOrder[0]);
+      vi.setSystemTime(start + 2 * 60_000);
+      await action(ctx);
+      expect(h.parkBackfill).toHaveBeenCalledOnce();
+      expect(h.parkSweep).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('pages the park backfill: each pass resumes after the last park the previous pass read', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const start = Date.parse('2026-10-27T15:00:00Z');
+      h.parkBackfill
+        .mockResolvedValueOnce({ parks: 100, unprovable: 0, stamped: 0, provable: 100, skipped: {}, byReason: {},
+          nextAfterId: 'WI-0100', truncatedByLimit: true })
+        .mockResolvedValueOnce({ parks: 7, unprovable: 0, stamped: 0, provable: 7, skipped: {}, byReason: {},
+          nextAfterId: null, truncatedByLimit: false });
+      vi.setSystemTime(start);
+      await action(ctx);
+      vi.setSystemTime(start + UNPROVABLE_WAIT_BACKFILL_EVERY_MS);
+      await action(ctx);
+      vi.setSystemTime(start + 2 * UNPROVABLE_WAIT_BACKFILL_EVERY_MS);
+      await action(ctx);
+      expect(h.parkBackfill.mock.calls.map(([o]) => o.afterId)).toEqual([null, 'WI-0100', null]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('isolates a failed park leg from every other leg', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.parkBackfill.mockRejectedValueOnce(new Error('park listing failed'));
+    h.parkSweep.mockRejectedValueOnce(new Error('escalation store down'));
+    try {
+      await action(ctx);
+      expect(warning).toHaveBeenCalledWith('[unprovable-park-backfill]   ! pass skipped: park listing failed');
+      expect(warning).toHaveBeenCalledWith('[park-recheck]   ! sweep skipped: escalation store down');
+      expect(h.backfill).toHaveBeenCalledOnce();
+      expect(h.blockers).toHaveBeenCalledOnce();
+    } finally {
+      warning.mockRestore();
+    }
+  });
 });
 describe('gate-watcher unprovable-wait backfill leg (WI-6554700010029948)', () => {
   it('stamps unprovable waits before the blocker sweep, so the sweep escalates them on the same tick', async () => {

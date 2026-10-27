@@ -133,6 +133,19 @@ vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
 }));
 
+/* ─── Serving-generation mock ────────────────────────────────────────────── */
+// MCP tools/list refuses with serving_generation_unknown when the serving generation cannot be
+// read, and under the mocked db-org above it reads no applied migrations
+// (required-migrations-unapplied), so every tools/list here returned zero tools. Pin a known
+// generation, as mcp-native-owner-dispatch.test.ts and scope-enforcement.test.ts do.
+vi.mock('../../serving-generation', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../serving-generation')>(),
+  readServingGeneration: async () => ({
+    state: 'known', revision: 'serving-generation-v1:power-user-fixture',
+    buildSha: 'power-user-fixture', appliedMigrationDigest: 'power-user-fixture', toolRegistryRevision: 'power-user-fixture',
+  }),
+}));
+
 /* ─── Now bring the app online ───────────────────────────────────────── */
 
 import { Hono } from 'hono';

@@ -10,6 +10,17 @@ import { briefCodePoints, composeReuseBrief, createReuseBriefIdentity, decodeCla
 import { reuseIssuedSubjects, type ReuseIssuedRecord } from './reuse-brief-ledger';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { REUSE_PROVIDER_FLAGS, type ReuseProviderResult } from './reuse-brief-providers';
+import { toolsetFromNames } from './push-toolset';
+
+/** Every `{ tool }` recovery call a brief names, at any depth. */
+function recoveryToolsOf(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) { for (const entry of value) recoveryToolsOf(entry, out); return out; }
+  if (!value || typeof value !== 'object') return out;
+  const record = value as Record<string, unknown>;
+  if (typeof record.tool === 'string') out.push(record.tool);
+  for (const entry of Object.values(record)) recoveryToolsOf(entry, out);
+  return out;
+}
 
 const dirs: string[] = [];
 describe('D032 claim relationship protocol', () => {
@@ -226,7 +237,12 @@ describe('P009 real taskBrief production adapter boundary', () => {
     const unregisterProvider = registerReuseBriefProvider(source('clones'));
     const unregisterAdapter = registerTaskBriefReuseAdapter('impact', append);
     try {
-      const result = await getClaimTimeTaskBrief({ ...claimRef, reuse: identity }, { ...deps, reuse: { recordIssued: record } });
+      // P-006 (SPEC-P-006-B): the claim brief names a recovery call only when the recipient was
+      // listed that tool. This case is about provider/adapter dispatch, so the recipient is
+      // listed every recovery tool the base brief names and the base passes through unchanged.
+      const listed = toolsetFromNames(recoveryToolsOf(base));
+      const result = await getClaimTimeTaskBrief({ ...claimRef, reuse: identity },
+        { ...deps, reuse: { recordIssued: record }, toolset: async () => listed });
       expect(result?.taskBrief.status).toBe('current');
       expect(result?.taskBrief).toEqual({ ...base, graph: { ...base.graph,
         relationships: [expect.stringContaining('clones')] } });

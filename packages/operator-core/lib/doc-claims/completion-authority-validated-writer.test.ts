@@ -18,6 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripCommentsOnly } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -25,19 +26,17 @@ const WRITER = 'packages/operator-core/lib/dbos/coord-program-workflow.ts';
 const AUTHORITY_MODULE = 'packages/operator-core/lib/work-item-completion-authority.ts';
 const SCAN_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib', 'apps/operator/bin', 'packages/agent-mcp/src'];
 
-/** Drop block and line comments so prose mentioning the literal is not a writer. */
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
-}
-
-/** Object-literal WRITES of the value — never a comparison like `=== 'validated'`. */
+/** Object-literal WRITES of the value — never a comparison like `=== 'validated'`.
+ *  Comments are dropped so prose mentioning the literal is not a writer. Strings are KEPT
+ *  (stripCommentsOnly, not stripCommentsAndStrings): the detected token `'validated'` is
+ *  itself a string literal, so masking strings would make this a silent false negative. */
 export function validatedWriteCount(source: string): number {
-  return (stripComments(source).match(/\b(?:completionAuthority|authority)\s*:\s*['"]validated['"]/g) ?? []).length;
+  return (stripCommentsOnly(source).match(/\b(?:completionAuthority|authority)\s*:\s*['"]validated['"]/g) ?? []).length;
 }
 
 /** `setWorkItemState(x, 'dropped', { … })` calls whose options stamp `validated`. */
 export function droppedSettlementsStampingValidated(source: string): number {
-  const segments = stripComments(source).split(/setWorkItemState\(/).slice(1);
+  const segments = stripCommentsOnly(source).split(/setWorkItemState\(/).slice(1);
   return segments
     .map((s) => s.slice(0, 700))
     .filter((s) => /^[^,]+,\s*'dropped'/.test(s) && /completionAuthority\s*:\s*['"]validated['"]/.test(s))

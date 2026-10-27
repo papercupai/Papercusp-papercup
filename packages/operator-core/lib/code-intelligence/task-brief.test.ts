@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildTaskBrief, enrichTaskBriefWithReuse, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { buildTaskBrief, enrichTaskBriefWithReuse, gateTaskBriefRecover, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
 import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
@@ -11,6 +11,10 @@ import { coChangeFromCommits, formatPriorWorkLine, type PriorWorkQuery, type Pri
 import { readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
 import { coverageHash, type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
 import { decodeClaimReuseContribution } from './reuse-brief-providers';
+import { toolsetFromNames } from './push-toolset';
+
+/** A recipient session listed every tool a brief can name for recovery. */
+const RECOVERY_TOOLS = ['code:pack', 'work_items:get', 'coord:declare-intent', 'plans:get', 'testing:runs', 'graph:query'];
 
 const dirs: string[] = [];
 describe('P039 completion pre-review briefs', () => {
@@ -68,6 +72,33 @@ describe('P039 completion pre-review briefs', () => {
       observations: expect.arrayContaining([expect.objectContaining({ provider: 'cochange', status: 'issued' }),
         expect.objectContaining({ provider: 'sql' })]) });
     expect(JSON.stringify(enriched).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+  });
+  it('SPEC-P-006-B: names the diff recovery call only to a recipient listed code:pack, and ledgers what it received', async () => {
+    const { report, rootResolver } = setup();
+    const history = coChangeFromCommits({ end: new Date().toISOString(), paths: ['target.ts'], commit: 'a'.repeat(40), complete: true,
+      commits: [1, 2, 3].map(n => ({ sha: String(n), parents: ['parent'], at: new Date(Date.now() - n * 86400000).toISOString(),
+        files: [{ status: 'M', path: 'target.ts' }, { status: 'M', path: 'partner.ts' }] })) });
+    const run = async (listed: string[] | null) => {
+      const issued = vi.fn(async (_input: { recover?: unknown }) => true), observe = vi.fn();
+      const brief = await getCompletionTimeBrief({ ...ref(), workItem: 'WI-completion',
+        reuse: { owner: 'su-fixture', invocation: 'p006-completion', observe } },
+      { root: rootResolver, report, runs: async () => [], cochange: async () => history, reuse: { recordIssued: issued },
+        toolset: async () => listed ? toolsetFromNames(listed) : { status: 'unknown', reason: 'no-listing' } });
+      return { brief, issued: issued.mock.calls[0]?.[0], observed: observe.mock.calls[0]?.[0] };
+    };
+    const listed = await run(['code:pack']);
+    expect(listed.brief.status).toBe('measured');
+    expect(listed.brief.recover).toMatchObject({ tool: 'code:pack', args: { op: 'diff', include: ['target.ts'] } });
+    expect(listed.issued?.recover).toEqual(listed.brief.recover); expect(listed.observed?.recover).toEqual(listed.brief.recover);
+    for (const withheld of [await run(null), await run([]), await run(['testing:run'])]) {
+      expect(withheld.brief.status).toBe('measured');
+      expect(withheld.brief.changes).toEqual(listed.brief.changes);
+      expect(withheld.brief.limitations).toContain('Untouched partner.ts (3/3;90d)');
+      expect(withheld.brief).not.toHaveProperty('recover');
+      expect(JSON.stringify(withheld.brief)).not.toContain('code:pack');
+      expect(withheld.issued).toBeDefined(); expect(withheld.issued?.recover).toBeUndefined();
+      expect(withheld.observed?.recover).toBeUndefined();
+    }
   });
   it('invalidates consequences when the source changes during the ledger read', async () => {
     const { root, report, rootResolver } = setup();
@@ -230,6 +261,7 @@ function depsFor(root: string): TaskBriefDeps {
       writeFileSync(path, args.include.map((p: string) => `<file path="${p}">${readFileSync(join(root, p), 'utf8')}</file>`).join('\n'));
       return { answer: answer([...args.include]), artifact: { path, preview: '', provenance: { commit: 'fixture-pin' } as never } };
     }),
+    toolset: vi.fn(async () => toolsetFromNames(RECOVERY_TOOLS)),
   };
 }
 describe('native engineering evidence task context', () => {
@@ -262,7 +294,7 @@ describe('native engineering evidence task context', () => {
   }
   it('ee.brief-four-axes: carries exact canonical references or an explicit execution gap through claim, intent and completion', async () => {
     const { root, subject, deps } = engineeringFixture();
-    const claim = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    const claim = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, owner: 'su-ee' }, deps))!.taskBrief;
     expect(claim.engineering?.intent[0]?.ref).toMatchObject({ tool: 'plans:get-specs', args: { revision: 1, specIds: ['EE-1'] } });
     expect(claim.engineering?.rationale[0]?.ref).toMatchObject({ tool: 'plans:get', args: { decisionId: 'D-001' } });
     expect(claim.engineering?.rationale).toHaveLength(1);
@@ -271,9 +303,10 @@ describe('native engineering evidence task context', () => {
     expect(claim.engineering?.execution).toEqual([]); expect(claim.engineering?.gaps.length).toBeGreaterThan(0);
     const intent = (await getIntentTimeTaskBrief({ owner: 'su-ee', workspaceId: 'w', harness: 'h',
       intent: 'Inspect target', paths: ['target.ts'] }, deps))!.taskBrief;
-    expect(intent.engineering?.recover.args).toMatchObject({ file_path: 'target.ts', name: 'target', harnesses: ['h'] });
-    const completion = await getCompletionTimeBrief({ workspaceId: 'w', harness: 'h', paths: [], subject },
-      { root: async () => root, engineering: deps.engineering });
+    expect(intent.engineering?.recover?.args).toMatchObject({ file_path: 'target.ts', name: 'target', harnesses: ['h'] });
+    const completion = await getCompletionTimeBrief({ workspaceId: 'w', harness: 'h', paths: [], subject, owner: 'su-ee' },
+      { root: async () => root, engineering: deps.engineering, toolset: deps.toolset });
+    expect(claim.engineering?.recover?.tool).toBe('graph:query');
     expect(completion.engineering?.recover).toEqual(claim.engineering?.recover);
   });
 
@@ -282,7 +315,7 @@ describe('native engineering evidence task context', () => {
     writeFileSync(join(root, 'target.ts'), '// ' + 'source context '.repeat(80)
       + '\nexport function target() { return 1; }');
     for (const maxChars of [6000, TASK_BRIEF_MAX_CHARS, 2400]) {
-      const ref = { workspaceId: 'w', workItem: subject, maxChars };
+      const ref = { workspaceId: 'w', workItem: subject, maxChars, owner: 'su-fixture' };
       const base = (await getClaimTimeTaskBrief(ref, deps))!.taskBrief;
       const observe = vi.fn();
       const enriched = (await getClaimTimeTaskBrief({ ...ref,
@@ -355,7 +388,7 @@ describe('native engineering evidence task context', () => {
   });
   it('ee.brief-budget: fits the complete caller brief in 2400 characters and retains scoped recovery for omitted data', async () => {
     const { subject, deps } = engineeringFixture();
-    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, maxChars: 2400 }, deps))!.taskBrief;
+    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, maxChars: 2400, owner: 'su-ee' }, deps))!.taskBrief;
     expect(JSON.stringify(brief).length).toBeLessThanOrEqual(2400);
     expect(brief.engineering?.recover).toEqual({ tool: 'graph:query', args: { op: 'evidence', harnesses: ['h'], plan: 'ee-feature', item: 'P-001' } });
   });
@@ -378,6 +411,67 @@ describe('native engineering evidence task context', () => {
     expect(fallback.status).toBe('current'); expect(fallback.engineering?.gaps).toContain('engineering-evidence-unavailable');
   });
 });
+describe('P-006 SPEC-P-006-B: a brief names a recovery tool only when the recipient was listed it', () => {
+  const claimFixture = (listing: TaskBriefDeps['toolset']) => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    const deps: TaskBriefDeps = { ...depsFor(root), toolset: listing, failures: async () => [], decisions: async () => null };
+    return { deps, subject: { id: 'WI-p006', harness: 'h', sourcePlanSlug: 'p006-plan', payload: { paths: ['target.ts'] } } };
+  };
+  const claim = async (listing: TaskBriefDeps['toolset'], extra: Partial<Parameters<typeof getClaimTimeTaskBrief>[0]> = {},
+    patch: Partial<TaskBriefDeps> = {}) => {
+    const { deps, subject } = claimFixture(listing);
+    return (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, owner: 'su-p006', ...extra }, { ...deps, ...patch }))!.taskBrief;
+  };
+  it('names every recovery call to a session listed its tools', async () => {
+    const brief = await claim(async () => toolsetFromNames(RECOVERY_TOOLS));
+    expect(brief.status).toBe('current');
+    expect(brief.recover).toMatchObject({ tool: 'code:pack', args: { op: 'pack', include: ['target.ts'] } });
+    expect(brief.decisions?.recover).toEqual({ tool: 'plans:get', args: { slug: 'p006-plan', harness: 'h', heading: 'Decisions' } });
+  });
+  it('withholds every recovery call from an unknown, empty or unread listing and keeps the inline evidence', async () => {
+    const listed = await claim(async () => toolsetFromNames(RECOVERY_TOOLS));
+    const listings: TaskBriefDeps['toolset'][] = [
+      async () => ({ status: 'unknown', reason: 'no-listing' }),
+      async () => toolsetFromNames([]),
+      async () => { throw new Error('listing read failed'); },
+      () => new Promise(() => {}),
+    ];
+    for (const listing of listings) {
+      const brief = await claim(listing);
+      expect(brief.status).toBe('current');
+      expect(brief.files).toEqual(listed.files); expect(brief.excerpts).toEqual(listed.excerpts);
+      expect(brief).not.toHaveProperty('recover'); expect(brief.decisions).not.toHaveProperty('recover');
+      expect(JSON.stringify(brief)).not.toMatch(/code:pack|plans:get|work_items:get|testing:runs|graph:query/);
+    }
+    // No recipient identity is an unknown listing, never "all tools"; the reader is not asked.
+    const reader = vi.fn(async () => toolsetFromNames(RECOVERY_TOOLS));
+    expect(await claim(reader, { owner: undefined })).not.toHaveProperty('recover');
+    expect(reader).not.toHaveBeenCalled();
+  });
+  it('keeps only the calls whose tool is in a partial listing', async () => {
+    const brief = await claim(async () => toolsetFromNames(['plans:get', 'testing:run']));
+    expect(brief).not.toHaveProperty('recover');
+    expect(brief.decisions?.recover?.tool).toBe('plans:get');
+    expect(gateTaskBriefRecover({ recover: { tool: 'code:pack' }, incident: { recover: { tool: 'testing:runs' } },
+      engineering: { recover: { tool: 'graph:query' } }, decisions: { recover: { tool: 'plans:get' } } },
+    toolsetFromNames(['testing:runs', 'graph:query'])))
+      .toEqual({ incident: { recover: { tool: 'testing:runs' } }, engineering: { recover: { tool: 'graph:query' } }, decisions: {} });
+  });
+  it('records the call the recipient received: a withheld call reaches the reuse ledger and outcome as absent', async () => {
+    const run = async (listing: TaskBriefDeps['toolset']) => {
+      const issued = vi.fn(async (_input: { recover?: unknown }) => true), observe = vi.fn();
+      const brief = await claim(listing, { reuse: { owner: 'su-p006', invocation: 'p006-claim', observe } }, {
+        reuse: { recordIssued: issued, providers: [{ id: 'sql', read: async context => ({ status: 'measured',
+          sourceVersion: context.sourceVersion, indexVersion: 'sql-v1', lines: ['target.ts reads table t'] }) }] } });
+      return { brief, issued: issued.mock.calls[0]?.[0], observed: observe.mock.calls[0]?.[0] };
+    };
+    const listed = await run(async () => toolsetFromNames(RECOVERY_TOOLS));
+    expect(listed.issued?.recover).toEqual(listed.brief.recover); expect(listed.observed?.recover).toEqual(listed.brief.recover);
+    const withheld = await run(async () => toolsetFromNames(['work_items:get']));
+    expect(withheld.issued).toBeDefined(); expect(withheld.issued?.recover).toBeUndefined();
+    expect(withheld.observed).toMatchObject({ ledger: 'recorded' }); expect(withheld.observed?.recover).toBeUndefined();
+  });
+});
 describe('P012 bounded scoped task briefs', () => {
   it('captures explicit no-claim intent scope without inventing a work-item identity', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "INTENT_SOURCE"; }');
@@ -386,7 +480,7 @@ describe('P012 bounded scoped task briefs', () => {
     const first = (await getIntentTimeTaskBrief(ref, deps))!.taskBrief;
     expect(first.status).toBe('current'); expect(first.files[0]?.path).toBe('target.ts');
     expect(JSON.stringify(first.excerpts)).toContain('INTENT_SOURCE'); expect(first.incident).toBeUndefined();
-    expect(deps.failures).not.toHaveBeenCalled(); expect(first.recover.tool).toBe('code:pack');
+    expect(deps.failures).not.toHaveBeenCalled(); expect(first.recover?.tool).toBe('code:pack');
     const next = (await getIntentTimeTaskBrief({ ...ref, intent: 'Change target' }, deps))!.taskBrief;
     expect(next.intent?.fingerprint).not.toBe(first.intent?.fingerprint);
     expect(next.sourceFingerprint).toBe(first.sourceFingerprint);
@@ -401,7 +495,7 @@ describe('P012 bounded scoped task briefs', () => {
     deps.hasClaim = async () => false;
     const result = await getIntentTimeTaskBrief({ ...ref, paths: ['../private.ts', '.env', '**/*'] }, deps);
     expect(result?.taskBrief.status).toBe('unknown'); expect(deps.pack).not.toHaveBeenCalled();
-    expect(result?.taskBrief.recover.tool).toBe('coord:declare-intent');
+    expect(result?.taskBrief.recover?.tool).toBe('coord:declare-intent');
   });
   it('does not infer a root or search when stored task scope is missing', async () => {
     const deps = depsFor(fixture());
@@ -523,7 +617,7 @@ describe('P012 bounded scoped task briefs', () => {
     };
     const brief = await buildTaskBrief({ workItem: { id: 'WI-task', harness: 'h', payload: { paths: ['target.ts'] } } }, deps);
     expect(vi.mocked(deps.effects.exec).mock.calls[0]![2]!.timeoutMs).toBeLessThanOrEqual(6_000);
-    expect(brief.status).toBe('unknown'); expect(brief.recover.tool).toBe('code:pack'); expect(brief.excerpts).toEqual([]);
+    expect(brief.status).toBe('unknown'); expect(brief.recover?.tool).toBe('code:pack'); expect(brief.excerpts).toEqual([]);
   });
   it('recovers the registered repository rather than a payload root and cites canonical cross-plan authority', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
@@ -546,7 +640,7 @@ describe('P012 bounded scoped task briefs', () => {
     const brief = await buildTaskBrief({ workItem: { id: 'WI-task', harness: 'h', sourcePlanSlug: 'task-plan',
       payload: { paths: ['target.ts'] } } }, deps);
     expect(brief.status).toBe('current'); expect(brief.decisions?.status).toBe('unknown');
-    expect(brief.decisions?.refs).toEqual([]); expect(brief.decisions?.recover.args.slug).toBe('task-plan');
+    expect(brief.decisions?.refs).toEqual([]); expect(brief.decisions?.recover?.args.slug).toBe('task-plan');
   });
   it('preserves scoped recovery and at least one source card when deep task paths and decisions fill the inline budget', async () => {
     const root = fixture(), prefix = 'packages/operator-core/lib/code-intelligence';

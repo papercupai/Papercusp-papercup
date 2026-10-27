@@ -213,6 +213,36 @@ blueprints:
   - id: work
     githubUrl: https://github.com/Papercusp/blueprints
     listingRef: work
+  - id: judge-acceptance
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: judge-acceptance
+  - id: judge-domain
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: judge-domain
+  - id: judge-ensemble
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: judge-ensemble
+  - id: judge-grading-integrity
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: judge-grading-integrity
+  - id: judge-gym
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: judge-gym
+  - id: scout.lens-analogical
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: scout.lens-analogical
+  - id: scout.lens-constraint-removal
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: scout.lens-constraint-removal
+  - id: scout.lens-first-principles
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: scout.lens-first-principles
+  - id: scout.lens-reframing
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: scout.lens-reframing
+  - id: semantic-code-judge
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: semantic-code-judge
 
 templates:
   - id: papercusp-android-app
@@ -283,6 +313,9 @@ rubrics:
   - id: plan-class-feature-ship
     githubUrl: https://github.com/Papercusp/templates
     listingRef: plan-class-feature-ship
+  - id: plan-class-general
+    githubUrl: https://github.com/Papercusp/templates
+    listingRef: plan-class-general
   - id: plan-class-investigation
     githubUrl: https://github.com/Papercusp/templates
     listingRef: plan-class-investigation

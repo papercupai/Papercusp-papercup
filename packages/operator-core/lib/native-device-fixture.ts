@@ -18,6 +18,7 @@ import { Resolver, resolve4, resolveNs } from 'node:dns/promises';
 import { existsSync, lstatSync, realpathSync, mkdirSync, mkdtempSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from './module-repo-root';
 import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tunnel/cloudflare-api';
 import { assertPort, parseArgoTunnelCert, tunnelCnameTarget } from './own-tunnel/config';
 import { provisionCloudflareTunnel, removeCloudflareTunnel, type RemovalTarget } from './own-tunnel/provision';
@@ -26,7 +27,10 @@ import type { WorkspaceRegistry } from './workspace-registry';
 import { assertWorkspaceHostAgentHomeBundleAdmissionEligible, parseWorkspaceHostAgentHomeBundle,
   workspaceHostAgentHomePaths } from '@papercusp/deployment-driver';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+// Resolved on first use, not at import: this module is also a CLI, and importing it must
+// stay inert (util/cli-entry-scripts.test.ts loads it with every project dependency stubbed).
+let checkoutRoot: string | undefined;
+const repoRoot = (): string => (checkoutRoot ??= moduleRepoRoot(import.meta.url));
 const delay = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
 
 export function saveFixtureReceipt(evidence: string, receipt: Record<string, unknown>): void {
@@ -179,7 +183,7 @@ export function provisionFixtureAgentHome(bundlePath: string, env = process.env)
   fixtureIdentity(env);
   assert(bundlePath && isAbsolute(bundlePath), 'Explicit private agent-home bundle required');
   const source = realpathSync(bundlePath);
-  assert(relative(ROOT, source).startsWith('..'), 'Agent-home bundle must be outside the repository');
+  assert(relative(repoRoot(), source).startsWith('..'), 'Agent-home bundle must be outside the repository');
   const metadata = lstatSync(bundlePath);
   assert(metadata.isFile() && !metadata.isSymbolicLink() && metadata.uid === process.getuid?.() &&
     (metadata.mode & 0o077) === 0 && metadata.size <= 256 * 1024, 'Owned private agent-home bundle required');
@@ -188,7 +192,7 @@ export function provisionFixtureAgentHome(bundlePath: string, env = process.env)
   // Resolve every destination below the maintained private runtime, including
   // parent symlinks. A caller may not redirect a private install into shared HOME.
   const home = realpathSync(env.HOME!);
-  assert(home === resolve(env.HOME!) && relative(ROOT, home).startsWith('..'), 'Canonical private HOME required');
+  assert(home === resolve(env.HOME!) && relative(repoRoot(), home).startsWith('..'), 'Canonical private HOME required');
   assert(/\/papercusp-test-runtime-[A-Za-z0-9_-]+\/home$/.test(home), 'Maintained disposable agent HOME required');
   const papercuspHome = realpathSync(env.PAPERCUSP_HOME!);
   assert(papercuspHome === join(home, '.papercusp'), 'Private product HOME must belong to private agent HOME');
@@ -448,7 +452,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   assert(!advertisedHostname || (!deviceExpiry && !workspaceSwitch && interruptionSeconds === 0),
     'Advertised-hostname acceptance requires a separate fixture');
   const evidence = resolve(evidencePath);
-  assert(isAbsolute(evidencePath) && relative(ROOT, evidence).startsWith('..'), 'Evidence/private input must be outside the repository');
+  assert(isAbsolute(evidencePath) && relative(repoRoot(), evidence).startsWith('..'), 'Evidence/private input must be outside the repository');
   // Device expiry uses the existing private desktop controls only. It creates
   // no tunnel, DNS record or public route and needs no provider credential.
   const localOnly = deviceExpiry || modelAccess.preflightOnly;
@@ -489,7 +493,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   // generated directory under the ignored dist-host-* family so its bundle is
   // allowed by the source guard, while its import.meta-derived repo root still
   // resolves to this checkout.
-  const fixtureBundleDir = mkdtempSync(join(ROOT, 'apps/operator/dist-host-native-fixture-'));
+  const fixtureBundleDir = mkdtempSync(join(repoRoot(), 'apps/operator/dist-host-native-fixture-'));
   const fixtureBundlePath = join(fixtureBundleDir, 'hono-host.mjs');
   let removal: (RemovalTarget & { tunnelName: string }) | undefined;
   let stopped = false;
@@ -498,7 +502,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   const logs: number[] = [];
   const start = (command: string, args: string[], env: NodeJS.ProcessEnv, logName: string, ipc = false) => {
     const fd = openSync(resolve(evidence, logName), 'wx', 0o600); logs.push(fd);
-    const child = spawn(command, args, { cwd: ROOT, env, stdio: ipc ? ['ignore', fd, fd, 'ipc'] : ['ignore', fd, fd] });
+    const child = spawn(command, args, { cwd: repoRoot(), env, stdio: ipc ? ['ignore', fd, fd, 'ipc'] : ['ignore', fd, fd] });
     child.on('error', error => { receipt.processError = error.message; stopped = true; });
     return child;
   };
@@ -519,14 +523,14 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
     // than disabling NODE_OPTIONS or running an unjudged transformed module.
     const bundleHostEnv = {
       ...hostEnv,
-      NODE_OPTIONS: `--import=${resolve(ROOT, 'scripts/lib/committed-source-loader.mjs')}`,
+      NODE_OPTIONS: `--import=${resolve(repoRoot(), 'scripts/lib/committed-source-loader.mjs')}`,
     };
     const startHost = (log: string) => {
       const buildLog = resolve(evidence, 'host-bundle-build.log');
       try {
-        const output = execFileSync('bash', [resolve(ROOT, 'apps/operator/bin/bundle-host.sh'),
+        const output = execFileSync('bash', [resolve(repoRoot(), 'apps/operator/bin/bundle-host.sh'),
           'bin/hono-host.ts', fixtureBundlePath], {
-          cwd: ROOT, env: hostEnv, encoding: 'utf8', timeout: 180_000,
+          cwd: repoRoot(), env: hostEnv, encoding: 'utf8', timeout: 180_000,
           maxBuffer: 8 * 1024 * 1024,
         });
         writeFileSync(buildLog, output, { mode: 0o600 });
@@ -541,7 +545,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
         throw error;
       }
       return start(process.execPath,
-        [...(deviceExpiry ? ['--import', resolve(ROOT,
+        [...(deviceExpiry ? ['--import', resolve(repoRoot(),
           'packages/operator-core/lib/native-device-fixture-clock.ts')] : []), fixtureBundlePath],
         bundleHostEnv, log, deviceExpiry);
     };

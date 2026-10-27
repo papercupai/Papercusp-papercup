@@ -15,6 +15,7 @@ import {
 } from './consult-dispatch';
 // The launcher is the authority this preflight mirrors; pin to it, never to a copy.
 import { codexAutoPoolVerdict } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import { normalizeCodexCliModel } from '../model-context-budget.mjs';
 
 const NOW = Date.parse('2026-10-26T12:00:00.000Z');
 const FUTURE = NOW + 15 * 60_000;
@@ -65,6 +66,43 @@ describe('codexGatewayLaunchRefusal parity with the psu launcher', () => {
     expect(codexGatewayLaunchRefusal({
       codexHealthyAccounts: 0, codexTotalAccounts: 8, codexEarliestRecoveryAt: FUTURE, codexUnserviceableCause: 'accounts-unserviceable',
     }, NOW)?.failureReason).toBe('account-walled');
+  });
+});
+
+describe('codexGatewayLaunchRefusal is model-aware, like the launcher (WI-6554700010030413)', () => {
+  // Measured 2026-10-27 19:02Z: one serviceable account refused the allowed Codex
+  // models (the alias sol among them) but served gpt-6-luna. The router walled no
+  // rank and paid a headless launch per rank that psu then refused for its model.
+  const SOL = normalizeCodexCliModel('sol');
+  const stats: CodexGatewayPoolStats = {
+    codexHealthyAccounts: 1, codexTotalAccounts: 8, codexEarliestRecoveryAt: null,
+    codexServiceableByModel: { [SOL]: 0, 'gpt-6.1-sol': 0, 'GPT-6-Astra': 0, 'gpt-6-luna': 1 },
+  };
+  const MODELS = ['sol', 'sol:high', 'gpt-6.1-sol', 'gpt-6.1-sol[1m]', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-terra', null];
+
+  it.each(MODELS)('model %s: refuses exactly when codexAutoPoolVerdict refuses', (model) => {
+    const launcher = codexAutoPoolVerdict({ agent: 'codex', model, account: 'auto', stats: asLauncherStats(stats), now: NOW });
+    expect(codexGatewayLaunchRefusal(stats, NOW, model) !== null).toBe(launcher.kind === 'refuse');
+  });
+
+  it('walls every model measured at zero, aliases and suffixes included, and no other', () => {
+    expect(MODELS.filter((model) => codexGatewayLaunchRefusal(stats, NOW, model) !== null))
+      .toEqual(['sol', 'sol:high', 'gpt-6.1-sol', 'gpt-6.1-sol[1m]', 'gpt-6-astra']);
+    expect(codexGatewayLaunchRefusal(stats, NOW, 'sol')).toMatchObject({
+      failureReason: 'account-walled', recoveryAt: null, routeReason: expect.stringContaining(`refuses model ${SOL}`),
+    });
+  });
+
+  it('answers provider-wide when no model is given or the map has no reading', () => {
+    expect(codexGatewayLaunchRefusal(stats, NOW)).toBeNull();
+    expect(codexGatewayLaunchRefusal({ ...stats, codexServiceableByModel: undefined }, NOW, 'sol')).toBeNull();
+  });
+
+  it('narrows an available auto route by the rank model', () => {
+    const available = { available: true, accountRoute: 'auto' as const, detail: 'codex pool has headroom' };
+    expect(applyCodexGatewayRefusal(available, 'codex', stats, NOW, 'gpt-6-luna')).toBe(available);
+    expect(applyCodexGatewayRefusal(available, 'codex', stats, NOW, 'gpt-6.1-sol'))
+      .toMatchObject({ available: false, accountRoute: 'auto', failureReason: 'account-walled' });
   });
 });
 

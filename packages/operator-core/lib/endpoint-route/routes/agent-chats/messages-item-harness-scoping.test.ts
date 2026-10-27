@@ -127,7 +127,10 @@ vi.mock('../../../agent-chats-data', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../agent-chats-data')>();
   return { ...orig, readFeatureLockState: readFeatureLockStateMock };
 });
-vi.mock('../../../work-items', () => ({ getWorkItem: getWorkItemMock }));
+vi.mock('../../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../work-items')>()),
+  getWorkItem: getWorkItemMock,
+}));
 vi.mock('../../../pot/cup-wake-dossier', () => ({ computeCupWakeDossier: computeCupWakeDossierMock }));
 vi.mock('../../../work-item-checkpoint', () => ({ getWorkItemCheckpoint: getWorkItemCheckpointMock }));
 vi.mock('../../../plan-context-for-feature', () => ({ getPlanContextForFeature: getPlanContextForFeatureMock }));

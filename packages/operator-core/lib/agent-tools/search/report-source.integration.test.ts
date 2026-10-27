@@ -152,6 +152,30 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     expect(chunks[0].n).toBeGreaterThan(3);
   });
 
+  it('records report lexical enablement, BM25 availability, transaction setup, and SQL phases', async () => {
+    await publish('workspace', 'phaseclockquartz');
+    const phaseNames: string[] = [];
+    const phaseTimer = {
+      start(name: string) {
+        phaseNames.push(name);
+        return () => {};
+      },
+      measure<T>(name: string, action: () => Promise<T>) {
+        phaseNames.push(name);
+        return action();
+      },
+    };
+
+    await createReportSearchSource().lexical!({ ...context(), phaseTimer });
+
+    expect(phaseNames).toEqual([
+      'bounded-org-txn-setup',
+      'report-library-enabled-check',
+      'bm25-flag-index-availability',
+      'report-lexical-sql',
+    ]);
+  });
+
   it('enforces private, pot, author and workspace access before either ranker, even with spoofed author filters', async () => {
     const privateReport = await publish('owner');
     const potReport = await publish('pot');

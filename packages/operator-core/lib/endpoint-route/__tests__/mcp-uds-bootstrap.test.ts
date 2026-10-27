@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { lstat, readFile, rm, mkdtemp, mkdir } from 'node:fs/promises';
+import { lstat, readFile, rm, mkdtemp, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFileSync } from 'node:fs';
@@ -24,8 +24,10 @@ import { readAgentMcpDiscoveryForPort, endpointIpcDiscoveryPathForPort } from '.
 
 beforeEach(async () => {
   h.home = await mkdtemp(join(tmpdir(), 'boot-mcp-'));
-  h.runtime = join(h.home, 'runtime');
-  await mkdir(h.runtime, { mode: 0o700 });
+  // A socket-kind root longer than 15 bytes is skipped by control-plane-temp.mjs
+  // (SOCKET_TEMP_ROOT_MAX_BYTES, the sun_path budget), so the runtime dir must be short.
+  h.runtime = await mkdtemp('/tmp/r');
+  await chmod(h.runtime, 0o700);
   vi.stubEnv('XDG_RUNTIME_DIR', h.runtime);
   vi.stubEnv('PAPERCUSP_IPC_TCP', '');
   vi.stubEnv('WSL_INTEROP', '');
@@ -34,6 +36,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllEnvs();
   await rm(h.home, { recursive: true, force: true });
+  await rm(h.runtime, { recursive: true, force: true });
 });
 
 describe('desktop bootstrap publishes a separately authenticated MCP endpoint', () => {

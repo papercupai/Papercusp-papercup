@@ -23,6 +23,7 @@ import { registerSystemAction, type SystemActionCtx } from '../harness/routines/
 import { tickGateWatch } from './gate-watch';
 import { sweepSessionIndependentGates } from './gate-reaper';
 import { backfillUnprovableWaitRecheckDates, sweepWorkItemBlockerDefaults } from './work-item-blocker-reaper';
+import { backfillUnprovableParkRecheckDates, sweepDueParkRechecks } from './durable-park-recheck';
 import { sweepOmittedReviews } from './review-stall-reaper';
 import { sweepOwnerDirectiveRecovery } from '../owner-directive-recovery';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -31,10 +32,13 @@ import { pinModuleState } from '@papercusp/module-singleton';
 export const UNPROVABLE_WAIT_BACKFILL_EVERY_MS = 10 * 60_000;
 const unprovableBackfill = pinModuleState('@papercusp/operator-core.unprovableWaitBackfillThrottle', () => ({
   lastCompletedAt: 0,
+  /** WI-6554700010030346: where the paged durable-park backfill resumes (null = from the start). */
+  parkAfterId: null as string | null,
 }));
 
 export function resetUnprovableWaitBackfillThrottleForTest(): void {
   unprovableBackfill.lastCompletedAt = 0;
+  unprovableBackfill.parkAfterId = null;
 }
 
 registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
@@ -122,6 +126,26 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
     } catch (err) {
       console.warn(`[unprovable-wait-backfill]   ! pass skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // WI-6554700010030346 (blind review #110 G-5): durable parks store their wait in
+    // claim_hold_release.trigger, which the leg above never reads, so unprovable parks made
+    // before P-006 had no re-check at all. Same throttle, its own isolation. Provable parks
+    // stay candidates, so each pass reads one page and resumes after it on the next pass.
+    try {
+      const p = await backfillUnprovableParkRecheckDates({
+        limit: readPositiveMs(cfg.unprovable_park_backfill_limit),
+        afterId: unprovableBackfill.parkAfterId ?? null,
+      });
+      unprovableBackfill.parkAfterId = p.nextAfterId;
+      if (p.stamped > 0 || Object.keys(p.skipped).length > 0) {
+        console.log(
+          `[unprovable-park-backfill] ${p.parks} park(s) → ${p.stamped} stamped ${JSON.stringify(p.byReason)}, ` +
+            `${p.provable} provable; skipped ${JSON.stringify(p.skipped)}` +
+            (p.truncatedByLimit ? ` — paged, resumes after ${p.nextAfterId}` : ''),
+        );
+      }
+    } catch (err) {
+      console.warn(`[unprovable-park-backfill]   ! pass skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // WI-10005010: the WORK-ITEM sibling of the session-gate reaper — applies the TYPED
@@ -150,6 +174,19 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
     }
   } catch (err) {
     console.warn(`[blocker-default-reaper]   ! sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // WI-6554700010030346: escalate durable parks whose re-check date passed, then re-arm it.
+  try {
+    const parks = await sweepDueParkRechecks({ limit: readPositiveMs(cfg.park_recheck_sweep_limit) });
+    if (parks.examined > 0 || Object.keys(parks.skipped).length > 0) {
+      console.log(
+        `[park-recheck] ${parks.examined} due park(s) → ${parks.escalated} escalated, ${parks.provable} now provable; ` +
+          `skipped ${JSON.stringify(parks.skipped)}${parks.truncatedByLimit ? ' — TRUNCATED BY LIMIT, more remain' : ''}`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[park-recheck]   ! sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 

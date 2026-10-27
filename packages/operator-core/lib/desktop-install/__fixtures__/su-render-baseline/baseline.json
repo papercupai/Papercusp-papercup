@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-10-20T05:05:21.233Z",
+  "generatedAt": "2026-10-27T19:04:44.343Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 119071,
-      "sha256": "064d320f1b5165028e96b6be667260c970aa64f995be38bb399be1148923f8e9",
+      "totalBytes": 119549,
+      "sha256": "f254aa77a25b4b24b9c25de1eb5fd8c41de10c05faf402743c99d8c8ed283ae5",
       "sections": [
         {
           "heading": "(preamble)",
@@ -73,8 +73,8 @@
         {
           "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
           "origin": "generated",
-          "bytes": 8900,
-          "sha256": "52dfed6bb8487b2760181db7518c28d7e4b4f8d43dd604d5e5964d8cddf89d05"
+          "bytes": 9378,
+          "sha256": "ae4f470c98930386d08fea2d606d8b7b0b881c10a14f886f5e0baf8b04335321"
         },
         {
           "heading": "## Engineering discipline",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 119071,
-      "sha256": "064d320f1b5165028e96b6be667260c970aa64f995be38bb399be1148923f8e9",
+      "totalBytes": 119549,
+      "sha256": "f254aa77a25b4b24b9c25de1eb5fd8c41de10c05faf402743c99d8c8ed283ae5",
       "sections": [
         {
           "heading": "(preamble)",
@@ -217,8 +217,8 @@
         {
           "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
           "origin": "generated",
-          "bytes": 8900,
-          "sha256": "52dfed6bb8487b2760181db7518c28d7e4b4f8d43dd604d5e5964d8cddf89d05"
+          "bytes": 9378,
+          "sha256": "ae4f470c98930386d08fea2d606d8b7b0b881c10a14f886f5e0baf8b04335321"
         },
         {
           "heading": "## Engineering discipline",

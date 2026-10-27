@@ -73,6 +73,8 @@ const queue = {
 const NEW_HEAD = 'd'.repeat(40);
 const ALT_HEAD = 'e'.repeat(40);
 const mocks = vi.hoisted(() => ({
+  // WI-6554700010030460: the door's gate run-lock probe; not held unless a test says so.
+  runLockHeld: vi.fn((_root: string): { held: boolean; pid?: number; elapsedSec: number | null } => ({ held: false, elapsedSec: null })),
   read: vi.fn(),
   readState: vi.fn(),
   retire: vi.fn(),
@@ -145,6 +147,10 @@ vi.mock('../../task-manager/store', () => ({ getTask: mocks.getTask }));
 vi.mock('../../release/admission-fix-precheck-managed', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/admission-fix-precheck-managed')>()),
   startAdmissionPrecheckWorker: mocks.startPrecheckWorker,
+}));
+vi.mock('../../release-checkpoint-lock', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release-checkpoint-lock')>()),
+  isCheckpointRunLockHeldCheap: mocks.runLockHeld,
 }));
 vi.mock('../../release/judged-sha-containment', () => ({
   integrationBranch: () => 'staging',
@@ -1574,6 +1580,34 @@ describe('release:repair-queue', () => {
       expect(dryRuns()).toEqual([true]);
     });
 
+    it('a plain re-confirm resumes a tree-busy deferral on the same operation, measuring only pending files (WI-6554700010030460)', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      const completed = fixture.measurement.results.slice(0, 40).map(result => ({ ...result, status: 'pass' as const }));
+      let persisted: FrozenCandidateRepairQueue = { ...queue, admissionPrecheck: { ...fixture.operation,
+        status: 'deferred', runnerTaskId: 'deferred-task',
+        verdict: { ok: true, ran: false, reason: 'checkpoint-tree-busy', detail: 'a gate run held the tree',
+          population: queue.admissionPrecheck.verdict.population },
+        completedCount: completed.length, measurement: { ...fixture.measurement, results: completed } } };
+      mocks.readState.mockImplementation(async () => ({ status: 'value', queue: persisted }));
+      mocks.write.mockImplementation(async (_target, next) => { persisted = next; });
+      mocks.transition.mockImplementation(async (_target, update) => {
+        persisted = update(persisted); return { status: 'written', queue: persisted, fresh: persisted, retries: 0 };
+      });
+      mocks.getTask.mockImplementation(async () => ({ state: 'running', confined: true }));
+      const runner = vi.fn(async ({ commit, files }: { commit: string; files: string[] }) => ({ ran: true as const,
+        commit, results: files.map(path => ({ path, status: 'pass' as const })) }));
+      mocks.precheckFactory.mockReturnValue(runner);
+      // No retryPrecheck: a deferral is not a failure, so the kept rows resume without an opt-in.
+      const started = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never));
+      expect(started).toMatchObject({ verdict: 'precheck-running', precheckOperation: { operationId: fixture.operation.operationId,
+        status: 'running', measurement: { results: completed } } });
+      await drainDetached();
+      const atBuilt = runner.mock.calls.filter(([run]) => run.commit === fixture.operation.builtCommit);
+      expect(atBuilt.flatMap(([run]) => run.files)).toEqual(fixture.files.slice(40));
+      expect(dryRuns()).toEqual([true]);
+    });
+
     it.each(['source', 'partition', 'signature'] as const)('never resumes durable rows after %s identity changes', async (kind) => {
       const fixture = wideFixture();
       wideDoor(fixture);
@@ -2185,6 +2219,26 @@ describe('release:repair-queue', () => {
       // unmeasured admission — the follow-up re-measures instead of adopting the busy deferral.
       expect(result).toMatchObject({ admitted: false });
       expect(dryRuns()).not.toContain(false);
+    });
+
+    it('a gate run holding the checkpoint tree defers the confirm at once: no worker, no reservation, nothing published (WI-6554700010030460)', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      mocks.runLockHeld.mockReturnValue({ held: true, pid: 7, elapsedSec: 30 });
+      try {
+        const result = body(
+          await tool.handler(
+            { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
+            { role: 'su' } as never,
+          ),
+        );
+        expect(result).toMatchObject({ ok: true, admitted: false, pending: false, deferred: true,
+          verdict: 'precheck-deferred', reason: 'checkpoint-tree-busy', holder: { pid: 7, elapsedSec: 30 } });
+        expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+        expect(dryRuns()).not.toContain(false);
+      } finally {
+        mocks.runLockHeld.mockReturnValue({ held: false, elapsedSec: null });
+      }
     });
 
     it('retryPrecheck:true refreshes a busy-tree deferral without publishing until the new measured pass', async () => {

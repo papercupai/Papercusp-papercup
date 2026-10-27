@@ -512,8 +512,20 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
     ['scripts/check-no-owner-name-tags.mjs', 'every entry read is try/catch → continue ("vanished mid-run").'],
     ['scripts/scan-retirement-surface.mjs', 'every entry read is try/catch → continue ("gone since ls-files ran").'],
     [
-      'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
-      'production git-sync: every ls-files call tests index MEMBERSHIP of named paths; it never enumerates-then-reads.',
+      'apps/operator/lib/release/green-checkpoint.ts',
+      'checkpointQualificationInputClassifier builds an index MEMBERSHIP set (isTracked) for classifyReadPaths, which gets existsSync separately; no enumerated entry is read.',
+    ],
+    [
+      'packages/operator-core/lib/release/checkpoint-qualification-lifecycle.integration.test.ts',
+      'the ls-files set is only the isTracked membership predicate handed to classifyReadPaths (exists: existsSync); no enumerated entry is read.',
+    ],
+    [
+      'packages/operator-core/lib/code-intelligence/__fixtures__/clone-corpus-20261021/original-probe.mjs',
+      'archived probe, sha256-pinned in provenance.json artifacts (editing it breaks the fixture); replayed only inside a lint:as-committed materialization, never the shared tree.',
+    ],
+    [
+      'packages/operator-core/lib/code-intelligence/__fixtures__/clone-corpus-20261021/reconstruct.cjs',
+      'fixture verifier run only with --root <lint:as-committed materialization> (provenance.json reconstruction), a clean historical checkout with no index lag.',
     ],
     [
       'scripts/test-files.mjs',

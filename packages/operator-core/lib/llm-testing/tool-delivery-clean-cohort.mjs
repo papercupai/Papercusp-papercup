@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { writeStdoutSync } from '../../../../scripts/lib/write-stdout-sync.mjs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { zstdDecompressSync } from 'node:zlib';
@@ -289,6 +290,7 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().then(result => { console.log(JSON.stringify(result)); process.exit(0); },
+  // Synchronous write: process.exit() would truncate a buffered console.log to a pipe.
+  main().then(result => { writeStdoutSync(`${JSON.stringify(result)}\n`); process.exit(0); },
     error => { console.error(error.message); process.exit(1); });
 }

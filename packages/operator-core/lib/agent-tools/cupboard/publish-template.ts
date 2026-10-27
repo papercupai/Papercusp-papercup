@@ -10,7 +10,7 @@
  */
 import { z } from 'zod';
 import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
@@ -51,7 +51,7 @@ export default defineTool({
     projectRef: z.string().max(200).optional().describe('Papercupai project remote (owner/repo).'),
     title: hardText(LIMITS.SHORT_TITLE).optional().describe('Override the listing title (else the local template title, else the ref).'),
     description: hardText(LIMITS.ANNOTATION).optional().describe('Override the listing description (else the local template description).'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());

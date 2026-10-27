@@ -366,6 +366,48 @@ describe('admitPathsOntoRepairHead — real git (P-001)', () => {
     expect(refAt(root, frozenLineageRef(candidate))).toBe(out.commit);
   });
 
+  it('served from a LINKED worktree with a stale submodule clone, builds and pins in the MAIN tree\'s submodule (WI-6554700010030437)', () => {
+    // The :3170 shape: the serving root is a linked worktree sharing the superproject objects,
+    // but its submodule is a separate clone frozen before the fix landed.
+    const { root } = repo();
+    const sub = join(root, 'libs/nested');
+    mkdirSync(sub, { recursive: true });
+    git(sub, ['init', '-q', '-b', 'main']);
+    write(sub, 'src/fix.ts', 'export const fix = 1;\n');
+    git(sub, ['add', '-A']);
+    git(sub, ['commit', '-q', '-m', 'pin']);
+    const pin = git(sub, ['rev-parse', 'HEAD']);
+    git(root, ['update-index', '--add', '--cacheinfo', `160000,${pin},libs/nested`]);
+    git(root, ['commit', '-q', '-m', 'candidate gitlink']);
+    const candidate = git(root, ['rev-parse', 'HEAD']);
+
+    const wt = mkdtempSync(join(tmpdir(), 'admit-linked-'));
+    TEMP.push(wt);
+    rmSync(wt, { recursive: true, force: true });
+    git(root, ['worktree', 'add', '-q', '--detach', wt, candidate]);
+    const wtSub = join(wt, 'libs/nested');
+    rmSync(wtSub, { recursive: true, force: true });
+    execFileSync('git', ['clone', '-q', sub, wtSub], { env: GIT_ENV, timeout: 30_000, killSignal: 'SIGKILL' });
+
+    write(sub, 'src/fix.ts', 'export const fix = 2;\n');
+    git(sub, ['commit', '-q', '-am', 'fix']);
+    const subTip = git(sub, ['rev-parse', 'HEAD']);
+    git(root, ['update-index', '--cacheinfo', `160000,${subTip},libs/nested`]);
+    git(root, ['commit', '-q', '-m', 'move gitlink']);
+    // Precondition: the serving clone really is stale, so the serving root alone must refuse.
+    expect(() => git(wtSub, ['cat-file', '-e', `${subTip}^{commit}`])).toThrow();
+
+    const out = admit(wt, candidate, candidate, ['libs/nested/src/fix.ts']);
+    expect(out).toMatchObject({ ok: true, published: true, diff: ['libs/nested/src/fix.ts'] });
+    if (!out.ok) return;
+    const subCommit = git(root, ['ls-tree', out.commit, '--', 'libs/nested']).split(/\s+/)[2]!;
+    expect(git(sub, ['show', `${subCommit}:src/fix.ts`])).toBe('export const fix = 2;');
+    // The keep-ref lives where gate-pin publication reads it and where it outlives the worktree.
+    expect(git(sub, ['rev-parse', repairAdmissionSubmoduleRef(subCommit)])).toBe(subCommit);
+    expect(() => git(wtSub, ['rev-parse', '--verify', '--quiet', repairAdmissionSubmoduleRef(subCommit)])).toThrow();
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(out.commit);
+  });
+
   it('refuses naming a submodule pointer together with paths inside it', () => {
     const { root } = repo();
     const sub = join(root, 'libs/nested');

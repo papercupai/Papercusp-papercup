@@ -74,6 +74,12 @@ vi.mock('./goals/plan-closure-observations', async (orig) => ({
   beginPlanClosureObservation: vi.fn(),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
+// The closed-item ship-evidence reader issues its own SQL (it has DB integration
+// tests); this suite's getOrgPg mock answers only the gate's queries.
+vi.mock('./plan-verification-escape', async (orig) => ({
+  ...(await orig<typeof import('./plan-verification-escape')>()),
+  readNonCodeDeliverableShipEvidence: vi.fn(async () => []),
+}));
 vi.mock('./independent-verification-gate', () => ({ evaluateIndependentVerificationGate: vi.fn() }));
 // The blind-review door (verification-system-improvements-2026-10-10 P-006) sits right
 // after this suite's door and has its own suites; hold it satisfied so the positive

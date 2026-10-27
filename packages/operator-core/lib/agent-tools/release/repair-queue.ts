@@ -68,6 +68,7 @@ import {
   runAdmissionJob,
 } from '../../release/admission-offthread';
 import { ADMISSION_RADIUS_CAP, type AdmissionJobKind, type AdmissionJobOf } from '../../release/admission-jobs';
+import { isCheckpointRunLockHeldCheap } from '../../release-checkpoint-lock';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
   ADMISSION_PRECHECK_MAX_FILES,
@@ -1747,10 +1748,12 @@ export default defineTool({
       // root's store), the frozen signature's test-file entries plus any admitted test files
       // are measured AT that commit in the checkpoint tree, and only a non-red result reaches
       // phase 2 (the publishing build of the same tree onto the same parent; the lineage-ref
-      // CAS still guards races). A gate run holding the checkpoint tree makes the pre-check
-      // accepts ONLY the explicit checkpoint-tree-busy exception
-      // (`precheck.ran:false, reason:'checkpoint-tree-busy'`) — the R-1 re-judge measures it.
-      // Any other runner/setup failure refuses publication because an unmeasured result never
+      // CAS still guards races). A gate run holding the checkpoint tree DEFERS the pre-check
+      // (`verdict:'precheck-deferred'`, nothing launched or published; a kept measurement resumes
+      // on the next confirm). Since green-main-ratchet-convergence-2026-10-17#P-006 a deferral is
+      // never adopted for publication: the ratchet admits only measured results, so the old R-1
+      // "publish loud, the gate re-judges" exception no longer applies (WI-6554700010030460).
+      // Any runner/setup failure refuses publication because an unmeasured result never
       // counts as passing. `skipPrecheck:true` + `precheckReason` is the deliberate ledgered opt-out.
       let population = precheckPopulation({ signature: queue.signature ?? [], admittedPaths: paths });
       const skipPrecheck = args.skipPrecheck === true;
@@ -1933,13 +1936,47 @@ export default defineTool({
         ) {
           precheck = matchingPrecheck.verdict;
         } else {
+          // WI-6554700010030460: no pre-check can run while a gate run holds the checkpoint tree
+          // (the runner refuses with checkpoint-tree-busy, the same probe on the same root). Say
+          // so NOW instead of launching a worker that defers seconds later: nothing is launched,
+          // reserved, or published, and a kept deferred measurement resumes on the next confirm.
+          const held = isCheckpointRunLockHeldCheap(precheckRoot);
+          if (held.held) {
+            return json({
+              ...base,
+              ok: true,
+              admitted: false,
+              pending: false,
+              deferred: true,
+              dryRun: false,
+              verdict: 'precheck-deferred',
+              reason: 'checkpoint-tree-busy',
+              judgedSha: queue.repairHead,
+              builtCommit,
+              holder: { pid: held.pid ?? null, elapsedSec: held.elapsedSec },
+              currentQueueIdentity: {
+                candidate: queue.candidate,
+                repairHead: queue.repairHead,
+                updatedAtMs: queue.updatedAtMs,
+              },
+              note:
+                `A green-checkpoint run holds the checkpoint tree (pid ${held.pid ?? '?'}, ${held.elapsedSec ?? '?'}s in), ` +
+                'so the R6 pre-check cannot run; nothing was launched, reserved or published. A deferred pre-check is not ' +
+                'passing evidence. Re-confirm this admit after that run releases the tree (kept per-file rows resume), ' +
+                'or, for a deliberate wide admission, use skipPrecheck:true + precheckReason.',
+            });
+          }
           const startedAtMs = Date.now();
           const runnerTaskId = newTaskId(startedAtMs);
           const runnerPidIdentity = checkpointPidIdentity(process.pid);
-          const resume = matchingPrecheck?.measurement && args.retryPrecheck === true &&
+          // WI-6554700010030460: a tree-busy DEFERRAL kept its per-file rows and is not a failure,
+          // so any re-confirm resumes them; it needs no retryPrecheck opt-in.
+          const deferredTreeBusy = matchingPrecheck?.status === 'deferred' &&
+            matchingPrecheck.verdict?.ran === false && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy';
+          const resume = matchingPrecheck?.measurement && (deferredTreeBusy || (args.retryPrecheck === true &&
             (matchingPrecheck.status === 'running' ||
               (matchingPrecheck.status === 'failed' && matchingPrecheck.verdict?.ran === false &&
-                matchingPrecheck.verdict.reason === 'runner-failed'))
+                matchingPrecheck.verdict.reason === 'runner-failed'))))
             ? matchingPrecheck : undefined;
           const operationId =
             resume?.operationId ??

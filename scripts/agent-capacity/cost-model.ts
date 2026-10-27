@@ -32,6 +32,7 @@ import { costFromTokens, PRICE_TABLE_VERSION, USAGE_LEDGER_PRICING, type TokenUs
 import { hourlyPriceUsd, parseMachineType, SPOT_PRICES_2026_10_01 } from './gcp-rails';
 import { decodeChunk, type RecordedExchange } from './record-proxy';
 import { sseEvents } from './replay-server';
+import { writeStdoutSync } from '../lib/write-stdout-sync.mjs';
 
 export const HOURS_PER_MONTH = 730;
 /** The measurement VMs were priced with a 120 GB boot disk (capacity-table --disk-gb 120), so the rows here match D-019/D-020. */
@@ -1003,7 +1004,8 @@ if (process.argv[1] && /cost-model\.ts$/.test(process.argv[1])) {
   const evidence = arg('qualification-economics');
   if (evidence !== undefined) {
     const result = readTrialEconomics(evidence, arg('expected-sha') ?? '', arg('expected-artifact-sha256') ?? '');
-    console.log(JSON.stringify(result, null, 2));
+    // process.exit() would truncate an asynchronous console.log to a pipe; write synchronously.
+    writeStdoutSync(`${JSON.stringify(result, null, 2)}\n`);
     process.exit(result.comparison === 'unknown' || result.trialCost === 'unknown' ? 2 : result.trialCost === 'fail' ? 1 : 0);
   }
   const agents = Number(arg('agents') ?? TARGET.agents);

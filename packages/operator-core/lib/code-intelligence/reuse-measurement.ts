@@ -292,9 +292,9 @@ completeActivityCensuses: readonly { ref: string; owner: string; start: string; 
   const subject = JSON.stringify({ schema: 'reuse-metrics-ref-v1', harness: scope.harnessSlug,
     windowStart: new Date(time(scope.windowStart)).toISOString(), windowEnd: new Date(time(scope.windowEnd)).toISOString(),
     sha256: createHash('sha256').update(payload).digest('hex') });
-  await sql`INSERT INTO harness_shared.code_intel_pushes (workspace_id, owner_id, turn_id, leg, subject, suggested_call, chars)
-    VALUES (${scope.workspaceId}, 'system:reuse-measurement', ${scope.windowEnd}, 'reuse-metrics', ${subject}, ${payload}, 0)
-    ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
+  await sql`INSERT INTO harness_shared.code_intel_reuse_measurements (workspace_id, owner_id, turn_id, kind, subject, payload)
+    VALUES (${scope.workspaceId}, 'system:reuse-measurement', ${scope.windowEnd}, 'reuse-metrics', ${subject}, ${payload})
+    ON CONFLICT (workspace_id, owner_id, epoch, kind, subject) DO NOTHING`;
   if (reply) population.calls = await decodeReuseCallColumns(reply.packedCalls);
   return { population, sourceRefs };
 }
@@ -351,33 +351,35 @@ export async function applyReuseProviderDecision(sql: Sql, input: Parameters<typ
     at: input.now, decision, reversal: { flag, enabled: true } });
   const subject = JSON.stringify({ schema: 'reuse-provider-action-ref-v1', provider: input.provider,
     sha256: createHash('sha256').update(payload).digest('hex') });
-  await sql`INSERT INTO harness_shared.code_intel_pushes (workspace_id, owner_id, turn_id, leg, subject, suggested_call, chars)
-    VALUES (${input.workspaceId}, 'system:reuse-measurement', ${input.now}, 'reuse-provider-action', ${subject}, ${payload}, 0)
-    ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
+  await sql`INSERT INTO harness_shared.code_intel_reuse_measurements (workspace_id, owner_id, turn_id, kind, subject, payload)
+    VALUES (${input.workspaceId}, 'system:reuse-measurement', ${input.now}, 'reuse-provider-action', ${subject}, ${payload})
+    ON CONFLICT (workspace_id, owner_id, epoch, kind, subject) DO NOTHING`;
   const result = await (setEnabled ? setEnabled(input.provider, false)
     : (await import('@papercusp/flags/server')).setFlagOverride(flag, false));
   if (!result.ok) throw new Error(`Provider disable failed: ${result.reason ?? 'unavailable flag store'}`);
   return { ...decision, applied: true, reversal: { flag, enabled: true } };
 }
 
-/** Read fixture or collector records from the EXISTING ledger, under exact scope.
- * Measurement records are distinct from issued push rows and carry zero spend.
+/** Read fixture or collector records from the reuse-measurement ledger
+ * (harness_shared.code_intel_reuse_measurements), under exact scope. Measurement
+ * records are not deliveries, so they never live in the delivered-push log
+ * (code_intel_pushes; SPEC-P-006-C, EI-27013395716645252).
  * No read of an arbitrary server response claims a complete client activity census.
  */
 export async function readRecordedReuseWindows(sql: Sql, input: { workspaceId: string; start: string; end: string }) {
   if (!input.workspaceId.trim() || time(input.start) >= time(input.end)) throw new Error('Exact workspace and half-open window required');
-  const rows = await sql<{ subject: string; owner_id: string; suggested_call: string | null }[]>`SELECT DISTINCT ON
+  const rows = await sql<{ subject: string; owner_id: string; payload: string | null }[]>`SELECT DISTINCT ON
       (COALESCE(subject::jsonb->>'exposureId', subject::jsonb->'observation'->'exposure'->>'id'))
-      subject, owner_id, suggested_call FROM harness_shared.code_intel_pushes
-    WHERE workspace_id = ${input.workspaceId} AND leg = 'reuse-measurement' AND chars = 0
-      AND pushed_at >= ${input.start}::timestamptz AND pushed_at < ${input.end}::timestamptz
+      subject, owner_id, payload FROM harness_shared.code_intel_reuse_measurements
+    WHERE workspace_id = ${input.workspaceId} AND kind = 'reuse-measurement'
+      AND recorded_at >= ${input.start}::timestamptz AND recorded_at < ${input.end}::timestamptz
     ORDER BY COALESCE(subject::jsonb->>'exposureId', subject::jsonb->'observation'->'exposure'->>'id'), id DESC`;
   return rows.map(row => {
     const envelope = JSON.parse(row.subject);
     const referenced = envelope.schema === 'reuse-measurement-ref-v1';
-    if (referenced && (!row.suggested_call || createHash('sha256').update(row.suggested_call).digest('hex') !== envelope.sha256))
+    if (referenced && (!row.payload || createHash('sha256').update(row.payload).digest('hex') !== envelope.sha256))
       throw new Error('Reuse measurement payload digest mismatch');
-    const record = referenced ? JSON.parse(row.suggested_call!) : envelope;
+    const record = referenced ? JSON.parse(row.payload!) : envelope;
     const observation = record.observation;
     if (record.schema !== 'reuse-measurement-v1' || observation?.exposure?.workspaceId !== input.workspaceId
       || referenced && envelope.exposureId !== observation.exposure.id
@@ -463,16 +465,15 @@ export async function collectRecordedReuseWindows(sql: Sql, input: {
     windows.push(measureReuseWindow({ ...observation, repoRoots: input.repoRoots }));
     const payload = JSON.stringify({ schema: 'reuse-measurement-v1',
       sourceRefs: [ref, ...row.activities.map(a => `agent-activity:${a.id}`)], observation });
-    // subject participates in the delivery ledger's B-tree unique key. Keep
-    // that key small even for twenty high-entropy tool details. The zero-spend
-    // measurement leg reserves the existing unindexed suggested_call field for
-    // its hash-verified raw payload; it is never an issued tool suggestion.
+    // subject participates in the measurement ledger's B-tree unique key. Keep
+    // that key small even for twenty high-entropy tool details; the
+    // hash-verified raw record goes in the unindexed payload column.
     const subject = JSON.stringify({ schema: 'reuse-measurement-ref-v1', exposureId: ref,
       sha256: createHash('sha256').update(payload).digest('hex') });
-    const result = await sql<{ id: string }[]>`INSERT INTO harness_shared.code_intel_pushes
-      (workspace_id, owner_id, epoch, turn_id, leg, subject, suggested_call, chars, pushed_at)
-      VALUES (${input.workspaceId}, ${row.owner_id}, ${row.epoch}, ${row.turn_id}, 'reuse-measurement', ${subject}, ${payload}, 0, ${exposure.at}::timestamptz)
-      ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING RETURNING id::text`;
+    const result = await sql<{ id: string }[]>`INSERT INTO harness_shared.code_intel_reuse_measurements
+      (workspace_id, owner_id, epoch, turn_id, kind, subject, payload, recorded_at)
+      VALUES (${input.workspaceId}, ${row.owner_id}, ${row.epoch}, ${row.turn_id}, 'reuse-measurement', ${subject}, ${payload}, ${exposure.at}::timestamptz)
+      ON CONFLICT (workspace_id, owner_id, epoch, kind, subject) DO NOTHING RETURNING id::text`;
     recorded.push(...result.map(r => r.id));
   }
   return { windows, recorded, rejected };
@@ -513,8 +514,9 @@ export async function measureRecordedReuseMetric(sql: Sql, scope: {
         cannotObserve: ['No independent client receipt source is registered; delivery remains unknown.',
           'Activity ledger completeness is not certified; absent follow-through remains unknown.'] }) };
   }
-  const readPopulation = async () => await sql<{ subject: string; suggested_call: string | null }[]>`SELECT subject, suggested_call FROM harness_shared.code_intel_pushes
-    WHERE workspace_id = ${scope.workspaceId} AND leg = 'reuse-metrics' AND chars = 0
+  const readPopulation = async () => await sql<{ subject: string; suggested_call: string | null }[]>`SELECT subject, payload AS suggested_call
+    FROM harness_shared.code_intel_reuse_measurements
+    WHERE workspace_id = ${scope.workspaceId} AND kind = 'reuse-metrics'
       AND subject::jsonb->>'schema' IN ('reuse-metrics-v1', 'reuse-metrics-ref-v1')
       AND subject::jsonb->>'harness' = ${scope.harnessSlug!}
       AND subject::jsonb->>'windowStart' = ${new Date(time(scope.windowStart)).toISOString()}

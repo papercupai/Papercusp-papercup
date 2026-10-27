@@ -44,7 +44,10 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
     DBOS: { workflowID: undefined, registerWorkflow: (implementation: unknown) => implementation },
   };
 });
-vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
+vi.mock('./harness/routines/system-actions', async (orig) => ({
+  ...await orig<typeof import('./harness/routines/system-actions')>(),
+  registerSystemAction: vi.fn(),
+}));
 vi.mock('./agent-tools/coordination/presence', async (orig) => ({
   ...await orig<typeof import('./agent-tools/coordination/presence')>(),
   getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'reviewer-session' && h.revoked }),
@@ -348,8 +351,62 @@ describe('original authority context fidelity', () => {
     const [preserved] = await db.sql`SELECT metadata->'admissionOrdinarySlot' AS slot
       FROM harness_shared.routines WHERE id = 'original-promoter'`;
     expect(new Date(preserved!.slot.dueAt)).toEqual(natural!.next_fire_at);
-    await tick();
-    expect(await row(unrelated.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+    const claimCallStart = h.claim.mock.calls.length;
+    const dispatchToolCallStart = h.dispatches.mock.calls.length;
+    const wakeCallStart = h.wake.mock.calls.length;
+    let dispatchResult: Awaited<ReturnType<typeof dispatch>> | undefined;
+    const promoter = await runAdmissionPromoterWithRecovery({
+      ...scope, runId: `chain-${++run}`, batchSize: 10, recentTerminalDays: 30, model: undefined,
+    }, {
+      sql: db.sql, lockSql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery,
+      dispatch: async (args) => {
+        dispatchResult = await dispatch(args);
+        return dispatchResult;
+      },
+    });
+    const observed = await row(unrelated.id);
+    const recovery = observed.payload?._admissionRecovery as Record<string, unknown> | undefined;
+    const claimResults = await Promise.all(h.claim.mock.results.slice(claimCallStart).map(async (result) => {
+      if (result.type !== 'return') return { type: result.type };
+      try {
+        const value = await result.value;
+        return {
+          type: result.type,
+          claimed: value !== null && value !== undefined,
+          itemId: value?.id ?? value?.feature_id ?? null,
+          assignee: value?.assignee ?? value?.taken_by ?? null,
+        };
+      } catch (error) {
+        return { type: 'rejected', error: String(error).slice(0, 300) };
+      }
+    }));
+    const diagnostic = JSON.stringify({
+      promoter: { runId: promoter.runId, promoted: promoter.promoted, held: promoter.held },
+      row: { id: observed.feature_id, status: observed.status, admission: observed.admission,
+        taken_by: observed.taken_by },
+      recovery: recovery && Object.fromEntries(
+        ['requestId', 'state', 'stage', 'reason', 'target', 'routineId', 'updatedAt']
+          .filter((key) => key in recovery).map((key) => [key, recovery[key]]),
+      ),
+      dispatch: dispatchResult && {
+        ok: dispatchResult.ok,
+        assigned: dispatchResult.assignment.assigned,
+        retained: dispatchResult.assignment.retained,
+        skipped: dispatchResult.assignment.skipped.map(({ workItemId, code, reason }) =>
+          ({ workItemId, code, reason: reason.slice(0, 500) })),
+        failed: dispatchResult.assignment.failed,
+        executionWorkItemIds: dispatchResult.assignment.executionWorkItemIds,
+        wake: dispatchResult.wake && {
+          queued: dispatchResult.wake.queued,
+          woken: dispatchResult.wake.woken,
+        },
+      },
+      dispatchToolCalls: h.dispatches.mock.calls.slice(dispatchToolCallStart).map(([name]) => name),
+      claimCalls: h.claim.mock.calls.slice(claimCallStart).map(([id, assignee]) => ({ id, assignee })),
+      claimResults,
+      wakeCalls: h.wake.mock.calls.slice(wakeCallStart).map(([targets]) => targets),
+    }, null, 2);
+    expect(observed, diagnostic).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
     expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
 
     // Advance the persisted timer as if the host restarted after the natural

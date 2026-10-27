@@ -1242,7 +1242,7 @@ export const TOOL_RESULT_LEGS = ['intent', 'completion'] as const satisfies read
  * per delivered brief; a brief that measured no change delivered no code facts and is not recorded. */
 export async function recordCompletionTimeBrief(input: { workspace: string; owner: string; workItem: string; client?: string },
   brief: { status: 'measured' | 'unknown'; changes: readonly { file: string; symbol: string; sourceFingerprint: string }[];
-    recover: { tool: string; args: unknown } }): Promise<boolean> {
+    recover?: { tool: string; args: unknown } }): Promise<boolean> {
   if (brief.status !== 'measured' || !brief.changes.length || !input.workspace || !input.owner || !input.workItem) return false;
   const changes = createHash('sha256')
     .update(JSON.stringify(brief.changes.map(change => [change.file, change.symbol, change.sourceFingerprint]))).digest('hex');
@@ -1255,10 +1255,11 @@ export async function recordCompletionTimeBrief(input: { workspace: string; owne
 
 async function recordToolResultBrief(input: { workspace: string; owner: string; client?: string }, row: {
   leg: (typeof TOOL_RESULT_LEGS)[number]; subject: string; commit: string | null; paths: readonly string[];
-  recover: { tool: string; args: unknown }; chars: number }): Promise<boolean> {
+  recover?: { tool: string; args: unknown }; chars: number }): Promise<boolean> {
   const subject = row.subject.slice(0, 1000);
   const citedPaths = [...new Set(row.paths)].filter(safeSnapshotPath).slice(0, 20);
-  const suggestedCall = `${row.recover.tool} ${JSON.stringify(row.recover.args)}`.slice(0, 1000);
+  // P-006: a brief whose recovery call was withheld (tool not listed to the recipient) named no tool.
+  const suggestedCall = row.recover ? `${row.recover.tool} ${JSON.stringify(row.recover.args)}`.slice(0, 1000) : null;
   const { chars, commit } = row;
   try {
     return await withWorkspace(input.workspace, async tx => {

@@ -163,6 +163,8 @@ import {
   codexModelConfigToml,
   listCodexInstalledModels,
   normalizeCodexCliModel,
+  codexModelIdFromSpec,
+  codexServiceableForModel,
   resolveLaunchModelAlias,
   isCodexModelDenied,
   CODEX_DENIED_MODEL_IDS,
@@ -7641,38 +7643,10 @@ function isCodexAutoRoute(agent, model, account) {
   return provider === "codex";
 }
 
-/**
- * The bare model id a launch spec asks the gateway for: `gpt-6.1-sol:high` and
- * `gpt-6.1-sol[1m]` both mean `gpt-6.1-sol`. Lowercased, because the gateway keys
- * refusals by the request body's model string. `null` for an empty spec.
- *
- * @param {string | null | undefined} model
- * @returns {string | null}
- */
-export function codexModelIdFromSpec(model) {
-  const raw = String(model ?? "").trim().toLowerCase();
-  if (!raw) return null;
-  const id = raw.replace(/\[[^\]]*\]$/, "").replace(/:(?:minimal|low|medium|high|xhigh|max|none)$/, "");
-  return id || null;
-}
-
-/**
- * The gateway's measured serviceable-account count for ONE model, or `null` when the
- * snapshot does not carry a reading for it (older gateway, or no live refusal for the
- * model — in which case the provider-wide count already describes it).
- *
- * @param {unknown} byModel `stats.codexServiceableByModel`
- * @param {string} modelId  a {@link codexModelIdFromSpec} result
- * @returns {number | null}
- */
-export function codexServiceableForModel(byModel, modelId) {
-  if (!byModel || typeof byModel !== "object" || Array.isArray(byModel)) return null;
-  for (const [key, value] of Object.entries(byModel)) {
-    if (String(key).trim().toLowerCase() !== modelId) continue;
-    return Number.isInteger(value) && value >= 0 ? value : null;
-  }
-  return null;
-}
+// The per-model refusal helpers live in model-context-budget.mjs (WI-6554700010030413)
+// so the consult router's capacity preflight resolves a rank's model exactly as this
+// launcher does, including aliases (`sol`). Re-exported for existing importers.
+export { codexModelIdFromSpec, codexServiceableForModel };
 
 /** Env escape hatch: launch anyway despite a provably-walled auto-route pool. */
 export const ALLOW_WALLED_LAUNCH_ENV = "PAPERCUSP_ALLOW_WALLED_LAUNCH";

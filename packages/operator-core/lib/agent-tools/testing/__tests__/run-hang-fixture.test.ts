@@ -1,5 +1,9 @@
 import { it } from 'vitest';
 
+// nonasserting-test:allow deliberate HANG fixture: it must never resolve so testing:run's foreground
+// timeout reaches its process-tree kill; skipIf'd unless PAPERCUSP_TESTING_RUN_HANG_FIXTURE=1, so it
+// costs nothing in ordinary suites and has nothing to assert.
+
 /**
  * A checked-in HANGING fixture for testing:run's foreground-timeout process-tree kill.
  *

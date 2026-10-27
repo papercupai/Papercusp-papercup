@@ -89,14 +89,15 @@ first-call mistake.
 Exact versions, read from the live install and recorded in full in D-048
 (gitnexus re-confirmed at 1.6.9 on 2026-09-03):
 
-| backend                                     | version                     | location                                                               |
-| ------------------------------------------- | --------------------------- | ---------------------------------------------------------------------- |
-| typescript-language-server                  | 6.0.0                       | `~/.papercusp/vendor/lsp`                                              |
-| tsserver (via transitive `@typescript/old`) | stock typescript 6.0.3      | `~/.papercusp/vendor/lsp/node_modules/@typescript/old/lib/tsserver.js` |
-| rust-analyzer                               | 1.97.1 (8bab26f 2026-07-14) | rustup component, `stable-x86_64-unknown-linux-gnu`                    |
-| gitnexus                                    | 1.6.9                       | `~/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus`              |
-| repomix                                     | 1.18.0                      | `~/.papercusp/vendor/repomix`                                          |
-| code2prompt                                 | 4.2.0                       | `~/.papercusp/vendor/code2prompt`                                      |
+| backend                                     | version                     | location                                                                                 |
+| ------------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------------- |
+| typescript-language-server                  | 6.0.0                       | `~/.papercusp/vendor/lsp`                                                                |
+| tsserver (via transitive `@typescript/old`) | stock typescript 6.0.3      | `~/.papercusp/vendor/lsp/node_modules/@typescript/old/lib/tsserver.js`                   |
+| rust-analyzer                               | 1.97.1 (8bab26f 2026-07-14) | rustup component, `stable-x86_64-unknown-linux-gnu`                                      |
+| gitnexus                                    | 1.6.9                       | `~/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus`                                |
+| ast-grep                                    | 0.45.1                      | workspace `PAPERCUSP_HOME/vendor/ast-grep`; host `~/.papercusp/vendor/ast-grep` fallback |
+| repomix                                     | 1.18.0                      | `~/.papercusp/vendor/repomix`                                                            |
+| code2prompt                                 | 4.2.0                       | `~/.papercusp/vendor/code2prompt`                                                        |
 
 Three things about this table bite people:
 
@@ -112,6 +113,11 @@ alias rather than a publishable package (`npm view` 404s it), so the adapter mus
 `node_modules`.** This is load-bearing on a shared tree, not tidiness: a bare
 install into the workspace rewrites `node_modules/.bin` underneath every peer
 agent's in-flight test run.
+
+**ast-grep honors workspace-scoped homes without weakening its pin.** It checks the
+workspace `PAPERCUSP_HOME/vendor/ast-grep` first, then the same exact P-014 pin under
+host `~/.papercusp/vendor/ast-grep`. This fallback shares only the read-only tool
+asset; workspace state stays under the scoped home. Resolution never consults `PATH`.
 
 **The gitnexus bridge ships a GENERATED runtime artifact.**
 `libs/papercusp/plugins/gitnexus-bridge/index.cjs` is built from `index.ts` — it

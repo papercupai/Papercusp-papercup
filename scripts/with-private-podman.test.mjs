@@ -8,6 +8,19 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWithPrivatePodman, waitForPrivatePodmanApi } from './with-private-podman.mjs';
 
+// Hermetic by default. Every case below runs under an INHERITED admission context, so
+// runGovernedTestProcess reuses it instead of leasing a real resource-governor receipt
+// against the live database: under the unit layer's PAPERCUSP_FORBID_REAL_PG rail that
+// lease is refused (8 cases failed), and outside it the suite silently wrote receipts into
+// the live DB. Governor admission has its own suites; this one pins the Podman lifecycle.
+// A real context inherited from a governed parent runner is kept as-is. The 'successive
+// owned runs' case injects its own executionApi to keep exercising the non-inherited path.
+process.env.PAPERCUSP_ADMISSION_CONTEXT ||= JSON.stringify({
+  contractVersion: 1, requestId: 'with-private-podman-suite', rootRequestId: 'with-private-podman-suite',
+  idempotencyKey: 'with-private-podman-suite', admissionClass: 'process', priority: 0,
+  demand: { cpuWeight: 1 }, depth: 1, createdAtMs: Date.now(), decisionGeneration: 0,
+});
+
 async function fixture(t, handle) {
   const dir = await mkdtemp(join(tmpdir(), 'pc-ping-test-'));
   const socketPath = join(dir, 'api.sock');

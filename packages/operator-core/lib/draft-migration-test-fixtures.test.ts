@@ -77,6 +77,18 @@ const ALLOWED_TEST_LOADED_DRAFTS: Record<string, AllowedDraft> = {
     reason:
       'Drops the Vault transitional normalizers once :3070 and bg-host serve WI-10006490 code; the test proves that code survives the contract.',
   },
+  '1466': {
+    kind: 'parked',
+    owner: 'WI-6554700010008759',
+    reason:
+      'Feature-receiver equal-key apply clock (report-plan D-028). Its header forbids live execution without a separately scoped migration/backup/rollout operation; the hyperbee remote-clock integration tests verify it on disposable migrated PG.',
+  },
+  '1467': {
+    kind: 'parked',
+    owner: 'WI-6554700010008773',
+    reason:
+      'Issue-receiver extension of 1466 (report-plan D033): "DRAFT ONLY: disposable migrated-PG verification; no live schema rollout", and 1466 must precede it in any approved rollout.',
+  },
 };
 
 interface DraftScan {

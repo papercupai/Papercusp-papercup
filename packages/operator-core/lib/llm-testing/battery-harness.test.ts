@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { pruneRunsWithReport } from '@papercusp/verification-harness';
+import { defaultEvidenceRoot, pruneRunsWithReport } from '@papercusp/verification-harness';
 import { llmBatteryEvidenceRoot, runScenarioBattery, scenarioPhaseOutcome } from './battery-harness';
 
 const scenarios = [
@@ -92,6 +92,9 @@ describe('LLM scenario battery on the verification-harness contract', () => {
     expect(scenarioPhaseOutcome('executed')).toEqual({ ok: true });
     expect(llmBatteryEvidenceRoot({ LLM_TEST_EVIDENCE_ROOT: '/x/y' })).toBe('/x/y');
     expect(llmBatteryEvidenceRoot({ VH_EVIDENCE_ROOT_BASE: '/base' })).toBe('/base/llm-scenario-battery');
-    expect(llmBatteryEvidenceRoot({ HOME: '/h' })).toBe('/h/.local/state/verification-harness/llm-scenario-battery');
+    // The home-state fallback is host-independent only via an explicit XDG_STATE_HOME: with HOME alone the
+    // shared resolver prefers a verified data volume when this host has one (/mnt/data/offload here).
+    expect(llmBatteryEvidenceRoot({ XDG_STATE_HOME: '/h/.local/state' })).toBe('/h/.local/state/verification-harness/llm-scenario-battery');
+    expect(llmBatteryEvidenceRoot({ HOME: '/h' })).toBe(defaultEvidenceRoot('llm-scenario-battery', { HOME: '/h' }));
   });
 });

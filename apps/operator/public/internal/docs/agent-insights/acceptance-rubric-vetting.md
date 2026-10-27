@@ -1,38 +1,45 @@
-# Acceptance-rubric vetting — the meta-rubric method
+# Acceptance-rubric vetting — direct critique and legacy meta-cards
 URL: /internal/docs/agent-insights/acceptance-rubric-vetting
 
-The long-form method behind the acceptance-rubric ship gate's vetting step: how an author vets their rubric against meta-acceptance-rubric (a get_feedback critique consult opened with policy:'rubric-vetting' → improve → scorecards:emit meta-scorecard with vettingConsult), how the six meta-criteria are judged, revision currency (D-010), the gate's refusal/disable/flag mechanics (D-009), and three traps that make a correct vetting read as a failure — or a wrong binding read as a pass.
+How current independent critique satisfies acceptance-rubric vetting directly, when historical meta-scorecards remain a fallback, and how currentness and grader checks work.
 
-The long-form method behind the acceptance-rubric ship gate's vetting step: how an author vets their rubric against meta-acceptance-rubric (a get\_feedback critique consult opened with policy:'rubric-vetting' → improve → scorecards:emit meta-scorecard with vettingConsult), how the six meta-criteria are judged, revision currency (D-010), the gate's refusal/disable/flag mechanics (D-009), and three traps that make a correct vetting read as a failure — or a wrong binding read as a pass.
+How current independent critique satisfies acceptance-rubric vetting directly, when historical meta-scorecards remain a fallback, and how currentness and grader checks work.
 
 ## What this is
 
-Every plan ships with a graded acceptance rubric (CLAUDE.md § "Every plan ships with a graded acceptance rubric"). Before that rubric may satisfy the ship gate, its AUTHOR vets it against the meta-rubric `meta-acceptance-rubric` (the rubric-rubric). This runbook is the long-form method that rubric's `methodRef` points at: how to run the vetting step, how to judge each meta-criterion, and how the gate decides "vetted".
+When the acceptance-rubric vetting gate is enabled and the workspace has the registered meta-rubric, a current independent critique can satisfy vetting directly. The gate reads the critique from its consult or review-work-item record; this current path needs no meta-scorecard, ratings, or grading-integrity audit. If no current critique is found, a qualifying historical meta-scorecard remains a compatibility fallback. If the meta-rubric is absent, the vetting prerequisite is disabled rather than blocking every plan.
+
+This runbook documents that current direct-critique path first, then the legacy card fallback, its currentness rules, and the separate grader-eligibility behavior.
 
 Plan of record: `consult-min-max-and-rubric-vetting-2026-08-17` (D-001, D-006, D-009, D-010, D-011). Responder bounds moved to a shared registry in `unified-responder-selection-critique-and-grading-2026-08-30` (D-001, D-004).
 
 ## The flow (author-side)
 
-1. **Author the acceptance rubric post-implementation** — `rubrics:propose { kind:'acceptance', subjectPlan, classRef, criteria }` (never at plan-creation time).
-2. **Open the critique consult** — `get_feedback` with the rubric's criteria + the plan goal in the question; pass **`policy:'rubric-vetting'` and NO responder count**. That key resolves min/max from `packages/operator-core/lib/consult/selection-policies.ts`, the only place the bound is written, so this runbook cannot instruct a menu wider than the selector enforces — which is exactly what the hand-typed cap it replaces ended up doing after the bound moved. When a selectable transcript candidate exists, the minimum fills from the best-ranked candidate even if nobody clears the relevance floor (`via:'minimum'`, D-003). Delivery forks or converts the selected transcript into a dedicated answering session (D-002), so the original expert session need not be live. A `responder_via:'minimum'` reply is a first-principles review; weigh it as such.
-3. **Improve the rubric from the critique** — `rubrics:get` → edit → `rubrics:propose` (whole-document re-propose; the rubric's version bumps).
-4. **Attest (the meta-scorecard)** — grade YOUR OWN rubric against the meta-rubric:
+1. **Author the acceptance rubric post-implementation** — use rubrics:propose with kind acceptance, subject plan, class reference, and criteria (never at plan-creation time).
+2. **Request a current independent critique** — call consult:get\_feedback with policy rubric-vetting and no responder count. The opening question must name the rubric ID and its current criteriaHash; if that identity is unavailable, name the exact current revision. The router selects and screens the reviewer. A minimum-filled responder is a first-principles review; weigh it as such. The gate also recognizes an independent review recorded on a review work-item.
+3. **Improve and re-propose as needed** — read the critique, revise the rubric, and use rubrics:propose for the whole document. If the criteriaHash changes, request a critique of the new hash. A version-only bump can retain the critique when the request names the unchanged criteriaHash.
+4. **Continue to acceptance grading** — the direct critique completes vetting. The acceptance scorecard that grades the plan's work remains a separate step and still requires a non-implementer.
 
-   ```
-   scorecards:emit {
-     rubricRef: 'meta-acceptance-rubric',
-     subject: { kind:'rubric', ref:'<acceptance-rubric-slug>' },
-     vettingConsult: '<the consult conversation_id>',
-     ratings: { ... }   // one rating per meta-criterion, evidence-grounded
-   }
-   ```
+The gate's direct path checks that the rubric is named, the review record exists, at least one critique post exists, and a critic is distinct from the rubric's creator and proposer. It does not judge meta-criteria ratings or require a vetting card or card audit.
 
-   Both links are validated: the consult must exist in `consult_state` and the subject must resolve to a rubric — either dangling refuses the emit. The server stamps `observation.vetting { consultId, rubricRevision }`, reading the revision itself (the emitter cannot get it wrong).
-5. **Passing is the vetting agent's judgment** (D-001 §3). The gate demands that vetting HAPPENED on the current revision; it never applies a mechanical score floor — only the vetting agent holds the full plan + rubric context. Grade honestly: a `weak` rating on a criterion you decided to ship anyway is admissible; the scorecard is the record of the judgment, not a hurdle to game.
+### Legacy fallback: meta-scorecard
 
-Note the vetting self-grade is the ONE deliberate exception to "grader ≠ author": the meta-scorecard grades the RUBRIC (authored by you, vetted by you with external critique folded in); the acceptance scorecard that grades the PLAN's work still requires a NON-implementer.
+Use this only when preserving or creating the historical card-based attestation path and no current direct critique satisfies vetting:
 
-## Judging the six meta-criteria
+```text
+scorecards:emit {
+  rubricRef: 'meta-acceptance-rubric',
+  subject: { kind:'rubric', ref:'<acceptance-rubric-slug>' },
+  vettingConsult: '<the consult conversation_id>',
+  ratings: { ... }   // one rating per meta-criterion, evidence-grounded
+}
+```
+
+The consult must exist and the subject must resolve to a rubric. The emitter stamps observation.vetting with the rubric identity it reads; both consult and rubric links are validated. The card path retains its grading-audit and currentness checks below. A current direct critique takes precedence and bypasses card ratings and audits.
+
+The no-score-floor rule applies to a legacy card: the gate records the vetting judgment without mechanically requiring a passing rating on every criterion. A weak rating can be honest and admissible. The self-grade exception also belongs only to this fallback: the author may attest their own rubric after external critique; the acceptance scorecard for the plan's work still requires a non-implementer.
+
+## Legacy meta-scorecard: judging the six meta-criteria
 
 * **Outcomes, not diff restatements** — a criterion that re-narrates the change ("the function was extracted") fails; one about observable behavior ("a contradicted pass-rating refuses the emit") passes.
 * **Traces to the plan goal or a Decision** — each criterion should cite the goal or a D-NNN. An untraceable criterion is scope invention.
@@ -41,7 +48,7 @@ Note the vetting self-grade is the ONE deliberate exception to "grader ≠ autho
 * **Non-overlapping** — two criteria that always fail together on the same observation are one criterion.
 * **Structured check preferred (D-006)** — wherever the outcome is objectively checkable, bind it: `check:{ kind:'tests', files }` (deterministic must-pass — paths must resolve at propose time or the propose is refused, and the files are actually RUN at grading time) or `check:{ kind:'instrument', instrumentKey }`. Rate prose-only criteria for checkable outcomes DOWN here — that pressure is this criterion's purpose: it pushes authors from prose to bindings over time.
 
-### Author the falsifier, not the confirming pattern
+### For legacy card criteria: author the falsifier, not the confirming pattern
 
 For every criterion phrased as a negative, name the enumeration that could exhibit a violation — never a search that can only find the compliant pattern. The method must also name what makes that enumeration complete. An empty or partial enumeration is `unknown`/no-verdict, not clean.
 
@@ -53,46 +60,32 @@ These inversions are deliberately cheap: enumerate possible violators, prove the
 
 ## Revision currency (D-010)
 
-The attestation pins the rubric plan row's `version` at emit time. ANY later `rubrics:propose` of the same rubricRef bumps the version and VOIDS the attestation — deliberately strict: a typo-only re-propose voids it too, because only re-reading the rubric can judge materiality. The intended loop: critique → improve (version bumps) → **re-emit citing the SAME consult** (emit's `vettingChanged` comparison escapes the unchanged-evidence dedupe, so the re-attestation is never declined as a duplicate). Degrade rules, matching the gate's never-throws contract: the current version unreadable (infra) ⇒ degrade OPEN, any linked vetting satisfies; a stamp lacking `rubricRevision` while the current IS known ⇒ NOT current (strict toward re-vetting).
+**Current direct critique:** the opening request must name the rubric and current criteriaHash. The reader prefers that content identity; an explicit current revision is the fallback only when the request does not name a conflicting hash. A critique for a changed criteriaHash is stale. A version-only re-propose can retain the critique when the hash is unchanged and named in the request.
+
+**Legacy meta-scorecard:** currentness is determined from rubricMeaningRevision when both recorded and live values exist; otherwise matching criteriaHash takes precedence, then rubric revision. A changed meaning revision or criteria hash is stale. A version bump alone does not void a card when a matching criteriaHash or meaningRevision establishes the same rubric meaning. Missing one-sided identity is unknown, not proof of currentness. Use the stored vetting identity and the live rubric identity together; do not compare revision numbers alone.
 
 ## Gate mechanics (D-009)
 
-* **Refusal**: `acceptance_rubric_unvetted` from the ship gate (`plans:set-plan-status → 'shipped'`/`'done'`), whose teaching error names the exact `scorecards:emit` call to run — and renders the consult step from the policy registry, so the refusal cannot instruct a bound the selector does not enforce.
-* **Prerequisite**: the meta-rubric must be REGISTERED — any status; `'proposed'` suffices (ratification governs CONTENT authority, never gate mechanics; demanding `'active'` would deadlock every plan ship on the owner's ratification wall). No meta-rubric registered in the workspace at all ⇒ the vetting check DISABLES (a gate demanding a flow the workspace cannot run is a deadlock, not a guard).
-* **Flags**: its own flag `ACCEPTANCE_RUBRIC_VETTING_GATE` (default ON), NOT waivable by `force`; it nests inside the `ACCEPTANCE_RUBRIC_COMPLETION_GATE` family — family OFF ⇒ no rubric demanded ⇒ nothing to vet.
-* **Exemptions**: empty-criteria (investigation-only) acceptance rubrics, and the meta-rubric itself. One level deep BY CONSTRUCTION: there is no meta-meta-rubric — the meta-rubric's content is owner-ratified instead.
+* **Refusal**: acceptance\_rubric\_unvetted from the ship gate. The current remedy asks for independent critique through consult:get\_feedback, naming the rubric and current criteriaHash or revision. A current critique is read directly; no attestation card or card audit is required.
+* **Prerequisite**: the meta-rubric must be registered in any status; proposed suffices. If none is registered, the vetting check disables rather than deadlocking every plan ship.
+* **Flags**: ACCEPTANCE\_RUBRIC\_VETTING\_GATE is default ON and is not waivable by force. It nests inside the ACCEPTANCE\_RUBRIC\_COMPLETION\_GATE family; family OFF means no rubric is demanded and nothing is vetted.
+* **Exemptions**: empty-criteria investigation rubrics and the meta-rubric itself. There is no meta-meta-rubric; owner ratification governs the meta-rubric's content.
 
-## Grading-time checks (D-011) — what the eventual grader inherits
+## Grading-time checks (D-011) — acceptance-scorecard rules
 
-The NON-implementer who later grades the acceptance rubric meets the structured checks the vetting pushed for. A `tests` check's files are RUN via the testing router at emit time — one batched run over the union of unique files across rated `tests`-check criteria, with per-file attribution, under one shared clamped budget; never judged from stale ledger rows. A pass-vocabulary rating (`pass`/`healthy`/`green`/`good`/`yes`/`exemplary`/`exceptional`) over a failing run REFUSES the emit naming the failing tests; an unresolvable path (`check_path_unresolved`), a route error, or an over-budget run refuses with a teaching error — never a silent pass. An honest fail-rating over a failing run is STAMPED (`observation.checkRuns`) and files normally. A bespoke scale word outside the pass map degrades to stamp-only — conservative, never wrongly refused. The unchanged-evidence dedupe fires BEFORE any run, so a declined re-emit never burns a suite.
+These rules apply when the non-implementer grades the acceptance rubric; they govern acceptance-scorecard emission, not the current direct-critique vetting step. A `tests` check's files are RUN via the testing router at emit time — one batched run over the union of unique files across rated `tests`-check criteria, with per-file attribution, under one shared clamped budget; never judged from stale ledger rows. A pass-vocabulary rating (`pass`/`healthy`/`green`/`good`/`yes`/`exemplary`/`exceptional`) over a failing run REFUSES the emit naming the failing tests; an unresolvable path (`check_path_unresolved`), a route error, or an over-budget run refuses with a teaching error — never a silent pass. An honest fail-rating over a failing run is STAMPED (`observation.checkRuns`) and files normally. A bespoke scale word outside the pass map degrades to stamp-only — conservative, never wrongly refused. The unchanged-evidence dedupe fires BEFORE any run, so a declined re-emit never burns a suite.
 
-## The vetting/grading separation is NOT a deadlock — the escape is a second INDEPENDENT critic
+## Current vetting and grader independence are separate
 
-The two refusals below look like a closed loop, and every agent who meets them reads them that way:
+The current direct-critique path requires an independent critic distinct from the rubric's creator and proposer; it does not require a second critic or a self-issued card. The later acceptance grader remains a separate non-implementer.
 
-* **Vet first, then grade** → `grader_is_sole_vetting_critic`. Vetting the rubric made you its only recorded critic, so rubric fitness and work compliance would be attested by the same party.
-* **Grade first, to escape that ordering** → `bar_snapshot_vetting_missing` / `bar_snapshot_vetting_stale`. With no current attestation, the readiness projection blocks instead.
+A compatibility guard, grader\_is\_sole\_vetting\_critic, still aggregates critics recorded on current meta-scorecard attestations. If that specific refusal fires, follow its remedy: obtain another genuinely independent critique through consult:get\_feedback and record it on the legacy scorecard path. This card-based remedy addresses the existing attestations the guard reads; do not emit a meta-scorecard merely to satisfy current direct vetting.
 
-Refused before, refused after — so the natural conclusion is that the rule is unsatisfiable and the only way out is to hand the whole plan to someone else. **It is not a deadlock, and the way out is not a different ORDER.** The guard is about *independence*, not sequence: it unions the recorded critics across BOTH vetting channels at the current rubric revision and refuses only when every one of them collapses to the same party as the grader. Add one critic who is not you and the same grader becomes eligible, in either order.
+The legacy guard is about independence, not order. When it applies, a second independent party lets the same grader become eligible; choosing a longer list of reviewers from one spawn/rebind lineage still represents one party. The refusal carries a structured remedy pointing back to this section.
 
-**The route out, concretely:**
+## Legacy meta-scorecard traps — rating, identity, check binding, and audit
 
-1. **Request a critic through the router — never recruit one yourself.** `consult:get_feedback { policy:'rubric-vetting', question:<a critique of the rubric at its CURRENT revision> }`. The router picks and screens the critic, and its answering session sits outside your spawn/rebind lineage. Do not pick a live session and message it, dispatch it, or assign it a work-item: that hand-recruiting route has no lineage screen and no fallback when the person you chose does not answer.
-2. **Have that critic vet the rubric at its CURRENT revision** and record the attestation with `scorecards:emit` against `meta-acceptance-rubric`.
-3. **Cite the consult as `vettingConsult`.** Each attestation cites exactly one of `vettingConsult` / `vettingWorkItem`, but the guard unions critics across EVERY current-revision attestation on either channel, so a second consult-backed attestation counts alongside the first. (`vettingWorkItem` remains valid for a critique that already happened on a work-item thread.)
-4. **Re-attempt the grading emit.** The guard now sees a recorded critic who is not you, and the refusal lifts.
-
-**Three things that look like the escape and are not:**
-
-* **A second critic in your own spawn/rebind lineage.** Critics are collapsed to the distinct PARTIES they represent (`collapseCriticsToSoleParty`), so a longer list of related identities still resolves to one party and the refusal stands unchanged.
-* **Grading first to get ahead of the attestation.** That only swaps which of the two refusals you receive. The pair reads as a deadlock precisely because both orderings are blocked; independence is the axis that actually moves.
-* **Re-vetting the rubric yourself at a newer revision.** That re-records the same sole party. Bumping the revision changes the counter, not the independence question.
-
-**You no longer have to find this here.** The refusal itself carries the same route as a structured `remedy` — `{ summary, steps[], doesNotWork[], docRef }` on the `grader_is_sole_vetting_critic` payload (`grader-eligibility.ts`), pointing back at this section. That matters because of WHEN the refusal arrives: it fires at the END of the ceremony, after the implementation, the audit and the rubric authoring are all paid for. A remedy discoverable only by reading `resolveAggregatedVettingCritics` in the source is a remedy discovered after the expensive work is done.
-
-## Four traps — two that make a correct vetting look broken, one that makes a bad binding look fine, one that fails the attestation's own audit
-
-All three were hit in a single vetting run (plan `on-demand-local-inference-lifecycle-2026-08-17`, 2026-08-19). None is a defect; each is a place where the honest reading of what you see is the wrong one.
+These scorecard-specific traps came from a vetting run (plan `on-demand-local-inference-lifecycle-2026-08-17`, 2026-08-19). They apply to legacy card emissions and scorecard checks, not to the current direct-critique path.
 
 ### 1. The rating VOCABULARY is per-rubric — the meta-rubric does not use the scale your acceptance rubric uses
 
@@ -100,18 +93,18 @@ All three were hit in a single vetting run (plan `on-demand-local-inference-life
 
 An off-scale value is refused at capture, by design ("an off-scale rating would be silently excluded from trends/staleness") — so the failure is loud, but it arrives only after you have composed every rating and its evidence, and the whole payload has to be resent. Read the target rubric's own `ratingScale` before you compose, not after you are refused: `rubrics:get { rubricRef }`, or `template_data->'ratingScale'`. Map deliberately — `healthy→pass`, `degraded→weak` — rather than assuming the words are interchangeable.
 
-### 2. Verifying the attestation at the ARGUMENT's name reads NULL on a perfectly good vetting
+### 2. A legacy attestation is stored under observation.vetting, not the ARGUMENT's name
 
 `scorecards:emit` takes `vettingConsult` as a flat string ARGUMENT and stores it as an OBJECT:
 
 ```
-payload->'observation'->'vetting'  =  { consultId, rubricRevision, critiquePosts?, critics?, unanswered? }
+payload->'observation'->'vetting'  =  a structured critique link plus rubric-identity and critique details
 payload->'observation'->>'vettingConsult'  =  NULL   -- always, even on a valid attestation
 ```
 
 Querying the argument name is the natural thing to do and returns `NULL`, which is indistinguishable from "the vetting never landed" — and invites a pointless re-consult of a consult that is already closed and already cited. Always read `observation.vetting`.
 
-While you are there, read `vetting.rubricRevision` and compare it to the rubric's CURRENT revision: that comparison is the D-010 currency check above, and it is the one field that tells you whether your attestation is still valid or was voided by a later `rubrics:propose`.
+Read the stored rubricRevision, criteriaHash, and rubricMeaningRevision together with the live rubric identity. Apply the D-010 order above; revision alone does not establish whether a legacy card is current.
 
 ### 3. A `tests` check is validated for PATH RESOLUTION, never for SUBJECT — a resolvable-but-irrelevant file passes and lies
 
@@ -124,7 +117,7 @@ Two corollaries worth applying at bind time:
 * **Bind the file that tests the criterion's CORE claim, not its cheapest neighbour.** Where a criterion insists on database-level enforcement, the integration test IS the criterion; the unit test over the JS validator is the thing that criterion explicitly calls insufficient. Check the file actually runs cheaply before worrying (`testing:runs { filePath }` gives the last duration — a real-PG integration test at \~1s is a fine binding; a Docker-gated one that cannot start would refuse the emit).
 * **When a check covers only PART of a criterion, say so in the criterion's `method`.** A green run must not be allowed to imply the uncovered clause passed. Declare the partition explicitly — "the check covers clause 1; clause 2 has no automated coverage and must be graded on its own evidence" — so the grader inherits the boundary instead of the impression.
 
-### 4. The attestation card is itself audited — write it so an auditor can RE-RUN it
+### 4. A legacy attestation card is audited — write it so an auditor can RE-RUN it
 
 Your `scorecards:emit` against `meta-acceptance-rubric` is a scorecard like any other: it receives an independent grading-integrity audit (the card's `gradingAudit` stamp, dispatched automatically), and vetting reads `vetted` only once that audit **passes**. A revision of the grading-integrity meta-rubric re-opens settled audits, so an attestation that passed under an old revision can fail on re-audit.
 
@@ -139,4 +132,4 @@ Measured 2026-10-02 on `acceptance-work-on-everything-rubric-evidence-hardening-
 
 ### Budget note for a multi-check rubric
 
-The unique-file batch runs under ONE shared clamped budget, with results attributed back to each criterion, so a rubric with several `tests` checks can exhaust it and refuse the emit on timeout. That refusal is load-dependent and INTERMITTENT: retrying is valid **for the timeout refusal only**, and never for `check_contradicted` or an unresolved path — those are verdicts, not noise.
+For scorecard emissions, the unique-file batch runs under ONE shared clamped budget, with results attributed back to each criterion, so a rubric with several `tests` checks can exhaust the emit on timeout. Direct critique itself does not run scorecard checks. That refusal is load-dependent and INTERMITTENT: retrying is valid **for the timeout refusal only**, and never for `check_contradicted` or an unresolved path — those are verdicts, not noise.

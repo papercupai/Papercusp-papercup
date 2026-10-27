@@ -87,7 +87,9 @@ describe('resolveTtsEngine', () => {
   // voice-final-public-release-2026-10-01#D-005: cloud TTS engines without a
   // working key are refused — explicitly requested OR saved as the default —
   // and never silently substituted with another engine.
-  it.each(['elevenlabs', 'openai', 'cartesia'] as const)(
+  // #D-006 (update 2026-10-06): local ElevenLabs TTS is keyed and back in scope;
+  // only HOSTED ElevenLabs stays refused (RELEASE_UNAVAILABLE_HOSTED_TTS_ENGINES).
+  it.each(['openai', 'cartesia'] as const)(
     "refuses release-unavailable '%s' whether requested or saved, without substituting",
     async (engine) => {
       const probe = vi.fn(healthy);
@@ -99,6 +101,19 @@ describe('resolveTtsEngine', () => {
       expect(probe).not.toHaveBeenCalled();
     },
   );
+
+  it("resolves local 'elevenlabs' (D-006) whether requested or saved, without probing kokoro", async () => {
+    const probe = vi.fn(healthy);
+    expect(await resolveTtsEngine('elevenlabs', { ttsEngine: 'kokoro' }, probe)).toEqual({
+      ok: true,
+      engine: 'elevenlabs',
+    });
+    expect(await resolveTtsEngine(undefined, { ttsEngine: 'elevenlabs' }, probe)).toEqual({
+      ok: true,
+      engine: 'elevenlabs',
+    });
+    expect(probe).not.toHaveBeenCalled();
+  });
 
   it("maps 'browser' to kokoro only when kokoro is healthy", async () => {
     const probe = vi.fn(healthy);

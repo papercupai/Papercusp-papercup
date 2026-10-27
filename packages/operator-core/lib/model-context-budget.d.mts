@@ -122,6 +122,31 @@ export function codexModelConfigToml(model: any): string[];
  * Full/native ids remain byte-identical.
  */
 export function normalizeCodexCliModel(model: any): string;
+/**
+ * The bare model id a Codex launch spec asks the gateway for: `gpt-6.1-sol:high`,
+ * `gpt-6.1-sol[1m]` and `gpt-6.1-sol` are one gateway model, and an alias (`sol`)
+ * resolves through {@link normalizeCodexCliModel} exactly as the launch does.
+ * Lowercased, because the gateway keys model refusals by the request body's model
+ * string. `null` for an empty spec.
+ *
+ * ONE definition for psu's walled-launch preflight and the consult router's
+ * capacity preflight (WI-6554700010030413): the router judged ranks model-blind and
+ * paid a headless launch per rank that psu then refused for its model.
+ *
+ * @param {string | null | undefined} model
+ * @returns {string | null}
+ */
+export function codexModelIdFromSpec(model: string | null | undefined): string | null;
+/**
+ * The gateway's measured serviceable-account count for ONE model, or `null` when the
+ * snapshot does not carry a reading for it (older gateway, or no live refusal for the
+ * model — in which case the provider-wide count already describes it).
+ *
+ * @param {unknown} byModel `stats.codexServiceableByModel`
+ * @param {string} modelId  a {@link codexModelIdFromSpec} result
+ * @returns {number | null}
+ */
+export function codexServiceableForModel(byModel: unknown, modelId: string): number | null;
 export function bareModelId(model: any): string;
 /**
  * LIST the Codex CLI's installed models, from the same `~/.codex/models_cache.json`

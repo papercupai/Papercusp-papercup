@@ -152,9 +152,18 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
     };
 }>;
 /** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string }} VerifierDependencyProgress */
-/** @typedef {(<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>) & {
+/** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean,
+ *   command: 'snapshot-locked' | 'snapshot-generation-locked' }} VerifierSnapshotSelection */
+/** @typedef {{ snapshotSelection?: VerifierSnapshotSelection }} VerifierPhaseMetadata */
+/** @typedef {(<T>(phase: string, operation: () => T | Promise<T>, metadata?: VerifierPhaseMetadata) => Promise<T>) & {
  *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
  * }} VerifierPhaseRunner */
+/** Keep the verifier's snapshot path selection explicit and independently checkable. */
+export function selectVerifierDependencySnapshot(copyMode: any, generationSnapshotSupported: any): {
+    copyMode: any;
+    generationSnapshotSupported: any;
+    command: string;
+};
 /** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
  * must leave the last started phase readable without claiming it completed.
  * Mirror exact records into the existing checkpoint-log store so temporary
@@ -2462,7 +2471,15 @@ export type VerifierDependencyProgress = {
     totalTrees: number;
     currentTree: string;
 };
-export type VerifierPhaseRunner = (<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>) & {
+export type VerifierSnapshotSelection = {
+    copyMode: "copy" | "hardlink";
+    generationSnapshotSupported: boolean;
+    command: "snapshot-locked" | "snapshot-generation-locked";
+};
+export type VerifierPhaseMetadata = {
+    snapshotSelection?: VerifierSnapshotSelection;
+};
+export type VerifierPhaseRunner = (<T>(phase: string, operation: () => T | Promise<T>, metadata?: VerifierPhaseMetadata) => Promise<T>) & {
     reportProgress?: (phase: "deps.census" | "deps.postverify", progress: VerifierDependencyProgress) => void;
 };
 /**

@@ -429,6 +429,18 @@ export default defineTool({
       if ([args, ...(args.items ?? [])].some(item => item.payload && Object.prototype.hasOwnProperty.call(item.payload, '_frozenTests'))) {
         ctx.addIssue({ code: 'custom', message: '_frozenTests is server-authored; register independent evidence with work_items:update frozenTests' });
       }
+      // WI-6554700010030345: an externalBlockers row parks the item and, for an event/gate
+      // wait, is released only by a fire that proves it. Its one writer is set_blocker, which
+      // runs wait-ref admission; a create payload would write the row with none of it.
+      if ([args, ...(args.items ?? [])].some(item => item.payload && Object.prototype.hasOwnProperty.call(item.payload, 'externalBlockers'))) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'payload.externalBlockers is written only by work_items:set_blocker, which refuses event/gate refs no fire ' +
+            'can prove and validates kind/capability/recheckAt. Create the item without it, then call ' +
+            'work_items:set_blocker { id, kind, ref, summary, nextVerb }.',
+        });
+      }
     })
     .superRefine(rejectMissingScheduleCadence),
   async handler(args, ctx) {

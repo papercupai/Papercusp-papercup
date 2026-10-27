@@ -806,6 +806,50 @@ describe('buildDepSubgraph — event waits (P-009)', () => {
     expect(g.nodes.filter((n) => n.kind === 'event')).toHaveLength(2);
   });
 
+  it('WI-6554700010030343: draws a durable park as an item-waits-on-event edge carrying who parked it and its re-check date, beside a blocker on the same key', () => {
+    const park = (itemId: string, eventKey: string, over: Partial<DepGraphWaitInput> = {}): DepGraphWaitInput => ({
+      itemId,
+      waitKind: 'item-park',
+      eventKey,
+      parkedBy: 'su-parker',
+      recheckAt: '2026-10-28T00:00:00.000Z',
+      certification: 'uncatalogued',
+      ...over,
+    });
+    const g = buildDepSubgraph({
+      items: [item('WI-1'), item('WI-2')],
+      edges: [],
+      waits: [
+        park('WI-1', 'waiting on the vendor reply'),
+        park('WI-2', 'release:deployed:abc123def', { recheckAt: null, certification: 'proving' }),
+        blockerWait('WI-2', 'release:deployed:abc123def'),
+      ],
+    });
+
+    const onWi1 = waitEdgesInto(g, 'WI-1');
+    expect(onWi1).toHaveLength(1);
+    expect(onWi1[0]).toMatchObject({
+      source: eventNodeId('waiting on the vendor reply'),
+      wait: {
+        kind: 'item-waits-on-event', subscriberId: null, blockerKind: null, certification: 'uncatalogued',
+        park: { by: 'su-parker', recheckAt: '2026-10-28T00:00:00.000Z' },
+      },
+    });
+    // A park and a blocker on the same key are two distinct waits on one event node; only the
+    // park edge carries park fields.
+    const onWi2 = waitEdgesInto(g, 'WI-2');
+    expect(onWi2).toHaveLength(2);
+    expect(new Set(onWi2.map((e) => e.id)).size).toBe(2);
+    expect(onWi2.filter((e) => e.wait?.park)).toEqual([
+      expect.objectContaining({ wait: expect.objectContaining({ park: { by: 'su-parker', recheckAt: null } }) }),
+    ]);
+    expect(onWi2.find((e) => !e.wait?.park)?.wait?.blockerKind).toBe('event');
+    expect(g.nodes.find((n) => n.id === eventNodeId('release:deployed:abc123def'))).toMatchObject({ event: { waitCount: 2 } });
+    // Session waits and blockers never carry a park field.
+    const plain = buildDepSubgraph({ items: [item('WI-1')], edges: [], waits: [sessionWait('WI-1', 'work-item:done:WI-9')] });
+    expect(waitEdgesInto(plain, 'WI-1')[0]!.wait).not.toHaveProperty('park');
+  });
+
   it('SPEC-P-009: keeps waits out of depth and integrity findings, hydrates an out-of-window item, and honours filters', () => {
     const g = buildDepSubgraph({
       items: [item('A'), item('B')],

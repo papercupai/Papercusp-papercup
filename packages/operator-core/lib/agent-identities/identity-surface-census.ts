@@ -52,8 +52,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { moduleRepoRoot } from '../module-repo-root';
 import ts from 'typescript';
 import { parse as parseYaml } from 'yaml';
 import { BASE_ROLE_LIBRARY_DISPOSITION, CLIENT_SEAM_MARKER, SU_PART_DOCUMENTS } from '@papercusp/orchestrator/blueprint';
@@ -105,7 +105,7 @@ const OMP_HOOKS_REL = 'apps/operator/scripts/hooks/omp';
 
 /** The superproject root this module lives in (`packages/operator-core/lib/agent-identities` → four levels up). */
 export function defaultCensusRoot(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  return moduleRepoRoot(import.meta.url);
 }
 
 const entryId = (cls: IdentitySurfaceClass, path: string, name?: string) => (name ? `${cls}:${path}#${name}` : `${cls}:${path}`);

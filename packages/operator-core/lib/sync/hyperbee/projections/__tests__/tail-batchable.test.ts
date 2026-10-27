@@ -190,21 +190,27 @@ describe('P-537: the frequent tail projections fold inside the merge batch', () 
     expect(statementsOf(log, 'plain')).toEqual([]);
     const order = log.filter((l) => l.startsWith('session: ') || /^batch: (INSERT|DELETE|SELECT)/.test(l));
     // Inside the batch the failed read aborted the transaction: the op rolls back to its
-    // savepoint before the upsert, or every later statement would fail with 25P02.
+    // savepoint before the upsert, or every later statement would fail with 25P02. After
+    // recovery the distinct-entity existence read (WI-6327) still runs on the batch handle.
     expect(order.map((l) => l.split(' ').slice(0, 2).join(' '))).toEqual([
       'batch: SELECT',
       'session: recover',
+      'batch: SELECT',
       'batch: INSERT',
       'batch: DELETE',
     ]);
+    expect(order[2]).toContain('SELECT harness_slug, created_ts');
   });
 
-  it('features-by-id: a local row reads nothing and needs no recovery', async () => {
+  it('features-by-id: a local row skips the author read and needs no recovery', async () => {
     const log: string[] = [];
     const batch = fakeSql('batch', log);
     const features = buildHarnessFeaturesProjection({ workspaceId: 'w', harnessSlug: SLUG, sql: fakeSql('plain', log) });
     await runInProjectionBatch(fakeSession(batch, log), () => features.writeToPg(feature, { origin: 'local', authorPubkey: '' }));
-    expect(statementsOf(log, 'batch').map((s) => s.split(' ')[1])).toEqual(['INSERT']);
+    // Only the distinct-entity existence read (WI-6327) precedes the upsert; no verified-author read.
+    const batchStatements = statementsOf(log, 'batch');
+    expect(batchStatements.map((s) => s.split(' ')[1])).toEqual(['SELECT', 'INSERT']);
+    expect(batchStatements[0]).toContain('SELECT harness_slug, created_ts');
     expect(log).not.toContain('session: recover');
   });
 

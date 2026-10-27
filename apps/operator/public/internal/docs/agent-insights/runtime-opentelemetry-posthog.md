@@ -1,0 +1,46 @@
+# Runtime OpenTelemetry and PostHog observations
+URL: /internal/docs/agent-insights/runtime-opentelemetry-posthog
+
+Runtime trace composition, consent boundary, bounded capture delivery and verification for supported tool/model journeys.
+
+The runtime integration extends the existing [PostHog telemetry path](/internal/docs/posthog). It adds standard OpenTelemetry context for supported tool dispatches, application child spans, outgoing Node HTTP/fetch calls and inference-gateway model observations. Existing invocation, workflow, testing and acceptance records remain the evidence authority.
+
+Implementation is under verification in the staging tree. This document does not attest shipment.
+
+## Composition and correlation
+
+Host bootstrap initializes the process provider before DBOS boot. `PROJECTED_DEPS.onDispatchStart` starts a tool span; `aroundInvoke` binds its context during the handler; `recordInvocation` ends it and adds `metadata_json.otel` with callId, traceId, spanId and traceFlags. This OTel identity is separate from the existing MCP request UUID. An inbound valid W3C traceparent supplies parentage. Baggage is neither accepted nor propagated.
+
+The maintained HTTP and Undici instrumentations create outgoing spans only when a tracked parent exists. Standard application tracers inherit stable invocation attributes. The gateway extracts traceparent at request start and ends its model span through the existing request-stage completion callback, including failure/cancellation outcomes. DBOS uses the already registered provider through its supported tracingEnabled configuration. This does not establish that every detached workflow, every CLI model request or every remote service participates in a common trace.
+
+The maintained successful model transport records `expectedModel` and bounded `expectedModelRequestIds` in the active tool context. The invocation writer persists each expected model request independently of exporter success and the final tool outcome. A model success followed by a tool error therefore requires both its generation and its exception observations. Multiple successful model calls each require their own matching request identity; one delivered sibling cannot satisfy another. Missing, malformed, duplicate or overflowing expected request identities leave the result unknown. An ordinary successful tool does not imply a model call.
+
+## Consent and data vocabulary
+
+Export uses the existing host/key/install-id resolver and requires production, a non-customer execution process, and telemetry opt-in or existing explicit internal-build authority. Hosted customer tool dispatches are excluded from this exporter; the separate customer diagnostics authority remains separate. Caller-provided consent, project and principal fields cannot grant or redirect export. The opt-in timestamp prevents queued observations from an earlier consent grant being sent after revocation and a later grant. Do not set internal-build authority as a verification shortcut.
+
+Only finite scalar allowlisted fields leave the process: stable runtime references, outcome/error code, model/provider identity and available token/timing counters. Raw span names, arbitrary attributes, exception messages/stacks, prompts, responses, tool arguments, request URLs and headers are excluded. Model output tokens are not currently supplied by the gateway timeline; missing observations are not represented as zero. Exporter network requests suppress tracing to avoid a capture feedback loop. Session replay remains disabled.
+
+## Delivery and health
+
+PostHog receives `$ai_trace`, `$ai_span`, `$ai_generation` and sanitized `$exception` observations. Stable per-span event UUIDs support ingestion deduplication. The batch processor uses at most 2048 outstanding observations and batches of at most 64; delivery has a 2s network timeout and the SDK a 3s export timeout. Active request state is capped at 1024; abandoned entries expire when the next request begins after 30 minutes.
+
+`dev:telemetry.observability` reports process-local health. `tracing.active` is the active request-map size; `skipped` counts duplicate IDs or active-cap rejection; `expired` counts reclaimed request entries; `queuedSpans` includes queued and in-flight export observations; `queueDroppedSpans` counts observations refused at that cap. `posthog.exportedSpans` counts spans accepted by the capture HTTP endpoint, not query-verified storage; `failedSpans` counts failed exporter deliveries; `consentDroppedSpans` counts excluded observations. These counters reset on process restart and do not constitute an audit ledger.
+
+## Operational evidence
+
+The registered checks are `observability:configured-project-delivery`, `observability:staging-runtime-journey` and `observability:release-artifact-delivery`. Use the acceptance rubric's bound checks and results ledger; fixture tests establish detector fitness and cannot establish operational delivery.
+
+The collector joins writer-owned invocation IDs, current process/build identity and exact configured-project trace events. Expectations survive their ingestion deadline and newer healthy samples cannot replace them. Missing required model or exception events fail at endedAt plus 120 seconds; pre-deadline absence and unavailable queries remain unknown. The oldest 256 expectations are measured; overflow remains unknown. Current consent epoch excludes earlier invocations.
+
+Project readback resolves the capture token against the authenticated project catalog, refuses foreign origins and incomplete results, runs a fresh absent-UUID control, and queries up to 16 exact trace IDs per request. It reads delivered events regardless of age: an independent recency window would hide healthy old delivery while the invocation population retains its expectations. The query requests 501 rows to detect overflow and accepts at most 500. Retain sanitized event UUIDs, event types, timestamps, call/trace/span identities and expected invocation deadlines as evidence. Never record query or capture credentials.
+
+Readback normalizes byte-equivalent observations with the same stable event UUID before joining tool, HTTP and model spans. It compares every acquired correlation, timing, event and outcome field first: conflicting copies fail, and distinct event identities cannot silently collapse into one expected model request. The collector retains the raw acquired observations as evidence. HTTP/model parentage must join the exact canonical tool and HTTP events with matching call and request identities.
+
+## Verification
+
+Run the repository test router for tracing.test.ts, posthog-exporter.test.ts, runtime.authority.test.ts, runtime.integration.test.ts, project-readback.test.ts and operational-check.test.ts under packages/operator-core/lib/observability. Actual SQL controls are in operational-check.postgres.integration.test.ts. The integration fixture invokes real dispatch hooks and configuration resolution against an isolated model/capture receiver. It verifies outgoing context, sanitized events, invocation metadata and revoked consent. These remain tree controls. The consent epoch regression also lives in endpoint-route/routes/desktop/setup-wizard-state.test.ts.
+
+Before live acceptance, select the maintained current-build route with `dev:pipeline_position` using `testClass: operator-api`; verify containing source blobs and the loaded process/build. The staging route shares the configured database, so use private test identities. Production eligibility must preserve existing consent and customer policy. Do not blindly change shared NODE\_ENV: bootstrap IPC defaults and mobile JWT requirements depend on it.
+
+Exercise a fresh success and error journey through the supported tool, HTTP and model path, then read their exact stored invocation and configured-project identities. Final shipment additionally joins accepted source fingerprints, immutable build-writer manifest, boot-measured bundle, exact green verdict and the loaded release artifact. Run the release check on that artifact and retain the project query readback. HTTP capture acceptance, local tests and an earlier green build cannot substitute for this evidence.

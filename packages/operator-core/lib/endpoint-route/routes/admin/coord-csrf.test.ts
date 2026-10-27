@@ -17,6 +17,10 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const sql = Object.assign(async () => [], {
     unsafe: async () => [],
+    // The kernel preflight reads session authority on a RESERVED connection
+    // (projected-tool-deps.ts controlAnchorSql). Without reserve() that read
+    // throws and the kernel fails closed: 403 policy-unavailable.
+    reserve: async () => Object.assign(async () => [], { release: () => {} }),
     // In-process tool dispatch queues telemetry for a debounced transaction.
     // Keep this mock complete enough for that background flush so it does not
     // emit a console warning into whichever later assertion happens to run.

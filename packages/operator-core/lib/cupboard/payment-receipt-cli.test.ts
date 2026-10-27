@@ -112,7 +112,10 @@ describe('verify-payment-receipt CLI', () => {
       }, (error, stdout, stderr) => {
         const code = error ? error.code : 0;
         if (typeof code !== 'number') return reject(error);
-        resolve({ code, stdout, stderr });
+        // pruneForHarness reports a busy GLOBAL disk-retention mutex (another fleet process is
+        // pruning) as a VH_RETENTION_DEFERRED stderr line by design (runner.test.ts pins it).
+        // That is host contention, not this CLI's output, so it is outside the stderr contract.
+        resolve({ code, stdout, stderr: stderr.replace(/^VH_RETENTION_DEFERRED .*\n/gm, '') });
       });
     });
     const evidence = async () => JSON.parse(await readFile(path.join(root, 'payment-receipt/latest/result.json'), 'utf8'));

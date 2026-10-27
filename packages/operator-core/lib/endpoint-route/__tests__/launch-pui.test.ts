@@ -83,6 +83,12 @@ vi.mock('../../task-manager/managed-spawn', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../task-manager/managed-spawn')>()),
   warmScopeProbe: () => {},
 }));
+// Same as launch-su.test.ts: keep GNOME profile preparation (gsettings/dconf
+// via the real execFile) out of this fake-process fixture, so a terminal-path
+// test never touches the host desktop or waits on native callbacks.
+vi.mock('../../gnome-terminal-profile.mjs', () => ({
+  prepareGnomeTerminal: vi.fn(async (terminal: { bin: string; args: string[] }) => terminal),
+}));
 
 const CTX: RouteContext = {
   principal: null,

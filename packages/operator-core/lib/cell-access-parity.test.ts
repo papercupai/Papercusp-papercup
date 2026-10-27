@@ -671,7 +671,13 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
     // workspace 19 → 20: `verification.health` (verification-system-improvements-2026-10-10
     // P-002, registered 2026-10-11) is workspace-visible: its resolver is whole-workspace by
     // construction, so every reader sees the same value.
-    ).toEqual({ workspace: 20, harness: 11 });
+    // workspace 20 → 21: `work.bugInflow` (bug-inflow-one-problem-one-row-2026-10-18 P-007,
+    // registered 2026-10-20, b98931d32e) is workspace-visible: its resolver SELECTs the
+    // workspace's stored bug_inflow_daily rows, one inflow figure per workspace.
+    // harness 11 → 12: `gate.greenCheckpoint.run` (registered 2026-10-26, 7c56cfd69f) uses
+    // OPERATOR_PIPELINE_VISIBILITY like its gate siblings — the run is a per-harness gate fact.
+    // LEG E's generated walk covers both new rows' oracle/get/list parity.
+    ).toEqual({ workspace: 21, harness: 12 });
     const attribution = BUILTIN_CELLS.find((spec) => spec.cell === 'memory.cgroupAttribution');
     expect(attribution, 'the added cell must remain in the real parity walk').toBeDefined();
     expect(attribution!.visibility).toEqual({ kind: 'workspace' });

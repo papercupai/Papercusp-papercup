@@ -61,8 +61,18 @@ const PAYLOAD_FLAG_KEYS = {
  * migration markers (`_ei`, `_assumptions`, `_claimHold`, `_legacyHumanParkMigration`)
  * are system-written bookkeeping, and enumerating them would rot the moment a new one
  * ships. A prefix cannot drift the way a hand-maintained list does.
+ *
+ * `externalBlockers` (WI-6554700010030345) is reserved for the same reason: its active
+ * rows exclude the item from every claim floor, and its event/gate rows are released only
+ * by a fire that proves them. work_items:set_blocker is its one writer: it runs wait-ref
+ * admission (refusing broad, change-notification, uncatalogued and already-fired refs),
+ * validates kind/capability/recheckAt, and clears with history. A bare merge did none of
+ * that, and being a SHALLOW merge it also replaced the whole array, erasing cleared rows.
+ * Measured 2026-10-22: a merge wrote an active `git-sync:committed` event wait, a broad
+ * wake that no fire can prove.
  */
 const PAYLOAD_MERGE_RESERVED_KEYS: ReadonlySet<string> = new Set([
+  'externalBlockers',
   'reporterRelease',
   'reporterAnswer',
   'reporterQuestion',
@@ -284,7 +294,7 @@ const FIELDS = {
     .record(z.string(), z.unknown())
     .optional()
     .describe(
-      'MERGE these keys into payload (shallow jsonb merge — sibling keys are preserved, never replaced). For durable per-item metadata a plan or rubric rules must live on the artifact. Admission/claim keys (plan_item, needs_2_machine_rig, needsOwnerAction, needsHuman, lane, claim_hold_*) and `_`-prefixed internal keys are REFUSED — use their dedicated args, which also apply the coverage edge and legacy-key unsets a bare merge would skip.',
+      'MERGE these keys into payload (shallow jsonb merge — sibling keys are preserved, never replaced). For durable per-item metadata a plan or rubric rules must live on the artifact. Admission/claim keys (plan_item, needs_2_machine_rig, needsOwnerAction, needsHuman, lane, claim_hold_*), externalBlockers (use work_items:set_blocker) and `_`-prefixed internal keys are REFUSED — use their dedicated args, which also apply the coverage edge and legacy-key unsets a bare merge would skip.',
     ),
 };
 
@@ -444,7 +454,13 @@ export default defineTool({
               `writing them without their side-effects (the plan-item coverage edge, the legacy-key ` +
               `unsets) produces a row that admits or holds on a stamp nothing else agrees with. Use ` +
               `the dedicated args instead: plan_item, needsTwoMachineRig, needsHuman. Keys prefixed ` +
-              `"_" are system-written bookkeeping and are never caller-writable.`,
+              `"_" are system-written bookkeeping and are never caller-writable.` +
+              (reserved.includes('externalBlockers')
+                ? ` externalBlockers is written only by work_items:set_blocker { id, kind, ref, summary, ` +
+                  `nextVerb } (clear with { id, ref, clear:true, evidence }): it refuses event/gate refs no ` +
+                  `fire can prove, validates kind/capability/recheckAt and keeps cleared rows as history. ` +
+                  `No fields were written.`
+                : ''),
           };
         }
         if (it.reporterQuestion !== undefined) {

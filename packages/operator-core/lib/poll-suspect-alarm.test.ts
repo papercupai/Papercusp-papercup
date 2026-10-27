@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('./severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
   broadcastSevereEventResolved: vi.fn(async () => true) }));
 vi.mock('./agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
+  readLatestConditionEnvelope: async () => null,
   computeConditionStates: () => [] }));
 import {
   pickNewAlerts,

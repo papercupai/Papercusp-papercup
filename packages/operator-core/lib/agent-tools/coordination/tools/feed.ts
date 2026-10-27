@@ -70,10 +70,14 @@ export default defineTool({
         args: { include_ambient: true },
         note: 'coord:feed does not accept inbox VIEW shaping controls; use coord:inbox { include_ambient: true } to include ambient system broadcasts.',
       },
+      // The remedy must use coord:inbox's DECLARED key: `includeAmbient` is folded into
+      // `include_ambient` before parse but is not in the schema, so a remedy advertising it
+      // fails registry conformance and the guidance adapter drops coord:feed's whole page
+      // (WI-6554700010030420; _guidance-adapter.live.test.ts toolGuidanceSkipped).
       includeAmbient: {
         tool: 'coord:inbox',
-        args: { includeAmbient: true },
-        note: 'coord:feed does not accept inbox VIEW shaping controls; use coord:inbox { includeAmbient: true } (compatibility alias) to include ambient system broadcasts.',
+        args: { include_ambient: true },
+        note: 'coord:feed does not accept inbox VIEW shaping controls; use coord:inbox { include_ambient: true } (snake_case) to include ambient system broadcasts.',
       },
       include_intents: {
         tool: 'coord:inbox',

@@ -93,7 +93,17 @@ import { setTaskManagerEnabledForTest } from '../task-manager/enabled';
 const capG = (g: number) => `--property=MemoryMax=${g}G`;
 const capBytes = (g: number) => `--property=MemoryMax=${g * 1024 ** 3}`;
 
-type FakeChild = EventEmitter & { pid: number; stdout: EventEmitter; stderr: EventEmitter; kill: () => void };
+type FakeStream = EventEmitter & { encoding: BufferEncoding | null; setEncoding: (e: BufferEncoding) => FakeStream };
+type FakeChild = EventEmitter & { pid: number; stdout: FakeStream; stderr: FakeStream; kill: () => void };
+/** A fake readable honouring setEncoding: the runner decodes at the stream boundary
+ *  (orchestrator-runner.ts runChild), so a decoded stream emits strings, as a real one does. */
+function fakeStream(): FakeStream {
+  const s = new EventEmitter() as FakeStream;
+  s.encoding = null;
+  s.setEncoding = (e) => { s.encoding = e; return s; };
+  return s;
+}
+const emitChunk = (s: FakeStream, text: string) => s.emit('data', s.encoding ? text : Buffer.from(text));
 let nextPid = 1000;
 
 /** fakeSpawn: emits `stdout`/`stderr` then closes with `code` on the next tick —
@@ -101,12 +111,12 @@ let nextPid = 1000;
 function fakeSpawn(opts: { stdout?: string; stderr?: string; code?: number } = {}): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.pid = nextPid++;
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
+  child.stdout = fakeStream();
+  child.stderr = fakeStream();
   child.kill = () => {};
   process.nextTick(() => {
-    if (opts.stdout) child.stdout.emit('data', Buffer.from(opts.stdout));
-    if (opts.stderr) child.stderr.emit('data', Buffer.from(opts.stderr));
+    if (opts.stdout) emitChunk(child.stdout, opts.stdout);
+    if (opts.stderr) emitChunk(child.stderr, opts.stderr);
     child.emit('close', opts.code ?? 0);
   });
   return child;
@@ -418,8 +428,8 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
       spawnMock.mockImplementationOnce(() => {
         const child = new EventEmitter() as FakeChild;
         child.pid = nextPid++;
-        child.stdout = new EventEmitter();
-        child.stderr = new EventEmitter();
+        child.stdout = fakeStream();
+        child.stderr = fakeStream();
         child.kill = () => {};
         // Close with empty streams + non-zero code, but AFTER the 5s exec-shaped
         // window — must not be mistaken for the fast launch-blip signature.

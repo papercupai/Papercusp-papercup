@@ -100,6 +100,7 @@ import {
 } from './spawner-sidecar-spawn';
 import { SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
+import type { CgroupFs } from '../task-manager/cgroup-read';
 import { setTaskManagerEnabledForTest } from '../task-manager/enabled';
 
 type FakeChild = EventEmitter & {
@@ -173,6 +174,14 @@ function legacyRawSpawnArgv(): [string, string[]] {
   return ['npx', ['tsx', '/repo/apps/operator/bin/spawner-sidecar.ts']];
 }
 
+/** A /proc that places this process in NO task scope. Without it the probe reads
+ *  the runner's REAL cgroup: under a managed runner (capability:bash, testing:run,
+ *  the green-checkpoint) that is a `pc-*.scope`, so the probe takes the
+ *  attest-existing-scope branch, spawns `systemctl` through the fake below and
+ *  waits for a `close` it never emits, until the 10s attest timeout. That
+ *  exceeds the hook timeout on every case. */
+const NO_TASK_SCOPE_FS: CgroupFs = { readFile: () => null, readDir: () => [], isDir: () => false };
+
 /** Seed the module-level scope probe without letting its own `systemd-run` spawn
  *  reach `spawnMock` — that leak shifts every `spawnMock.mock.calls[N]` index a
  *  test reads (WI-7377). */
@@ -182,10 +191,19 @@ async function seedScopeProbe(ok: boolean): Promise<void> {
     const c = makeChild();
     process.nextTick(() => c.emit('exit', ok ? 0 : 1));
     return c;
-  }) as never);
+  }) as never, NO_TASK_SCOPE_FS);
 }
 
 const SOCK = '/tmp/papercusp-test-spawner.sock';
+
+/** Timers the startup-timeout cases fake. `setImmediate` stays REAL: `flush()` and
+ *  the timeout's own poll-phase hand-off both depend on it. `Date` must be faked
+ *  alongside `setTimeout` because the deadline guard compares against `Date.now()`. */
+const STARTUP_TIMEOUT_FAKES: NonNullable<Parameters<typeof vi.useFakeTimers>[0]>['toFake'] = [
+  'setTimeout',
+  'clearTimeout',
+  'Date',
+];
 
 describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
   beforeEach(async () => {
@@ -223,7 +241,10 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
     // "unaccounted cgroup" the task-manager alarm reports. `systemd-run --scope` forks
     // the payload, so `child` here is the CLIENT and killing it proves nothing about
     // the payload.
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    // `Date` is faked too: the timeout callback re-checks `Date.now() < deadlineAt`
+    // before rejecting, so advancing only the fake setTimeout clock leaves real Date
+    // behind the deadline and the guard reschedules forever (a 60s test timeout).
+    vi.useFakeTimers({ toFake: STARTUP_TIMEOUT_FAKES });
     try {
       const child = makeChild();
       spawnMock.mockImplementationOnce(() => child);
@@ -272,7 +293,7 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
     // this ever passes at the same time as a broken positive case, the positive case
     // is asserting nothing.
     await seedScopeProbe(false);
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.useFakeTimers({ toFake: STARTUP_TIMEOUT_FAKES });
     try {
       const child = makeChild();
       spawnMock.mockImplementationOnce(() => child);

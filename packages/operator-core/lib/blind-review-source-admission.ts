@@ -1,13 +1,14 @@
 /** Host-only full-image census plus the maintained committed-source hold oracle. */
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { moduleRepoRoot } from './module-repo-root';
 import type { VerifierSourceReceipt } from '@papercusp/test-config/verifier-source';
 import { restrictedFrozenSourceRefusal } from './agent-tools/testing/restricted-hold-fence';
 import { runtimeSourceImageOrigin, type RuntimeSourceImage } from './blind-review-source-image';
 import type { RuntimeSourceAdmission } from './blind-review-runtime-custody';
 
-const helper = fileURLToPath(new URL('../../../scripts/lib/blind-review-sealed-source.py', import.meta.url));
+const helper = join(moduleRepoRoot(import.meta.url), 'scripts/lib/blind-review-sealed-source.py');
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const generations = new WeakMap<RuntimeSourceImage, Map<string, string>>();
 

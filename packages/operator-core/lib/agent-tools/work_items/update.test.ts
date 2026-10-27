@@ -813,6 +813,37 @@ describe('work_items:update — body/summary alias + strict (WI-4492)', () => {
       expect(updM).not.toHaveBeenCalled();
       expect(mergeM).not.toHaveBeenCalled();
     });
+
+    // WI-6554700010030345: externalBlockers bypassed wait-ref admission through this merge.
+    // The payload below is the shape actually written on 2026-10-22 — an active event wait
+    // on the broad `git-sync:committed` wake, which set_blocker's admission refuses.
+    it('reserves externalBlockers, including a clearing [] (it would also erase history)', () => {
+      expect(reservedPayloadKeys({ externalBlockers: [] })).toEqual(['externalBlockers']);
+      // Calibration: an ordinary key that merely contains the name stays writable.
+      expect(reservedPayloadKeys({ externalBlockersNote: 'x' })).toEqual([]);
+    });
+
+    it('REFUSES an externalBlockers merge before any write and names work_items:set_blocker', async () => {
+      const b = await body({
+        id: 'EI-1',
+        title: 'new title',
+        payload: {
+          externalBlockers: [
+            { ref: 'git-sync:committed', kind: 'event', status: 'active', summary: 'waiting for git-sync' },
+          ],
+        },
+      });
+      expect(b.results[0].ok).toBe(false);
+      expect(b.results[0].error).toMatch(/externalBlockers/);
+      expect(b.results[0].error).toMatch(/work_items:set_blocker/);
+      expect(updM).not.toHaveBeenCalled();
+      expect(mergeM).not.toHaveBeenCalled();
+    });
+
+    it('keeps the externalBlockers redirect off refusals of other reserved keys', async () => {
+      const b = await body({ id: 'EI-1', payload: { plan_item: { a: 1 } } });
+      expect(b.results[0].error).not.toMatch(/set_blocker/);
+    });
   });
 });
 

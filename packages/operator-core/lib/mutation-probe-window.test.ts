@@ -368,7 +368,8 @@ describe('bundle wait call sites do not pin --timeout-sec (WI-10006268)', () => 
 /** wait < esbuild < verify < the atomic swap, in bundle-host.sh's text. */
 function buildGateWiring(text: string): boolean {
   const wait = text.indexOf('mutation-probe-window-gate.mjs" wait');
-  const esbuild = text.indexOf('npx --yes esbuild@', wait);
+  // The compile goes through bundle-host-common.sh's cached `bundle_host_esbuild` (no inline `npx esbuild@`).
+  const esbuild = text.indexOf('host-compile bundle_host_esbuild', wait);
   const verify = text.indexOf('mutation-probe-window-gate.mjs" verify', esbuild);
   const swap = text.indexOf('mv -f "$TMPFILE" "$OUTFILE"', verify);
   return wait > -1 && esbuild > wait && verify > esbuild && swap > verify;
@@ -437,11 +438,18 @@ function unannotatedFailedEmissions(text: string): { count: number; unannotated:
   };
 }
 
-/** How many pre/post-run reads + stderr prints the router carries (both must be present). */
+/**
+ * How many pre/post-run reads + stderr prints the router carries (both must be present). Keyed on
+ * the CALL SHAPE, not the root identifier's name: the router passes its root as a parameter
+ * (`repoRoot`) since its refactor, and a name-pinned regex read that as "zero reads".
+ */
+const ROOT_ARG = String.raw`[A-Za-z_$][\w$]*`;
 function routerWindowWiring(text: string): { reads: number; prints: number } {
   return {
-    reads: text.match(/readMutationProbeWindow\(REPO_ROOT\)/g)?.length ?? 0,
-    prints: text.match(/console\.error\(formatMutationProbeWindow\(probeWindow(?:Before|After), REPO_ROOT\)\)/g)?.length ?? 0,
+    reads: text.match(new RegExp(String.raw`readMutationProbeWindow\(${ROOT_ARG}\)`, 'g'))?.length ?? 0,
+    prints:
+      text.match(new RegExp(String.raw`console\.error\(formatMutationProbeWindow\(probeWindow(?:Before|After), ${ROOT_ARG}\)\)`, 'g'))
+        ?.length ?? 0,
   };
 }
 
@@ -473,7 +481,7 @@ describe('every failing verdict path on the raw runners carries the annotation (
   });
 
   it('CONTROL: the router predicate catches a dropped pre-run or post-run read', () => {
-    const dropped = router.replace('const probeWindowAfter = readMutationProbeWindow(REPO_ROOT);', 'const probeWindowAfter = null;');
+    const dropped = router.replace(/const probeWindowAfter = readMutationProbeWindow\([^)]*\);/, 'const probeWindowAfter = null;');
     expect(dropped).not.toBe(router);
     expect(routerWindowWiring(dropped)).not.toEqual({ reads: 2, prints: 2 });
   });

@@ -69,6 +69,14 @@ vi.mock('../require-flag', () => ({ gateApiRoute: h.gateApiRoute }));
 vi.mock('../console-launcher', () => ({ buildConsoleEnvelope: h.buildConsoleEnvelope }));
 vi.mock('../console-spawn', () => ({ spawnHeadless: h.spawnHeadless }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
+// launchCleanupResolver derives the spawn's logDir from the workspace's papercusp root,
+// which reads the real on-disk workspace registry. Pin it so the launch path stays
+// hermetic and never resolves against this machine's ~/.papercusp.
+vi.mock('../papercusp-root', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../papercusp-root')>()),
+  papercuspPathForWorkspace: (workspaceId: string, ...parts: string[]) =>
+    ['/plan-cleanup-policy-test', workspaceId, ...parts].join('/'),
+}));
 vi.mock('../mcp-base-url', () => ({
   resolveSpawnHostOperatorBaseUrl: h.resolveSpawnHostOperatorBaseUrl,
 }));

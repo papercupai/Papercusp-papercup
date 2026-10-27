@@ -60,6 +60,14 @@ const HELPER_PATH =
 const BUILD_SCRIPT_PATH =
   process.env.PAPERCUSP_SIDECAR_BUILD_SCRIPT_PATH?.trim() ||
   join(ROOT, 'papercusp-desktop', 'bin', 'build-desktop-sidecar.sh');
+/**
+ * The per-package copy step (`copy_pkg_closure`, which owns the transformers branch) is
+ * shared with the disposable PRIMARY builder, so it lives in this sourced library rather
+ * than inline in the build script.
+ */
+const HOST_CLOSURE_PATH =
+  process.env.PAPERCUSP_HOST_RUNTIME_CLOSURE_PATH?.trim() ||
+  join(ROOT, 'papercusp-desktop', 'bin', 'lib', 'host-runtime-closure.sh');
 
 const MODELS = ['harrier-oss-v1-0.6b-ONNX', 'embeddinggemma-300m-ONNX'] as const;
 
@@ -565,7 +573,12 @@ describe('the sourcing step is wired into the sidecar build, and its model list 
   it('build-desktop-sidecar.sh sources the helper and calls the staging step', () => {
     const script = codeOnly(readFileSync(BUILD_SCRIPT_PATH, 'utf8'));
     expect(script).toContain('lib/transformers-models.sh');
-    expect(script).toContain('papercusp_stage_transformers_models');
+    // The staging call lives in the shared per-package copy step; the build script must
+    // still source that library and run it, or the call is never reached.
+    expect(script).toContain('lib/host-runtime-closure.sh');
+    expect(script).toContain('copy_host_runtime_require_closures');
+    const closure = codeOnly(readFileSync(HOST_CLOSURE_PATH, 'utf8'));
+    expect(closure).toContain('papercusp_stage_transformers_models');
   });
 
   it('the transformers branch is NOT gated on a .cache dir existing — that gate WAS the bug', () => {
@@ -573,7 +586,7 @@ describe('the sourcing step is wired into the sidecar build, and its model list 
     // there was no code path that could ever source the models: the relocation had nothing
     // to relocate and nothing else ran. Restoring that `&& -d "$_transformers_cache"`
     // reinstates the bug verbatim, so it is exactly what this pins.
-    const script = readFileSync(BUILD_SCRIPT_PATH, 'utf8');
+    const script = readFileSync(HOST_CLOSURE_PATH, 'utf8');
     expect(script).toContain('if [[ "$cur" == "@huggingface/transformers" ]]; then');
     expect(script).not.toContain('"$cur" == "@huggingface/transformers" && -d "$_transformers_cache"');
     // ...and the staging call really is inside that branch rather than orphaned elsewhere.

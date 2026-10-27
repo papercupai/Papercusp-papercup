@@ -32,6 +32,33 @@ const MAX_LIVE = 16;
 const RESOURCE_BYTES = 2 * 1024 * 1024;
 const OPERATION_BYTES = 16 * 1024 * 1024;
 const MAX_REQUESTS = 100;
+const SCREENSHOT_FRAME_WAIT_MS = 250;
+
+/**
+ * Chromium refuses `Page.captureScreenshot` until the page has produced a compositor frame
+ * ("Protocol error (Page.captureScreenshot): Unable to capture screenshot"). Right after a
+ * cold launch plus `domcontentloaded` that race is real (WI-6554700010030420: a scratch probe
+ * hit it 1/8 cold launches with no frame wait, 0/8 with one). Wait for one animation frame,
+ * raced against a short timer so a hidden or throttled page cannot hang, and retry exactly
+ * once on that specific refusal; every other error propagates unchanged.
+ */
+async function waitForFrame(page: Page): Promise<void> {
+  await page.evaluate((ms) => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+    setTimeout(resolve, ms);
+  }), SCREENSHOT_FRAME_WAIT_MS);
+}
+
+async function captureViewport(page: Page, remaining: () => number): Promise<Buffer> {
+  await waitForFrame(page);
+  try {
+    return await page.screenshot({ type: 'png', fullPage: false, timeout: remaining() });
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('Unable to capture screenshot')) throw error;
+    await waitForFrame(page);
+    return await page.screenshot({ type: 'png', fullPage: false, timeout: remaining() });
+  }
+}
 
 interface ActiveOperation {
   controller: AbortController;
@@ -339,7 +366,7 @@ export async function runBrowserSession(
       return { url: location.href, title: document.title.slice(0, 1000), text: text.slice(0, max), truncated: text.length > max,
         links: Array.from((element ?? document).querySelectorAll('a[href]')).slice(0, 50).map((link) => ({ text: (link.textContent ?? '').slice(0, 200), href: (link as HTMLAnchorElement).href.slice(0, 2000) })) };
     }, { selector: args.selector, max: Math.min(opts.maxText, 20_000) });
-    const image = args.screenshot ? await session.page.screenshot({ type: 'png', fullPage: false, timeout: remaining() }) : undefined;
+    const image = args.screenshot ? await captureViewport(session.page, remaining) : undefined;
     if (image && image.length > RESOURCE_BYTES) throw new Error('browser_screenshot_size_limit');
     if (active.controller.signal.aborted) throw new Error('browser_operation_aborted');
     return reply({ ok: true, browser: { ...status(session), busy: false }, observation,

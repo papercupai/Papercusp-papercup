@@ -807,6 +807,24 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(calls[2].argv[2]).toBe('lib/new.test.ts');
   });
 
+  it('materializes the pre-check tree object-sourced, never splicing the live working tree (WI-6554700010030437)', async () => {
+    // Measured 2026-10-27 (pre-check ee001775): without this flag an unreadable pinned
+    // submodule commit was rsync'd from the integration tree's working directory, so the
+    // pre-check judged a tree that matched no commit and reported 42 files `unmeasured`.
+    const setupArgvs: Array<readonly string[]> = [];
+    const exec = vi.fn(async (argv: readonly string[]) => {
+      if (argv[1] === '/repo/scripts/npm-install-safe.mjs') setupArgvs.push(argv);
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult;
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    await runner({ commit: C, files: ['lib/red.test.ts'] });
+    expect(setupArgvs).toHaveLength(1);
+    const argv = setupArgvs[0];
+    const at = argv.indexOf('--source-integrity');
+    expect(at).toBeGreaterThan(argv.indexOf('/repo/apps/operator/bin/release/setup-release-checkout.sh'));
+    expect(argv[at + 1]).toBe('object-sourced');
+  });
+
   it('materializes the pre-check node_modules by hardlink from the immutable generation (WI-10004928)', async () => {
     const setupEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
     const testEnvs: Array<NodeJS.ProcessEnv | undefined> = [];

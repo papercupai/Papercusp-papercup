@@ -41,7 +41,11 @@ describe('prReviewerSettings.byHarness named query (WI-4138)', () => {
   });
 
   it('bridges its 3 contributing tables (pr_reviewer_settings / trusted_authors / auto_review_audit)', () => {
-    expect(TABLE_TO_QUERY_NAMES['harness_shared.pr_reviewer_settings']).toEqual(['prReviewerSettings.byHarness']);
+    // harnessPrs.detail (the PR viewer) also reads pr_reviewer_settings, so a settings write busts it too.
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.pr_reviewer_settings']).toEqual([
+      'prReviewerSettings.byHarness',
+      'harnessPrs.detail',
+    ]);
     expect(TABLE_TO_QUERY_NAMES['harness_shared.trusted_authors']).toEqual(['prReviewerSettings.byHarness']);
     expect(TABLE_TO_QUERY_NAMES['harness_shared.auto_review_audit']).toEqual(
       expect.arrayContaining(['contributors.byHarness', 'prReviewerSettings.byHarness']),
@@ -51,6 +55,7 @@ describe('prReviewerSettings.byHarness named query (WI-4138)', () => {
     // the bridge emits the bare name regardless of the trigger's row id.
     expect(queryNamesForTriggerEvent('harness_shared.pr_reviewer_settings.changed', { id: '7' })).toEqual([
       'prReviewerSettings.byHarness',
+      'harnessPrs.detail',
     ]);
     expect(queryNamesForTriggerEvent('harness_shared.trusted_authors.changed', { id: '9' })).toEqual([
       'prReviewerSettings.byHarness',

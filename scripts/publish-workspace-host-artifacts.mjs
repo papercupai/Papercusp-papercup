@@ -35,6 +35,7 @@ import { createHash } from 'node:crypto';
 import { open, stat, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { writeStderrSync } from './lib/write-stdout-sync.mjs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
@@ -1225,9 +1226,8 @@ async function main() {
 
 if (isCliEntry(import.meta.url)) {
   main().catch((error) => {
-    console.error('');
-    console.error(`PUBLISH_VERDICT=FAIL`);
-    console.error(JSON.stringify(serializeError(error)));
+    // Synchronous: process.exit() would truncate buffered console output to a pipe.
+    writeStderrSync(`\nPUBLISH_VERDICT=FAIL\n${JSON.stringify(serializeError(error))}\n`);
     process.exit(1);
   });
 }

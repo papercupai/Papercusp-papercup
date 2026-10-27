@@ -44,7 +44,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../../module-repo-root';
 import { isCliEntry } from '../../util/cli-entry';
 import { createHash } from 'node:crypto';
 
@@ -463,7 +463,7 @@ export async function runBm25HybridRecall(): Promise<number> {
   if ([out, out.replace(/\.json$/, '.md'), `${out}.inputs.json`, `${out}.sampling.json`, `${out}.candidates.json`, `${out}.declaration.json`, `${out}.attempts.jsonl`, `${out}.ledger.json`].some(p => fs.existsSync(p)))
     throw new Error('artifact path already exists; preserve every prior result and choose a new declared path');
 
-  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const sourceRoot = moduleRepoRoot(import.meta.url);
   const manifestPath = argValue('--qualification-manifest');
   const manifestBytes = manifestPath ? fs.readFileSync(manifestPath) : undefined;
   const manifest = manifestBytes ? sourceQualificationManifestSchema.parse(JSON.parse(manifestBytes.toString('utf8'))) : undefined;

@@ -61,6 +61,10 @@ describe('native CLI fixture runtime and deadline guards', () => {
   it.each([
     'AssertionError [ERR_ASSERTION]: installed dispatcher returned empty context',
     'AssertionError [ERR_ASSERTION]',
+    // bundle-host.sh's shell failures (WI-6554700010030421: the gate ledger kept only argv for these)
+    'BUNDLE_RESTRICTED_HOLD_REFUSED error=restricted_hold_skip_undeclared published=last-known-good the census was skipped',
+    '🚨 ERROR: the restricted-hold gate refused this build and there is NO last-known-good /tmp/x/handler.mjs.',
+    '✘ [ERROR] Could not resolve "./missing-module"',
   ])('retains the primary error %s between noisy startup and cleanup output', async errorLine => {
     const script = `
       process.stdout.write('startup '.repeat(2000) + '\\n');
@@ -78,6 +82,21 @@ describe('native CLI fixture runtime and deadline guards', () => {
     expect(result.output).toContain(errorLine);
     expect(result.output).toContain('at fixtureAssertion (fixture.ts:42:3)');
     expect(result.output.length).toBeLessThan(50_000);
+  });
+
+  it('skips echoed guard source and retains the real bundle refusal as the primary failure', async () => {
+    // bundle-host.sh prints its esbuild version guard's source (an `echo "ERROR: ..."` line) early;
+    // only the first failure-shaped line is kept, so that echo must not take the slot.
+    const lines = [
+      '      echo "ERROR: host bundle requires esbuild 0.25.0; resolved $version" >&2',
+      'BUNDLE_RESTRICTED_HOLD_REFUSED error=restricted_hold_skip_undeclared published=last-known-good why',
+      '🚨 ERROR: the restricted-hold gate refused this build and there is NO last-known-good /tmp/x.mjs.',
+    ];
+    const script = `process.stdout.write(${JSON.stringify(lines.join('\n') + '\n')}); process.exitCode = 1;`;
+    const result = await nativeFixtureProcess(process.execPath, ['-e', script], { cwd: process.cwd(), timeoutMs: 10_000 });
+    expect(result.code).toBe(1);
+    expect(result.failureOutput.split('\n')[0]).toBe(lines[1]);
+    expect(result.failureOutput).toContain(lines[2]);
   });
 
   it('keeps built artifacts outside the scoped TypeScript fixture loader', async () => {

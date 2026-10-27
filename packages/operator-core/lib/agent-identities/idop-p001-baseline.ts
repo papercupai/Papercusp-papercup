@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { parse as parseYaml } from 'yaml';
 import { replayAgentSpecification, specificationPrompt } from '@papercusp/orchestrator/blueprint';
 
@@ -202,7 +203,7 @@ export const RUNTIME_OBSERVATIONS: Observation[] = [
 ];
 
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const root = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
+const root = moduleRepoRoot(import.meta.url);
 
 function builtInIdentities() {
   const dir = join(root, 'libs/papercusp/packages/harness/blueprints');

@@ -346,9 +346,9 @@ describe('resolveDependencyGraphWaits — event waits on items', () => {
   async function heldItem(
     id: string,
     holder: string | null,
-    opts: { status?: string; harness?: string; blockers?: unknown[] } = {},
+    opts: { status?: string; harness?: string; blockers?: unknown[]; payload?: Record<string, unknown> } = {},
   ): Promise<void> {
-    const payload = opts.blockers ? { externalBlockers: opts.blockers } : {};
+    const payload = { ...(opts.payload ?? {}), ...(opts.blockers ? { externalBlockers: opts.blockers } : {}) };
     await db.sql`
       INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by, created_ts, updated_ts, payload)
@@ -464,6 +464,51 @@ describe('resolveDependencyGraphWaits — event waits on items', () => {
     expect(got.find((w) => w.blockerKind === 'event')).toMatchObject({ announced: false, since: '2026-10-21T00:00:00.000Z' });
   });
 
+  it('WI-6554700010030343: returns a durable park\'s release trigger as an item-park wait, but not a lease, a stale contract, a blank trigger, or a terminal item', async () => {
+    const parked = (trigger: unknown, over: Record<string, unknown> = {}) => ({
+      _claimHold: true,
+      claim_hold_by: 'su-parker',
+      claim_hold_reason: 'blocked',
+      claim_hold_at: '2026-10-25T08:14:09.576Z',
+      claim_hold_release: { condition: 'the condition', owner: 'su-parker', trigger, ...over },
+    });
+    await heldItem('WI-P1', null, { payload: parked('work-item:done:WI-5', { recheckAt: '2026-10-28T00:00:00.000Z' }) });
+    await heldItem('WI-P2', 'su-holder', { payload: parked('waiting on the vendor reply') });
+    // A park beside an active blocker on the same key: both waits are returned.
+    await heldItem('WI-P3', null, { payload: parked('release:deployed:abc123def'), blockers: [blocker('event', 'release:deployed:abc123def')] });
+    await heldItem('WI-LEASE', 'su-holder', { payload: { _claimHold: true, held_open_by: 'su-holder', held_open_at: '2026-10-25T08:14:09.576Z' } });
+    await heldItem('WI-UNPARKED', null, { payload: { claim_hold_release: { trigger: 'work-item:done:WI-8' } } });
+    await heldItem('WI-BLANK', null, { payload: parked('   ') });
+    await heldItem('WI-NOTSTRING', null, { payload: parked({ key: 'work-item:done:WI-8' }) });
+    await heldItem('WI-PDONE', null, { status: 'done', payload: parked('work-item:done:WI-9') });
+    await heldItem('WI-POTHER', null, { harness: 'some-other-harness', payload: parked('work-item:done:WI-9') });
+
+    const got = await waits();
+    const parks = got.filter((w) => w.waitKind === 'item-park');
+    expect(parks.map((w) => [w.itemId, w.eventKey]).sort()).toEqual([
+      ['WI-P1', 'work-item:done:WI-5'],
+      ['WI-P2', 'waiting on the vendor reply'],
+      ['WI-P3', 'release:deployed:abc123def'],
+    ]);
+    expect(parks.find((w) => w.itemId === 'WI-P1')).toMatchObject({
+      parkedBy: 'su-parker',
+      since: '2026-10-25T08:14:09.576Z',
+      recheckAt: '2026-10-28T00:00:00.000Z',
+      certification: 'proving',
+      holderId: null,
+      subscriberId: null,
+      blockerKind: null,
+      awaitId: null,
+      bound: false,
+      stale: false,
+      legTruncated: false,
+    });
+    // The certification is the shared predicate's answer for the trigger, as on every leg.
+    expect(parks.find((w) => w.itemId === 'WI-P2')).toMatchObject({ certification: 'uncatalogued', recheckAt: null, holderId: 'su-holder' });
+    expect(got.filter((w) => w.itemId === 'WI-P3').map((w) => w.waitKind).sort()).toEqual(['item-blocker', 'item-park']);
+    expect(got.filter((w) => w.waitKind !== 'item-park').every((w) => w.parkedBy === null && w.recheckAt === null)).toBe(true);
+  });
+
   it('AUTO-BAR-R-17-P-009: labels each wait proving exactly when fireCertifiesCondition holds for its key, and names why otherwise', async () => {
     await heldItem('WI-1', 'su-holder', {
       blockers: [
@@ -506,9 +551,12 @@ describe('resolveDependencyGraphWaits — event waits on items', () => {
         WHERE taken_by IS NOT NULL;
       CREATE INDEX IF NOT EXISTS work_items_external_blockers_gin_idx ON harness_shared.work_items
         USING gin ((payload -> 'externalBlockers') jsonb_path_ops) WHERE (payload -> 'externalBlockers') IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS work_items_claim_hold_release_trigger_idx ON harness_shared.work_items
+        (((payload -> 'claim_hold_release') ->> 'trigger')) WHERE payload ? 'claim_hold_release';
     `).simple();
     // Volume: 3,000 held items across 300 holders, each holder with 5 unbound awaits; 600 items
-    // with an active event blocker; 300 bound awaits.
+    // with an active event blocker; 2,001 durably parked items (one over the park cap); 300
+    // bound awaits.
     await db.sql`
       INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by, created_ts, updated_ts, payload)
@@ -517,6 +565,9 @@ describe('resolveDependencyGraphWaits — event waits on items', () => {
                THEN jsonb_build_object('externalBlockers', jsonb_build_array(jsonb_build_object(
                  'kind', 'event', 'ref', 'work-item:done:X-' || g, 'status', 'active', 'summary', 's',
                  'createdAt', '2026-10-21T00:00:00.000Z', 'createdBy', 'su', 'updatedAt', '2026-10-21T00:00:00.000Z')))
+               WHEN g <= 2601
+               THEN jsonb_build_object('_claimHold', true, 'claim_hold_by', 'su', 'claim_hold_at', '2026-10-21T00:00:00.000Z',
+                 'claim_hold_release', jsonb_build_object('condition', 'c', 'trigger', 'work-item:done:Z-' || g))
                ELSE '{}'::jsonb END
         FROM generate_series(1, 3000) AS g`;
     await db.sql`
@@ -553,6 +604,11 @@ describe('resolveDependencyGraphWaits — event waits on items', () => {
     expect(livenessBatches).toBe(1);
     expect(got.filter((w) => w.waitKind === 'item-blocker')).toHaveLength(600);
     expect(got.filter((w) => w.bound)).toHaveLength(300);
+    // The park branch shares the blocker leg's statement, is capped on its own, and says so.
+    const parkRows = got.filter((w) => w.waitKind === 'item-park');
+    expect(parkRows).toHaveLength(DEP_WAITS_LIMITS.park);
+    expect(parkRows.every((w) => w.legTruncated)).toBe(true);
+    expect(got.filter((w) => w.waitKind === 'item-blocker').every((w) => !w.legTruncated)).toBe(true);
     // The holder leg is capped per holder AND overall, and says so when it truncates.
     const holderRows = got.filter((w) => w.waitKind === 'session-await' && !w.bound);
     const perItem = new Map<string, number>();

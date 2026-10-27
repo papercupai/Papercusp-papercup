@@ -21,13 +21,16 @@ import { readTaskEngineeringEvidence, type TaskEngineeringEvidence } from './tas
 import type { EngineeringQuery, readEngineeringEvidence } from './engineering-evidence';
 import { withBoundedTimeout } from '../bounded-timeout';
 import type { CoverageScopeData } from './test-coverage-map';
+import { canCall, readRecipientToolset, type RecipientToolset } from './push-toolset';
 
 export const TASK_BRIEF_BUDGET_MS = 6_000;
 export const TASK_BRIEF_MAX_CHARS = 3_000;
 const MAX_FILES = 12;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type Ref = { workItem?: ClaimTimeEnrichmentSubject | null; harness?: string | null; workspaceId?: string | null;
-  intent?: string; paths?: readonly string[]; reuse?: ClaimBriefReuseIdentity; maxChars?: number };
+  intent?: string; paths?: readonly string[]; reuse?: ClaimBriefReuseIdentity; maxChars?: number;
+  /** The recipient session; its listed tools decide which recovery calls the brief may name. */
+  owner?: string };
 export interface ClaimBriefReuseIdentity {
   owner: string;
   invocation: string;
@@ -59,7 +62,8 @@ export interface TaskIncidentBrief {
   recentChangesStatus: 'measured' | 'unknown';
   workRecord: string;
   runtimeExecution: 'unmeasured';
-  recover: { tool: 'testing:runs'; args: { testRunIds: number[]; harness: string } }
+  /** Withheld when the recipient was not listed the tool; the run ids stay inline. */
+  recover?: { tool: 'testing:runs'; args: { testRunIds: number[]; harness: string } }
     | { tool: 'work_items:get'; args: { id: string; harness: string } };
   limitations: string[];
 }
@@ -69,7 +73,7 @@ export interface TaskBrief {
   scope: { harness: string | null; paths: string[] };
   repository?: { workspaceId: string; rootPath: string };
   decisions?: { status: 'measured' | 'unknown'; refs: { plan: string; id: string }[];
-    recover: { tool: 'plans:get'; args: { slug: string; harness: string; heading: 'Decisions' } } };
+    recover?: { tool: 'plans:get'; args: { slug: string; harness: string; heading: 'Decisions' } } };
   sourceFingerprint: string | null;
   commit: string | null;
   files: { path: string; sha256: string; kind: 'implementation' | 'test' | 'doc' }[];
@@ -78,7 +82,9 @@ export interface TaskBrief {
   incident?: TaskIncidentBrief;
   engineering?: TaskEngineeringEvidence;
   exclusions: string[];
-  recover: { tool: 'code:pack'; args: { op: 'pack'; include: string[]; rootPath: string } }
+  /** P-006 (SPEC-P-006-B): every recovery call in a delivered brief is withheld unless the
+   * recipient session was listed its tool (see gateTaskBriefRecover). */
+  recover?: { tool: 'code:pack'; args: { op: 'pack'; include: string[]; rootPath: string } }
     | { tool: 'work_items:get'; args: { id: string; harness?: string } }
     | { tool: 'coord:declare-intent'; args: { intent: string; current_files: string[]; harness?: string } };
 }
@@ -98,8 +104,11 @@ export interface TaskBriefDeps {
     /** P-008: the shared prior-work reader behind the claim brief's provenance section. */
     priorWork?: PriorWorkReader;
   };
+  /** P-006: the recipient's last listed toolset. Absent means the durable listing reader. */
+  toolset?: (input: { workspace: string; owner: string }) => Promise<RecipientToolset>;
 }
 const defaults: TaskBriefDeps = {
+  toolset: readRecipientToolset,
   engineering: async (query, scope) => (await import('./engineering-evidence')).readEngineeringEvidence(query, scope),
   hasClaim: async (workspaceId, owner) => {
     const { getOrgPg } = await import('@papercusp/db-org');
@@ -176,6 +185,32 @@ export function taskIncidentBrief(input: {
       : { tool: 'work_items:get', args: { id: input.workItemId, harness: input.harness } },
     limitations: ['Selected task files and their latest normal test runs only; graph paths and recent edits are candidate causes.',
       'Failure-log hashes identify recorded errors; no distinguishing causal test or runtime execution was measured.'] };
+}
+
+/** The toolset read starts beside the brief build, so this bound adds latency only when
+ * the build finishes first. A slow or failed read is unknown, and unknown names no tool. */
+const TOOLSET_READ_MS = 400;
+function readBriefToolset(read: TaskBriefDeps['toolset'], workspace: string, owner: string | undefined): Promise<RecipientToolset> {
+  if (!owner?.trim()) return Promise.resolve({ status: 'unknown', reason: 'no-owner' });
+  const failed: RecipientToolset = { status: 'unknown', reason: 'read-failed' };
+  return withBoundedTimeout(() => (read ?? readRecipientToolset)({ workspace, owner }), {
+    // The fallback is an expected outcome (no listing yet, a slow read): it withholds calls, it is not an error.
+    timeoutMs: TOOLSET_READ_MS, fallback: failed, label: 'task-brief:recipient-toolset', warn: false,
+  }).then(result => result.value, () => failed);
+}
+
+/** P-006 (SPEC-P-006-B): a delivered brief names a recovery call only when the recipient
+ * session was listed its tool. The evidence itself stays inline; only the follow-up call is
+ * dropped. Mutates and returns `brief`. */
+type RecoveryCall = { recover?: { tool: string } };
+export function gateTaskBriefRecover<B extends RecoveryCall & { decisions?: RecoveryCall; incident?: RecoveryCall;
+  engineering?: RecoveryCall }>(brief: B, toolset: RecipientToolset): B {
+  const callable = (call: { tool: string } | undefined) => Boolean(call && canCall(toolset, call.tool));
+  if (!callable(brief.recover)) delete brief.recover;
+  if (brief.decisions && !callable(brief.decisions.recover)) delete brief.decisions.recover;
+  if (brief.incident && !callable(brief.incident.recover)) delete brief.incident.recover;
+  if (brief.engineering && !callable(brief.engineering.recover)) delete brief.engineering.recover;
+  return brief;
 }
 
 /** Fit optional evidence to its caller's budget without changing measured scope. */
@@ -450,6 +485,7 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
   };
   const phaseTimings = () => [...spent, [current, Date.now() - enteredAt] as [TaskBriefPhase, number]]
     .map(([name, ms]) => `${name} ${ms}ms`).join(', ');
+  const toolset = readBriefToolset(deps.toolset, ref.workspaceId ?? activeWorkspaceId(), ref.reuse?.owner ?? ref.owner);
   try {
     const deadline = started + TASK_BRIEF_BUDGET_MS;
     const base = await Promise.race([buildTaskBrief(ref, deps, phase, deadline), new Promise<TaskBrief>(resolve => {
@@ -473,6 +509,9 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
       ]); } finally { clearTimeout(rootTimer); }
     }
     if (root && harness) base.engineering = await taskEngineering(ref, root, base.scope.paths, deps, deadline);
+    // Gate before reuse enrichment so its ledger row and invocation outcome carry the call
+    // the recipient actually received (a withheld call is a null suggested_call).
+    gateTaskBriefRecover(base, await toolset);
     // Optional reuse must fit around the complete mandatory response. Adding
     // engineering or compacting afterwards could replace base evidence and
     // remove hints after their issuance was recorded.
@@ -573,6 +612,7 @@ export interface CompletionBriefDeps {
   coverage?: (context: Readonly<ReuseProviderContext>, signal: AbortSignal) => Promise<CoverageScopeData | null>;
   reuse?: TaskBriefDeps['reuse'];
   engineering?: TaskBriefDeps['engineering'];
+  toolset?: TaskBriefDeps['toolset'];
 }
 
 /** Added lines from a complete native diff only. Context/deletions and truncated
@@ -599,10 +639,12 @@ function completionChangedLines(patch: string): number[] | null {
 /** P-039: reuse the pre-review report at the completion receipt, without
  * treating a declared test command or a static edge as execution evidence. */
 export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[];
-  reuse?: ClaimBriefReuseIdentity; workItem?: string; subject?: ClaimTimeEnrichmentSubject; maxChars?: number },
+  reuse?: ClaimBriefReuseIdentity; workItem?: string; subject?: ClaimTimeEnrichmentSubject; maxChars?: number;
+  owner?: string },
   deps: Partial<CompletionBriefDeps> = {}) {
   const rootResolver = deps.root ?? defaults.root;
   const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
+  const toolset = readBriefToolset(deps.toolset, ref.workspaceId, ref.reuse?.owner ?? ref.owner);
   const graphSource = deps.graph ?? ((request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
     op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
     direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs }));
@@ -756,6 +798,8 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
       const result = await composeReuseBrief({ base: finish(brief), context, deadline: deadline - 150, providers,
         append: (base, contribution) => ({ ...base, limitations: [...base.limitations, contribution.text] }) });
       Object.assign(brief, result.brief);
+      // The ledger row and invocation outcome carry the call the recipient will receive.
+      const recover = canCall(await toolset, brief.recover.tool) ? brief.recover : undefined;
       let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';
       if (result.observations.some(row => row.status === 'issued' || row.status === 'held-out')) {
         ledger = 'unknown';
@@ -763,23 +807,25 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
         const timeout = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
         try {
           const recorded = await Promise.race([(deps.reuse?.recordIssued ?? recordReuseBriefIssued)(
-            { context, observations: result.observations, recover: brief.recover }, controller.signal),
+            { context, observations: result.observations, recover }, controller.signal),
           new Promise<false>(resolve => controller.signal.addEventListener('abort', () => resolve(false), { once: true }))]);
           if (recorded) ledger = 'recorded';
         } catch { /* Failure is observed below and cannot erase mandatory completion evidence. */ }
         finally { clearTimeout(timeout); controller.abort(); }
       }
-      ref.reuse.observe?.({ context, observations: result.observations, recover: brief.recover, ledger });
+      ref.reuse.observe?.({ context, observations: result.observations, recover, ledger });
     }
     return brief;
   };
+  let result: ReturnType<typeof finish>;
   try {
-    return finish(await Promise.race([work(), new Promise<typeof brief>(resolve => {
+    result = finish(await Promise.race([work(), new Promise<typeof brief>(resolve => {
       timer = setTimeout(() => resolve(finish({ ...brief, status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null,
         limitations: [...brief.limitations, 'Completion brief exceeded its read deadline.'] })), TASK_BRIEF_BUDGET_MS);
     })]));
   } catch {
-    return finish({ ...brief, status: 'unknown' as const, changes: [], tests: [], testsWithoutRunEvidence: null,
+    result = finish({ ...brief, status: 'unknown' as const, changes: [], tests: [], testsWithoutRunEvidence: null,
       limitations: [...brief.limitations, 'Completion source or analysis was unavailable; re-read before review.'] });
   } finally { clearTimeout(timer); }
+  return gateTaskBriefRecover<Omit<typeof result, 'recover'> & { recover?: typeof result.recover }>(result, await toolset);
 }

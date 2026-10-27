@@ -54,12 +54,15 @@ vi.mock('node:child_process', async (orig) => {
     spawn: () => {
       const child: any = new EventEmitter();
       child.pid = 9999;
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
+      // runChild calls child.stdout?.setEncoding('utf8'); a bare EventEmitter
+      // lacks it, and spawnInvokeOnce's never-rejects catch turns that TypeError
+      // into exitCode 1. Mirror the real stream: setEncoding, then string chunks.
+      child.stdout = Object.assign(new EventEmitter(), { setEncoding() { return this; } });
+      child.stderr = Object.assign(new EventEmitter(), { setEncoding() { return this; } });
       child.kill = () => true;
       child.killed = false;
       setImmediate(() => {
-        if (H.stdout) child.stdout.emit('data', Buffer.from(H.stdout));
+        if (H.stdout) child.stdout.emit('data', H.stdout);
         child.emit('close', H.exitCode);
       });
       return child;

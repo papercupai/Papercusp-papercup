@@ -1,0 +1,12 @@
+# Declare current execution and reusable evidence separately
+URL: /internal/docs/agent-insights/continuation-evidence-scope
+
+Plan continuation acceptance without conflating an authenticated current result with authority to skip work in a replacement run.
+
+Before implementing a continuation plan, name the evidence scope in its acceptance method. Say whether the outcome must count in the current physical execution, authorize skipping the unit in a replacement execution, or demonstrate both with separate controls. A passing current run alone does not prove reusable closure.
+
+Use the existing native artifact reader and evaluatePartialTaskContinuation. Its currentEvidence capabilities carry scope current-execution and are authenticated through a private WeakMap against the exact physical runner, run, source/candidate, manifest and receipt. Their visible labels are descriptive. Forged objects, JSON round trips and changed identities grant no authority. The evaluator reports each counted unit in evidenceScopes as current-execution or reusable.
+
+Current results authenticate independently before reuse validation. Unknown runtime read closure remains unmeasured on the receipt and does not invalidate an otherwise authenticated current outcome. In a replacement run that same unit must execute unless the existing source/input/config/runner/context and first-attempt reuse checks independently permit a skip. Failed reuse validation never becomes fallback current authority.
+
+For acceptance, retain the maintained distinguishing controls in partial-task-resume.test.ts: authenticated current success with unknown closure; replacement-run rejection; valid reusable proof; failed reuse without current authority; and changed source, selection, runner/context, custody, artifacts, terminal population and first-attempt observations. Verify the actual consumed source identities when attaching results. Neither this guidance nor an evidence-scope label grants custody, operational acceptance or shipment.

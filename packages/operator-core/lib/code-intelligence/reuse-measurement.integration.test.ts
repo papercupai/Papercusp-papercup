@@ -266,8 +266,8 @@ describe('R16 repeatable existing-ledger reads', () => {
       const raw = JSON.stringify(record);
       const subject = JSON.stringify({ schema: 'reuse-metrics-ref-v1', harness: scope.harnessSlug,
         windowStart: at, windowEnd: now, sha256: createHash('sha256').update(raw).digest('hex') });
-      await fx.admin`INSERT INTO harness_shared.code_intel_pushes (workspace_id, owner_id, turn_id, leg, subject, suggested_call, chars)
-        VALUES (${fx.workspaceId}, 'packed-source', ${now}, 'reuse-metrics', ${subject}, ${raw}, 0)`;
+      await fx.admin`INSERT INTO harness_shared.code_intel_reuse_measurements (workspace_id, owner_id, turn_id, kind, subject, payload)
+        VALUES (${fx.workspaceId}, 'packed-source', ${now}, 'reuse-metrics', ${subject}, ${raw})`;
     };
     await write();
     const result = await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls');
@@ -289,8 +289,8 @@ describe('R16 repeatable existing-ledger reads', () => {
     expect(await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).toMatchObject({ verdict: 'pass', value: 0 });
     expect(await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls')).toMatchObject({ verdict: 'pass', value: 0 });
     expect((await measureRecordedReuseMetric(fx.admin, scope, 'searchBeforeWrite')).verdict).toBe('unknown');
-    await fx.admin`UPDATE harness_shared.code_intel_pushes SET suggested_call = suggested_call || 'corrupted'
-      WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-metrics' AND subject::jsonb->>'harness' = 'raw-producer'`;
+    await fx.admin`UPDATE harness_shared.code_intel_reuse_measurements SET payload = payload || 'corrupted'
+      WHERE workspace_id = ${fx.workspaceId} AND kind = 'reuse-metrics' AND subject::jsonb->>'harness' = 'raw-producer'`;
     expect((await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).verdict).toBe('unknown');
   });
   it('counts a recorded search-before-write positive only through a unique exact assignment', async () => {
@@ -376,10 +376,10 @@ describe('R16 repeatable existing-ledger reads', () => {
       now: '2026-10-16T00:00:00.000Z', windows };
     const changes: boolean[] = [];
     const write = async (_provider: string, enabled: boolean) => {
-      const rows = await fx.admin`SELECT suggested_call FROM harness_shared.code_intel_pushes
-        WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-provider-action'`;
+      const rows = await fx.admin`SELECT payload FROM harness_shared.code_intel_reuse_measurements
+        WHERE workspace_id = ${fx.workspaceId} AND kind = 'reuse-provider-action'`;
       expect(rows).toHaveLength(1);
-      expect(JSON.parse(rows[0]!.suggested_call)).toMatchObject({ decision: { action: 'disable' }, reversal: { enabled: true } });
+      expect(JSON.parse(rows[0]!.payload)).toMatchObject({ decision: { action: 'disable' }, reversal: { enabled: true } });
       changes.push(enabled); return { ok: true };
     };
     expect(await applyReuseProviderDecision(fx.admin, { ...input, now: '2026-10-02T00:00:00.000Z' }, write)).toMatchObject({ applied: false });
@@ -391,10 +391,12 @@ describe('R16 repeatable existing-ledger reads', () => {
     const window = measure([activity()], { workspaceId: fx.workspaceId });
     const subject = JSON.stringify({ schema: 'reuse-measurement-v1', sourceRefs: ['fixture:known-activity-population'],
       observation: { exposure: exposure({ workspaceId: fx.workspaceId }), activities: [activity()], now, activityCensusComplete: true } });
+    await fx.admin`INSERT INTO harness_shared.code_intel_reuse_measurements
+      (workspace_id, owner_id, turn_id, kind, subject, recorded_at)
+      VALUES (${fx.workspaceId}, 'owner', 'fixture-turn', 'reuse-measurement', ${subject}, ${at})`;
     await fx.admin`INSERT INTO harness_shared.code_intel_pushes
       (workspace_id, owner_id, turn_id, leg, subject, chars, pushed_at)
-      VALUES (${fx.workspaceId}, 'owner', 'fixture-turn', 'reuse-measurement', ${subject}, 0, ${at}),
-        (${fx.workspaceId}, 'owner', 'fixture-turn', 'reuse-clones', 'issued-only', 100, ${at})`;
+      VALUES (${fx.workspaceId}, 'owner', 'fixture-turn', 'reuse-clones', 'issued-only', 100, ${at})`;
     const input = { workspaceId: fx.workspaceId, start: at, end: now };
     const first = await readRecordedReuseWindows(fx.admin, input), second = await readRecordedReuseWindows(fx.admin, input);
     expect(first).toEqual([window]); expect(second).toEqual(first);
@@ -402,15 +404,15 @@ describe('R16 repeatable existing-ledger reads', () => {
     expect(await readRecordedReuseWindows(fx.admin, { ...input, workspaceId: 'foreign' })).toEqual([]);
     const rows = await fx.admin`SELECT chars FROM harness_shared.code_intel_pushes
       WHERE workspace_id = ${fx.workspaceId} AND owner_id = 'owner' ORDER BY id`;
-    expect(rows.map(r => r.chars)).toEqual([0, 100]);
+    expect(rows.map(r => r.chars)).toEqual([100]);
     const issued = await readNativePushOutcomes({ workspaceId: fx.workspaceId, windowStart: at, windowEnd: now }, fx.admin);
     expect(issued.map(r => r.leg)).toEqual(['reuse-clones']);
     // Changing the RAW event changes the recomputed outcome; replaying a stored
     // verdict would keep the old positive and fail this assertion.
     const altered = JSON.parse(subject);
     altered.observation.activities[0].detail.file = 'unrelated.ts';
-    await fx.admin`UPDATE harness_shared.code_intel_pushes SET subject = ${JSON.stringify(altered)}
-      WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-measurement'`;
+    await fx.admin`UPDATE harness_shared.code_intel_reuse_measurements SET subject = ${JSON.stringify(altered)}
+      WHERE workspace_id = ${fx.workspaceId} AND kind = 'reuse-measurement'`;
     expect((await readRecordedReuseWindows(fx.admin, input))[0]!.actedOn).toBe(false);
   });
   it('registered instruments recompute exact-window raw populations with explicit ledger units', async () => {
@@ -422,9 +424,9 @@ describe('R16 repeatable existing-ledger reads', () => {
         workItems: [{ id: 'a', eligible: true, firstWriteAt: now, successfulSearchAt: at, complete: true }],
         calls: [{ id: 'a', resolved: true, from: 'a.ts', to: 'b.ts' }],
       } };
-    await fx.admin`INSERT INTO harness_shared.code_intel_pushes
-      (workspace_id, owner_id, turn_id, leg, subject, chars)
-      VALUES (${fx.workspaceId}, 'metric-fixture', 'turn', 'reuse-metrics', ${JSON.stringify(record)}, 0)`;
+    await fx.admin`INSERT INTO harness_shared.code_intel_reuse_measurements
+      (workspace_id, owner_id, turn_id, kind, subject)
+      VALUES (${fx.workspaceId}, 'metric-fixture', 'turn', 'reuse-metrics', ${JSON.stringify(record)})`;
     for (const metric of ['redundancy', 'searchBeforeWrite', 'crossFileCalls'] as const) {
       const instrument = getRegisteredInstrument(REUSE_MEASUREMENT_INSTRUMENT_KEYS[metric]);
       expect(instrument?.evaluator).toBe('platform');
@@ -449,8 +451,8 @@ describe('R16 repeatable existing-ledger reads', () => {
     expect((await measureRecordedReuseMetric(fx.admin, { ...scope, harnessSlug: 'other' }, 'redundancy')).verdict).toBe('unknown');
     expect((await measureRecordedReuseMetric(fx.admin, { ...scope, windowEnd: '2026-10-02T00:00:00.000Z' }, 'redundancy')).verdict).toBe('unknown');
     record.population.duplicateAddedLines = 20;
-    await fx.admin`UPDATE harness_shared.code_intel_pushes SET subject = ${JSON.stringify(record)}
-      WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-metrics' AND owner_id = 'metric-fixture'`;
+    await fx.admin`UPDATE harness_shared.code_intel_reuse_measurements SET subject = ${JSON.stringify(record)}
+      WHERE workspace_id = ${fx.workspaceId} AND kind = 'reuse-metrics' AND owner_id = 'metric-fixture'`;
     expect((await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).value).toBe(100);
   });
   it('collects actual composition, push and activity rows for both arms; recollection updates raw evidence without duplicate outcomes', async () => {
@@ -495,11 +497,15 @@ describe('R16 repeatable existing-ledger reads', () => {
     const latest = await readRecordedReuseWindows(fx.admin, scope);
     expect(latest).toHaveLength(2);
     expect(latest.find(w => w.exposure.provider === 'coverage')!.actedOn).toBe(true);
-    const raw = await fx.admin`SELECT subject, suggested_call, chars FROM harness_shared.code_intel_pushes
-      WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner} AND leg = 'reuse-measurement' ORDER BY id DESC LIMIT 1`;
-    expect(raw[0]!.chars).toBe(0);
+    const raw = await fx.admin`SELECT subject, payload FROM harness_shared.code_intel_reuse_measurements
+      WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner} AND kind = 'reuse-measurement' ORDER BY id DESC LIMIT 1`;
     expect(raw[0]!.subject.length).toBeLessThan(256);
-    expect(JSON.parse(raw[0]!.suggested_call).sourceRefs).toContainEqual(expect.stringMatching(/^agent-activity:\d+$/));
+    expect(JSON.parse(raw[0]!.payload).sourceRefs).toContainEqual(expect.stringMatching(/^agent-activity:\d+$/));
+    // SPEC-P-006-C: the collector writes no measurement row into the delivered-push log.
+    const pushed = await fx.admin`SELECT leg FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner} ORDER BY id`;
+    expect(pushed.length).toBeGreaterThan(0);
+    expect(pushed.map(r => r.leg).filter(leg => ['reuse-measurement', 'reuse-metrics', 'reuse-provider-action'].includes(leg))).toEqual([]);
     const instrument = getRegisteredInstrument(REUSE_MEASUREMENT_INSTRUMENT_KEYS.providerOutcomes);
     if (instrument?.evaluator !== 'platform') throw new Error('Missing provider outcome instrument');
     const live = await instrument.rescore!.resolve({ workspaceId: fx.workspaceId, harnessSlug: 'collector-fixture',
@@ -510,9 +516,9 @@ describe('R16 repeatable existing-ledger reads', () => {
       actedOn: { positive: 1, negative: 0, unknown: 0 }, grepAfterPush: { positive: 1 } });
     expect(detail.notObserved.sort()).toEqual(['cochange', 'provenance', 'semantic', 'sql']);
     expect(detail.recommendations.every((r: { action: string; mature: boolean }) => r.action === 'keep' && !r.mature)).toBe(true);
-    await fx.admin`UPDATE harness_shared.code_intel_pushes SET suggested_call = suggested_call || ' '
-      WHERE workspace_id = ${fx.workspaceId} AND id = (SELECT max(id) FROM harness_shared.code_intel_pushes
-        WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner} AND leg = 'reuse-measurement')`;
+    await fx.admin`UPDATE harness_shared.code_intel_reuse_measurements SET payload = payload || ' '
+      WHERE workspace_id = ${fx.workspaceId} AND id = (SELECT max(id) FROM harness_shared.code_intel_reuse_measurements
+        WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner} AND kind = 'reuse-measurement')`;
     await expect(readRecordedReuseWindows(fx.admin, scope)).rejects.toThrow('payload digest mismatch');
   });
 });

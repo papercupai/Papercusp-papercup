@@ -2,9 +2,10 @@
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { moduleRepoRoot } from './module-repo-root';
 
-const helper = fileURLToPath(new URL('../../../scripts/lib/blind-review-sealed-source.py', import.meta.url));
+const helper = join(moduleRepoRoot(import.meta.url), 'scripts/lib/blind-review-sealed-source.py');
 
 export async function sealRuntimeSourceHandle(original: FileHandle, sha256: string, bytes: number,
   signal?: AbortSignal): Promise<FileHandle> {

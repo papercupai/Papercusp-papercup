@@ -275,6 +275,32 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(persisted.admissionPrecheck?.completedCount).toBe(81);
   });
 
+  it('settles a gate run taking the checkpoint tree between groups as a DEFERRAL, keeping completed rows (WI-6554700010030460)', async () => {
+    let persisted = wide();
+    persisted = { ...persisted, dispatchReservation: { token: input.operationId, claimedAtMs: 1, expiresAtMs: 10_000_000 } } as unknown as FrozenCandidateRepairQueue;
+    let calls = 0;
+    const busyOnSecondGroup: FixPrecheckRunner = async run => {
+      if (++calls === 2) return { ran: false, reason: 'checkpoint-tree-busy',
+        detail: 'a green-checkpoint run holds the checkpoint tree (pid 7, 30s in)', holder: { pid: 7, elapsedSec: 30 } };
+      const results = run.files.map(path => ({ path, status: 'pass' as const }));
+      for (const result of results) await run.onFileResult?.(result);
+      return { ran: true, commit: run.commit, results };
+    };
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running' as const, confined: true }),
+      readQueue: async () => ({ status: 'value' as const, queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); },
+      createRunner: () => busyOnSecondGroup, now: () => 30,
+    });
+    // Nothing ran in the busy group, so this is a deferral with the runner's own reason, never the
+    // runner-failed label that sent callers into retryPrecheck loops while the suite held the tree.
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: true, ran: false, reason: 'checkpoint-tree-busy' } });
+    expect(persisted.admissionPrecheck).toMatchObject({ status: 'deferred', completedCount: 40,
+      verdict: { reason: 'checkpoint-tree-busy', holder: { pid: 7, elapsedSec: 30 } } });
+    expect(persisted.admissionPrecheck!.measurement!.results).toHaveLength(40);
+    expect(persisted.dispatchReservation).toBeUndefined();
+  });
+
   it.each(['fail', 'unmeasured'] as const)('retains a completed %s across interruption and a replacement task', async status => {
     let persisted = wide();
     // WI-6554700010030199: the interrupted worker must release the gate's dispatch reservation itself.

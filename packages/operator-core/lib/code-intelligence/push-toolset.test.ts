@@ -1,5 +1,31 @@
-import { describe, expect, it } from 'vitest';
-import { callableSuggestion, calledTool, canCall, toolsetFromNames, UNKNOWN_TOOLSET } from './push-toolset';
+import { describe, expect, it, vi } from 'vitest';
+import { callableSuggestion, calledTool, canCall, recordListedTools, toolsetFromNames, UNKNOWN_TOOLSET } from './push-toolset';
+
+describe('recordListedTools — the tools/list hook never fails a listing (EI-27158841329142596)', () => {
+  it('an unattributable caller (identity resolver throws) records nothing and does not throw', async () => {
+    const remember = vi.fn(async () => true);
+    const resolveOwner = () => { throw new Error('resolveAgentIdentity: context carries no power-user / superuser / principal identity'); };
+    await expect(recordListedTools({ workspace: 'ws', resolveOwner, tools: ['testing:run'] }, remember)).resolves.toBe('unattributed');
+    expect(remember).not.toHaveBeenCalled();
+  });
+
+  it('an empty owner records nothing', async () => {
+    const remember = vi.fn(async () => true);
+    await expect(recordListedTools({ workspace: 'ws', resolveOwner: () => '  ', tools: [] }, remember)).resolves.toBe('unattributed');
+    expect(remember).not.toHaveBeenCalled();
+  });
+
+  it('an attributed caller records its listing under the resolved owner', async () => {
+    const remember = vi.fn(async () => true);
+    await expect(recordListedTools({ workspace: 'ws', resolveOwner: () => 'su-1', tools: ['testing:run'] }, remember)).resolves.toBe('recorded');
+    expect(remember).toHaveBeenCalledWith({ workspace: 'ws', owner: 'su-1', tools: ['testing:run'] });
+  });
+
+  it('a failing writer is swallowed', async () => {
+    const remember = vi.fn(async () => { throw new Error('pg down'); });
+    await expect(recordListedTools({ workspace: 'ws', resolveOwner: () => 'su-1', tools: [] }, remember)).resolves.toBe('unchanged');
+  });
+});
 
 describe('recipient toolset (P-006, SPEC-P-006-B)', () => {
   it('matches listed names in MCP, underscore and colon spellings', () => {

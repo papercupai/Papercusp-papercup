@@ -66,6 +66,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 // 'PAPERCUSP_SCOPE_POLICY_PROBE={} …'` points the policy at a mutated COPY, so proving these
 // guards falsifiable never mutates the shared tree. scope-policy.ts has only a type-only
 // import, so the copy runs standalone. Unset (every normal run): the real module.
+// tools/list establishes a serving-generation baseline from the applied-migrations ledger, which
+// the mocked DB above answers with no rows (required-migrations-unapplied → the list refuses).
+// Pin a known generation, as mcp-native-owner-dispatch.test.ts does.
+vi.mock('../serving-generation', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../serving-generation')>(),
+  readServingGeneration: async () => ({
+    state: 'known', revision: 'serving-generation-v1:scope-fixture',
+    buildSha: 'scope-fixture', appliedMigrationDigest: 'scope-fixture', toolRegistryRevision: 'scope-fixture',
+  }),
+}));
+
 vi.mock('./scope-policy', async (importOriginal) => {
   const probe = process.env.PAPERCUSP_SCOPE_POLICY_PROBE;
   return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
@@ -90,6 +101,11 @@ const { mintAppKey } = await import('./key');
 type RouteContext = import('../endpoint-route/define-route').RouteContext;
 type Transport = import('@modelcontextprotocol/sdk/shared/transport.js').Transport;
 type MessageExtraInfo = import('@modelcontextprotocol/sdk/types.js').MessageExtraInfo;
+const { setKernelEnforcementResolver } = await import('../projected-tool-deps');
+// lib/events/index.ts installs the DB-backed control-anchor kernel resolver at import time.
+// This fixture mocks @papercusp/db-org, so that control-anchor read rejects and every call is
+// denied policy-unavailable. Uninstall it: app-key scope + structural kernel checks stay real.
+beforeEach(() => { setKernelEnforcementResolver(null); });
 
 const CTX: RouteContext = {
   principal: null,

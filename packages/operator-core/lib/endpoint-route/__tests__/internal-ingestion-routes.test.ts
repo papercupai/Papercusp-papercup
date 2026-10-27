@@ -201,56 +201,33 @@ describe('pr-event — token + payload depth (P-014)', () => {
   });
 });
 
-describe('test-snapshot — phase-aware assertion status refresh (EI-21437624500324717)', () => {
+// The VAL-* assertion cache refresh this block used to pin (EI-21437624500324717)
+// is RETIRED with the VAL store (verification-system-improvements-2026-10-10
+// P-003; see the note in routes/internal/test-snapshot.ts). Pin the retirement:
+// a snapshot must neither read nor write harness_plan_assertions, whether its
+// payload names covered VALs or it is an empty replacement.
+describe('test-snapshot — VAL assertion refresh is retired (verification-system-improvements-2026-10-10 P-003)', () => {
   const path = '/internal/test-snapshot';
   const app = () => appWith(testSnapshot as AnyRoute);
 
-  function setupSnapshotSql(testRows: Array<{ status: string; payload: { coversVALs?: unknown } }>) {
-    const updates: string[] = [];
-    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      const query = strings.join(' ');
-      if (query.includes('SELECT val_id, plan_slug, item_id, requires_test')) {
-        return [{ val_id: 'VAL-1', plan_slug: 'plan-a', item_id: 'P-001', requires_test: true }];
-      }
-      if (query.includes('SELECT val_id') && query.includes('harness_plan_assertions')) {
-        return [{ val_id: 'VAL-1' }];
-      }
-      if (query.includes('SELECT status, payload') && query.includes('harness_tests')) {
-        return testRows;
-      }
-      if (query.includes('UPDATE harness_shared.harness_plan_assertions')) {
-        updates.push(String(values[0]));
-        return [];
-      }
-      throw new Error(`unexpected SQL in test-snapshot assertion test: ${query}`);
-    });
+  it('issues no harness_plan_assertions SQL for a covering payload or an empty replacement', async () => {
+    const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [] as unknown[]);
     getOrgPg.mockReturnValue({ db: makeDb([{ harness_slug: 'papercup' }]), sql });
-    return updates;
-  }
 
-  it('keeps cross-phase coverage passed, then returns to todo after the final covering test disappears', async () => {
-    // This staging replacement contains no VAL-1 coverage, but the post-write
-    // all-phase read still sees a production test. A current-phase-only
-    // derivation would incorrectly reset the global assertion cache to todo.
-    const crossPhaseUpdates = setupSnapshotSql([
-      { status: 'passing', payload: { coversVALs: ['VAL-1'] } },
-    ]);
     const covered = await app().request(
       path,
       authd({
         phase: 'staging',
-        files: [{ testId: 'unrelated.test.ts', payload: { status: 'passing', coversVALs: [] } }],
+        files: [{ testId: 'covering.test.ts', payload: { status: 'passing', coversVALs: ['VAL-1'] } }],
       }),
     );
     expect(covered.status).toBe(200);
-    expect(crossPhaseUpdates).toEqual(['passed']);
+    const empty = await app().request(path, authd({ phase: 'production', files: [] }));
+    expect(empty.status).toBe(200);
 
-    // The final covering test is now gone too. Empty replacement snapshots
-    // must still run the refresh and persist todo instead of leaving the prior
-    // passed cache value stranded forever.
-    const uncoveredUpdates = setupSnapshotSql([]);
-    const uncovered = await app().request(path, authd({ phase: 'production', files: [] }));
-    expect(uncovered.status).toBe(200);
-    expect(uncoveredUpdates).toEqual(['todo']);
+    const assertionQueries = sql.mock.calls
+      .map(([strings]) => strings.join(' '))
+      .filter((query) => query.includes('harness_plan_assertions'));
+    expect(assertionQueries).toEqual([]);
   });
 });

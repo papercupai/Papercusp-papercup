@@ -56,13 +56,17 @@ export declare function runRestrictedHoldPreflight(opts: {
 
 export declare function formatRestrictedHoldRefusal(refusal: { error: string; hint: string }): string;
 
+export type BundlePreflightSkipReason = 'release-gate' | 'github-actions';
+/** Each reason the bundle preflight may skip its census → the disclosure the host-bundle gate prints on admit. */
+export declare const BUNDLE_PREFLIGHT_SKIP_REASONS: Readonly<Record<BundlePreflightSkipReason, string>>;
+
 export declare function runBundleRestrictedHoldPreflight(opts: {
   repoRoot: string;
   inputsFile: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   spawn?: typeof spawnSync;
-}): { verdict: 'admit' } | RestrictedHoldPreflightRefusal;
+}): { verdict: 'admit' } | { verdict: 'skipped'; reason: BundlePreflightSkipReason } | RestrictedHoldPreflightRefusal;
 
 export declare function formatBundleRestrictedHoldRefusal(refusal: { error: string; hint: string }): string;
 

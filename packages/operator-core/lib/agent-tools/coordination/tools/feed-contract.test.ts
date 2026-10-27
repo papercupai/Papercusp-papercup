@@ -105,7 +105,9 @@ describe('coord:feed — fleet compatibility alias', () => {
 describe('coord:feed — inbox-only shaping redirects (EI-22057308172107761)', () => {
   it.each([
     ['include_ambient', { include_ambient: true }],
-    ['includeAmbient', { includeAmbient: true }],
+    // The camelCase spelling redirects to the DECLARED snake_case key: a remedy whose args
+    // use an undeclared alias fails guidance-registry conformance (WI-6554700010030420).
+    ['includeAmbient', { include_ambient: true }],
     ['include_intents', { include_intents: true }],
     ['max_body_chars', { max_body_chars: 200 }],
   ] as const)('redirects `%s` to coord:inbox with a valid example', (key, args) => {

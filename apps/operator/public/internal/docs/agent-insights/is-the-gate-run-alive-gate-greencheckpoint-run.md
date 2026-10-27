@@ -1,0 +1,47 @@
+# Is the gate run alive, and what is it doing? Read gate.greenCheckpoint.run
+URL: /internal/docs/agent-insights/is-the-gate-run-alive-gate-greencheckpoint-run
+
+One read answers whether a green-checkpoint run is in flight, whether its pid is verified live, which phase/activity/leg it is on, how long it has run, how old its last heartbeat is, and whether it is advancing, stalled or unjudgeable. Use state:read { cell:'gate.greenCheckpoint.run' } instead of ps / proc-guard / pipeline_events SQL.
+
+## The question
+
+"Is the gate run still alive, and how far along is it?" On 2026-10-26 a gate-lane holder could not answer that for a run 2h10m in. The facts existed (run lock, cached run reading, heartbeat, published phase), but they lived in separate places, and the answer was assembled by hand from `ps`, `proc-guard` and a `pipeline_events` query (owner directive #2439, WI-6554700010029556).
+
+## The read
+
+```
+state:read { cell: 'gate.greenCheckpoint.run' }
+```
+
+The same object is at `gate.run` in `dev:pipeline_position`. It is always an object, never null.
+
+| field                          | meaning                                                                                                                                                                                                                            |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `code`                         | `no-run-reading` (UNKNOWN, not idle) · `no-run` · `running` · `decided-salvaging` · `stalled` · `progress-unknown`                                                                                                                 |
+| `active`                       | is a run in flight; `null` = not measured                                                                                                                                                                                          |
+| `pid` + `pidVerified`          | the run's pid, set ONLY when a live authority (run lock, `kill(pid,0)`-checked; or process authority) answered on this read. A cached reading never carries a pid, because PIDs wrap here about daily                              |
+| `phase` / `activity` / `leg`   | what the run published, e.g. `leg: { label: 'lint:tsc', index: 7, total: 12 }`                                                                                                                                                     |
+| `elapsedSec`, `progressAgeSec` | process runtime, and age of the last advancing heartbeat                                                                                                                                                                           |
+| `progress`                     | the `certifyCheckpointProgress` certificate: `verdict`, `basis`, `detail`                                                                                                                                                          |
+| `lastManualRun`                | when idle: how the most recent MANUAL run ended (systemd ExecStopPost). `null` is not "the last run was healthy"; cron runs record none                                                                                            |
+| `summary`                      | one line to quote, e.g. `Gate run ALIVE (pid 3596127, verified by run-lock), 2h10m in, judging 8c03b5dcd156: phase frozen-repair, repair-tick-legs, leg 7/12 lint:tsc; last progress 40s ago. Advancing — let it reach a verdict.` |
+
+## Reading the codes
+
+* `running`: advancing. Wait. A second run is refused as `already_running`.
+* `decided-salvaging`: the verdict is already published, and the process continues into re-triage or salvage. A long elapsed time here is expected. Read `gate.greenCheckpoint.verdict`.
+* `stalled`: needs a LIVE authority plus a heartbeat older than the stall threshold (10 min). Diagnose the run's leg and log first. If `gate.greenCheckpoint.retriage` says `standDown`, never fire a manual run.
+* `progress-unknown`: NOT evidence of a stall. `progress.basis` names why: a stale cache, no heartbeat, or `ambiguous-fallback` (heartbeat equals start time, which every fallback writes).
+* `no-run-reading`: neither liveness read answered. Do not conclude idle.
+
+## There is one stall rule
+
+The cell adds no stall logic of its own. Its verdict comes from `certifyCheckpointProgress` (`packages/operator-core/lib/release-trace-progress.ts`), and a unit test asserts the two agree on every active reading. If you need a different threshold, change it there.
+
+## Related cells
+
+* `gate.greenCheckpoint.retriage`: may I act destructively (stand-down)?
+* `gate.greenCheckpoint.candidate`: which sha is judged, and how much to trust that.
+* `gate.greenCheckpoint.ownership`: who is the one fixer.
+
+See also [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).

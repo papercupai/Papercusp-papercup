@@ -2,14 +2,24 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { writeSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { moduleRepoRoot } from '../module-repo-root';
 import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
 import { processGroupLifetime } from '../fleet/process-group-lifetime';
 import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
   PTOOL_LIST_TOOLS_TIMEOUT_MS, timeoutForTool } from '../../../../apps/operator/scripts/ptool.mjs';
 
-const repoRoot = resolve(import.meta.dirname, '../../../..');
+const repoRoot = moduleRepoRoot(import.meta.url);
 const processHeadroomMs = PTOOL_LIST_TOOLS_TIMEOUT_MS;
+
+/**
+ * First line of a child failure: a JS `…Error:`, or a LINE-LEADING shell `ERROR:` / esbuild
+ * `✘ [ERROR]` / bundle refusal marker. The shell forms are anchored because bundle-host.sh's
+ * output echoes guard source such as `echo "ERROR: host bundle requires esbuild …"` long before
+ * any real failure, and only the first match is retained.
+ */
+export const FIXTURE_FAILURE_LINE =
+  /\b(?:[A-Z]\w*Error|Error)(?:\s*\[[^\]]+\])?(?::|\s*$)|^\s*(?:🚨\s*)?ERROR:|^\s*✘\s*\[ERROR\]|^BUNDLE_RESTRICTED_HOLD_REFUSED\b/;
 
 /** Load TS fixture source without installing a global loader over built artifacts. */
 export function scopedNativeFixtureArgs(fixtureUrl: string, entry: string, argv: string[]) {
@@ -42,7 +52,10 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
     for (const line of lines) {
       // Cleanup can erase the assertion from both bounded stdout/stderr tails.
       // Retain the first exception and its context independently of that noise.
-      if (failureLines === 0 && !failureOutput && /\b(?:[A-Z]\w*Error|Error)(?:\s*\[[^\]]+\])?(?::|\s*$)/.test(line)) {
+      // Shell producers (bundle-host.sh) fail with `ERROR:` / esbuild `[ERROR]` / the
+      // restricted-hold refusal marker; without them the gate ledger kept only argv
+      // and an empty primary failure (WI-6554700010030421).
+      if (failureLines === 0 && !failureOutput && FIXTURE_FAILURE_LINE.test(line)) {
         failureLines = 24;
       }
       if (failureLines > 0 && failureOutput.length < 8_000) {

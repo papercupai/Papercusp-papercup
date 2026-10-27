@@ -188,6 +188,19 @@ export function runVitestRootPreflight({ repoRoot, files, env = process.env, tim
 }
 
 /**
+ * Every reason runBundleRestrictedHoldPreflight may skip its census, with the disclosure the
+ * host-bundle gate prints when it keeps the fresh bundle. ONE table for both sides: the gate
+ * (apps/operator/bin/bundle-restricted-hold-gate.mjs runGate) admits exactly these skips and still
+ * fails closed on any other. 3632d7de77 added the release-gate skip here while the gate admitted only
+ * github-actions, so every green-checkpoint host bundle was refused and native-ecosystem.e2e went red
+ * on every gate run (WI-6554700010030421).
+ */
+export const BUNDLE_PREFLIGHT_SKIP_REASONS = Object.freeze({
+  'release-gate': 'isolated green-checkpoint checkout of committed code; D-011 keeps restricted writes out of commits',
+  'github-actions': 'no Papercusp operator or restricted session on this runner',
+});
+
+/**
  * The host-bundle door (WI-10005745): bg-host's ExecStartPre bundles the LIVE shared tree and runs
  * it with the network. apps/operator/bin/bundle-restricted-hold-gate.mjs writes the bundle's exact
  * inputs (esbuild metafile inputs + verbatim-copied files/dirs) to `inputsFile` and calls this

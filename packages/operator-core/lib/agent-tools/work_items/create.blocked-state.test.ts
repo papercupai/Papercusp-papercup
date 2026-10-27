@@ -42,3 +42,26 @@ describe('work_items:create refuses state:blocked (WI-6554700010009155)', () => 
     expect(parse({ kind: 'task', title: 'default entry' }).success).toBe(true);
   });
 });
+
+// WI-6554700010030345: a create payload wrote externalBlockers rows without the wait-ref
+// admission work_items:set_blocker runs, so an unprovable event wait could park the item
+// for good. The create door refuses the key and points at set_blocker.
+describe('work_items:create refuses payload.externalBlockers (WI-6554700010030345)', () => {
+  const broadWait = [{ ref: 'git-sync:committed', kind: 'event', status: 'active', summary: 'waiting' }];
+
+  it('refuses it on a single-item create and names work_items:set_blocker', () => {
+    const r = parse({ kind: 'task', title: 'waits on a commit', payload: { externalBlockers: broadWait } });
+    expect(r.success).toBe(false);
+    expect(messages(r)).toMatch(/externalBlockers/);
+    expect(messages(r)).toMatch(/work_items:set_blocker/);
+  });
+
+  it('refuses it inside an items[] batch row, and an empty array too', () => {
+    expect(parse({ items: [{ kind: 'task', title: 'batched', payload: { externalBlockers: broadWait } }] }).success).toBe(false);
+    expect(parse({ kind: 'task', title: 'empty', payload: { externalBlockers: [] } }).success).toBe(false);
+  });
+
+  it('still accepts an ordinary payload, including a key that merely contains the name', () => {
+    expect(parse({ kind: 'task', title: 'ok', payload: { paths: ['a.ts'], externalBlockersNote: 'x' } }).success).toBe(true);
+  });
+});

@@ -42,6 +42,13 @@ vi.mock('./fleet/git-via-sidecar', async (importOriginal) => ({
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
+// The R-15 ship re-check (plan-verification-profiles-2026-10-17 P-005) reads closed work
+// items through its own PG path, which this suite's plan-row PG mock does not model. It has
+// its own suite; here it reports "no code evidence under a non-code deliverable".
+vi.mock('./plan-verification-escape', async (orig) => ({
+  ...(await orig<typeof import('./plan-verification-escape')>()),
+  readNonCodeDeliverableShipEvidence: vi.fn(async () => []),
+}));
 vi.mock('./rubrics', () => ({
   getAcceptanceRubricsForPlan: vi.fn(),
   getRubric: vi.fn(),
@@ -663,7 +670,11 @@ describe('requirement_unrealized (the activation↔completion join)', () => {
     mockRubric.mockResolvedValue([]);
     const verdict = await evaluatePlanAcceptanceGate(PLAN, { current });
     expect(verdict.code).toBe('acceptance_rubric_missing');
-    expect(readAndEvaluateAcceptanceBarLifecycle).toHaveBeenCalledWith(PLAN, 'ship', { expectedApplicable: false, current });
+    // EI-26619271533407778: the gate now hands the lifecycle evaluator one shared
+    // contract snapshot so both lifecycle phases judge the same observation.
+    expect(readAndEvaluateAcceptanceBarLifecycle).toHaveBeenCalledWith(PLAN, 'ship', {
+      expectedApplicable: false, current, snapshot: expect.anything(),
+    });
     expect(entry.entry.citations[0]!.kind).toBe('doc');
   });
 

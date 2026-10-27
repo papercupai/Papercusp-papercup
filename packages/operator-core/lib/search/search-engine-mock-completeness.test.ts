@@ -184,10 +184,30 @@ function scanSource(raw: string, fileName: string): Array<Omit<Offender, 'file'>
     const installs = BY_ENGINE.get(target[1]);
     if (!installs) continue;
     // A spread of the real module carries every export by construction.
-    if (args.includes('importOriginal')) continue;
+    if (args.includes('importOriginal') || callsFactoryImporter(args)) continue;
     if (!declaresKey(args, installs)) found.push({ engine: target[1], missing: installs });
   }
   return found;
+}
+
+/**
+ * The factory's first parameter is Vitest's real-module importer, and its NAME is
+ * the author's choice: `async (orig) =>` and `async original =>` carry every export
+ * exactly like `importOriginal` does. Matching only that literal identifier
+ * reported two complete `...await original()` mocks as incomplete and red-pinned
+ * the gate. A factory that CALLS its importer is exempt; one that merely declares
+ * it and builds a partial object by hand is still scanned.
+ */
+const FACTORY_PARAM =
+  /^\s*['"][^'"]+['"]\s*,\s*(?:async\s+)?(?:\(\s*([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*=>|function\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*))/;
+
+function callsFactoryImporter(args: string): boolean {
+  const m = args.match(FACTORY_PARAM);
+  const param = m?.[1] ?? m?.[2] ?? m?.[3];
+  if (!param) return false;
+  const body = args.slice((m!.index ?? 0) + m![0].length);
+  const name = param.replace(/\$/g, '\\$');
+  return new RegExp(`(?<![\\w$])${name}\\s*[<(]`).test(body);
 }
 
 function scan(): Offender[] {
@@ -231,6 +251,17 @@ describe('inline mocks of self-installed engines stay load-complete', () => {
     const complete = "vi.mock('@papercusp/search', () => ({ configureSearchDefaults: vi.fn() }));\n";
     const spread = "vi.mock('@papercusp/search', async (importOriginal) => ({ ...(await importOriginal()) }));\n";
     expect(scanSource(complete + spread, 'planted.test.ts')).toEqual([]);
+    // The importer's name is the author's choice; a renamed one that is CALLED is
+    // just as complete (the two real user/search*.test.ts mocks are written this way).
+    const renamed =
+      "vi.mock('@papercusp/search', async original => ({ ...await original<typeof import('@papercusp/search')>() }));\n" +
+      "vi.mock('@papercusp/search', async (orig) => ({ ...(await orig()), runHybridSearch: vi.fn() }));\n";
+    expect(scanSource(renamed, 'planted.test.ts')).toEqual([]);
+    // …but declaring the importer without calling it carries nothing.
+    const declaredOnly = "vi.mock('@papercusp/search', async (orig) => ({ chunkAwareVectorLeg: vi.fn() }));\n";
+    expect(scanSource(declaredOnly, 'planted.test.ts')).toEqual([
+      { engine: '@papercusp/search', missing: 'configureSearchDefaults' },
+    ]);
   });
 
   // NEGATIVE CONTROL: the same mock appearing only in a string, a template

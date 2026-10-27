@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import * as recorder from '../degradation/fallback-observations';
-import { acceptanceProblems, inventoryTree, migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
+import { acceptanceProblems, inventoryTree, manifestProblems, migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { listDegradationMechanisms } from '../system-health/degradation-watchdog';
 import { RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
 import { original, execute } from '../degradation/host-startup-migration-cases';
@@ -166,9 +166,14 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
 
   for (const testCase of RAIL_MIGRATION_CASES) {
     it(`${testCase.item}: ${testCase.id}`, async () => {
-      const blockedBefore = readRealPgRailBlocks().blocked;
+      const { blocked: blockedBefore, callers: callersBefore } = readRealPgRailBlocks();
+      const knownCallers = new Set(callersBefore);
       const result = await testCase.run();
-      expect(readRealPgRailBlocks().blocked, `${testCase.id}: producer dependency escaped to real PostgreSQL`)
+      // Name WHICH dependency escaped (pool ← first foreign frames), not just how many:
+      // a bare count sends the next reader on a stack-probe hunt through the producer.
+      const escapedVia = readRealPgRailBlocks().callers.filter((caller) => !knownCallers.has(caller));
+      expect(readRealPgRailBlocks().blocked,
+        `${testCase.id}: producer dependency escaped to real PostgreSQL via:\n${escapedVia.join('\n') || '(caller already recorded by an earlier case, or caller cap reached)'}`)
         .toBe(blockedBefore);
       expect(result.route).toBe(testCase.route);
       if (result.route === 'condition') {
@@ -199,5 +204,25 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
     expect(migrationCoverageProblems(fixture, [testCase], ['P-010'], []).join()).toMatch(/unregistered/);
     expect(migrationCoverageProblems(fixture, [testCase], ['P-010'], ['x'])).toEqual([]);
     expect(migrationCoverageProblems({ rows: [{ ...row, route: '' }], amendments: [] }, [], [], []).join()).toMatch(/missing route/);
+  });
+
+  it('accepts coverage of a reviewed relocation target, judged against the seed row it renames', () => {
+    const row = { id: 'owner-only-alarm|f.ts|old|1', disposition: 'migrate', item: 'P-009', route: 'condition' };
+    const target = 'owner-only-alarm|f.ts|renamed|1';
+    const relocated = { rows: [row], amendments: [{ rowId: row.id, change: { disposition: 'removed', relocatedTo: target },
+      reason: 'renamed', author: 'a', reviewerRef: 'r' }] };
+    const testCase = { id: 'case', item: 'P-009', rowIds: [target], route: 'condition', run: () => ({}) };
+    expect(migrationCoverageProblems(relocated, [testCase], ['P-009'], [])).toEqual([]);
+    // Without the structured relocation the live ID is unknown, exactly as before.
+    expect(migrationCoverageProblems({ rows: [row], amendments: [] }, [testCase], ['P-009'], []).join()).toMatch(/unknown row/);
+    expect(migrationCoverageProblems(relocated, [{ ...testCase, item: 'P-010' }], ['P-009'], []).join())
+      .toMatch(/route\/item mismatch/);
+    // The manifest rejects a relocation that changes file, targets an absent site, or is not a removal.
+    const live = { sites: [{ id: target, onRail: true }], rows: [] };
+    expect(manifestProblems(relocated, live)).toEqual([]);
+    expect(manifestProblems(relocated, { sites: [], rows: [] }).join()).toMatch(/relocation target absent/);
+    const crossFile = structuredClone(relocated);
+    crossFile.amendments[0].change.relocatedTo = 'owner-only-alarm|other.ts|renamed|1';
+    expect(manifestProblems(crossFile, live).join()).toMatch(/invalid relocation/);
   });
 });

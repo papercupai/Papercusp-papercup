@@ -12,14 +12,15 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer as netServer } from 'node:net';
+import { writeStdoutSync } from '../../../../scripts/lib/write-stdout-sync.mjs';
 import { createServer as httpsServer } from 'node:https';
 import { chmod, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { openSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { serve } from '@hono/node-server';
 
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const repo = moduleRepoRoot(import.meta.url);
 const control = process.env.PAPERCUSP_WORKSPACE_ID ?? '';
 const admin = new URL(process.env.HARNESS_ADMIN_DATABASE_URL ?? 'file:missing');
 const appDb = new URL(process.env.HARNESS_DATABASE_URL ?? 'file:missing');
@@ -369,6 +370,7 @@ try {
   if (status.status === 'ready') status.status = 'stopped';
   await rm(`${evidence}.auth.json`, { force: true });
   await save();
-  console.log(JSON.stringify({ status: status.status, evidence: `${evidence}.json`, error: status.error }));
+  // Synchronous write: process.exit() would truncate a buffered console.log to a pipe.
+  writeStdoutSync(`${JSON.stringify({ status: status.status, evidence: `${evidence}.json`, error: status.error })}\n`);
   process.exit(process.exitCode ?? 0);
 }

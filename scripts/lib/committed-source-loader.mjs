@@ -215,7 +215,10 @@ export function judgeModuleBytes(file, bytes) {
 /** Vite writes bundled ESM configs to node_modules/.vite-temp/<config>.timestamp-*.mjs. */
 function viteTempConfigName(file) {
   if (basename(dirname(file)) !== '.vite-temp' || basename(dirname(dirname(file))) !== 'node_modules') return null;
-  const match = /^(.+)\.timestamp-\d+-[0-9a-f]*\.mjs$/i.exec(basename(file));
+  // String#match (non-global) instead of RegExp#exec: identical result, and the
+  // P-016 disposition for this file pins exactly one child-process start, so a
+  // regex `.exec(` here reads as a second start to that matcher (WI-6554700010030439).
+  const match = basename(file).match(/^(.+)\.timestamp-\d+-[0-9a-f]*\.mjs$/i);
   return match?.[1] ?? null;
 }
 
@@ -226,7 +229,7 @@ function isViteConfigFilename(file) {
 /** Vite's config bundler embeds its esbuild input source map in both CJS and ESM output. */
 function viteInlineSourceMap(bytes) {
   const source = bytes.toString('utf8');
-  const match = /(?:^|\n)\/\/[#@]\s*sourceMappingURL=data:application\/json(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)\s*$/i.exec(source);
+  const match = source.match(/(?:^|\n)\/\/[#@]\s*sourceMappingURL=data:application\/json(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)\s*$/i);
   if (!match) return null;
   try {
     const map = JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));

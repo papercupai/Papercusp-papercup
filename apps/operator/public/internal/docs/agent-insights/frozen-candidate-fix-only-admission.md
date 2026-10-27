@@ -5,7 +5,7 @@ Convention for converging one red release candidate through staging-authored, pa
 
 ## The rule
 
-A red candidate becomes a **frozen candidate** once the gate records its exact commit and opens the repair queue. That candidate is the only candidate that may advance until it is green or an explicitly bounded escape retires it.
+A red candidate becomes a **frozen candidate** once the gate records its exact commit and opens the repair queue. That candidate is the only candidate that may advance until it is green or the owner explicitly retires it. Automatic retirement is forbidden for every reason, including elapsed time, failed rounds, failure counts, capacity or abandoned runner bookkeeping (green-main-cycle-time-2026-10-08#D-090/P-041, owner 2026-10-22).
 
 The queue's identity is two-part:
 
@@ -52,11 +52,15 @@ A cold or resumed fixer receiving `frozenCandidate`, `repairHead`, the failing-t
 
 If the dispatch context is missing its repair manifest, the staging checkout cannot reproduce the named candidate, or the requested edit would require an undeclared path, stop with an explicit diagnosis. Do not silently fall back to a tip cut, an isolated authoring tree, or an unrelated candidate.
 
-## Exhaustion and the bounded exception
+## Exhaustion preserves the candidate
 
-The default queue limits are fail-closed: attempts or wall-clock exhaustion holds the same candidate, with no automatic tip cut. This preserves the invariant even when automation is unhealthy.
+Attempts, wall-clock limits, non-improving or rising failure counts, capacity walls and dead runners must preserve the same candidate and admitted repair head. They may hold, alert, escalate, hand the queue to a successor or verify the admitted head; none authorizes clearing or replacing the queue. The former `maxCandidateEscapes` and four-round/24-hour bounded-life rules confer no automatic retirement authority.
 
-The code has an explicit, owner-ratified escape hatch, `maxCandidateEscapes`. It is **zero by default**. A nonzero value permits only that many recorded `recut-at-tip` escapes after exhaustion; each escape must be observable, bounded, and treated as retirement of the exhausted queue, not as ordinary convergence. Raising the bound is a Phase-2 policy change, not a fixer shortcut.
+The legacy bounded-life store entry refuses `automatic-retirement-disabled` before acquiring a database connection. A qualification successor inherits the unstarted queue instead of deleting it. A capacity wall verifies an advanced repair head inside the same queue. Explicit owner retirement remains a separate, reasoned operation, and successful promotion clears its already-proven queue.
+
+## Use improvements before main is green
+
+The background greening launcher runs canonical staging `apps/operator/lib/release/green-checkpoint.ts` through the maintained `runScript` route. This control code is separate from the frozen candidate that its suite judges. Publish staging changes through git-sync; load the tested qualification/policy code into the current background runtime through the maintained activation/restart route and verify loaded source identity. Coordinate with the sole LIVE\_GATE\_OPS owner so an existing run retains custody. Green main is not a prerequisite for using these improvements to green main.
 
 ## Checklist before declaring progress
 

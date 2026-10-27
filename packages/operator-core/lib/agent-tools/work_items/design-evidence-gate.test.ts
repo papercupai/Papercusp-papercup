@@ -75,6 +75,24 @@ vi.mock('./spec-test-adequacy-gate', () => ({
 // that DECIDES — designEvidenceCompletionGate and evaluateFeatureDesignGate —
 // is left real, because that consultation is precisely what R1 binds.
 const designCompareDepsFor = vi.fn();
+// work_items:complete's close-time PG reads, stubbed exactly as complete.test.ts does
+// (default: nothing to refuse). Real-PG coverage: verification-profile-escape,
+// complete-deliverable-fields and complete-item-type-fields integration tests.
+vi.mock('../../spec-conformance/closure-guard', () => ({
+  conformanceClosureAssessment: async () => ({
+    applicable: false, mappedRequirements: [], declaredRequirements: [],
+    declarationSatisfied: null, refusal: null,
+  }),
+}));
+vi.mock('../../plan-verification-escape', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../plan-verification-escape')>(),
+  readNonCodeDeliverableCloseEvidence: async () => null,
+  readCloseDeliverablesAreNonCode: async () => false,
+}));
+vi.mock('../../plan-types/item-type-contract', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../plan-types/item-type-contract')>(),
+  readCloseItemTypeFieldsRefusal: async () => null,
+}));
 vi.mock('../../design-compare/host-install', () => ({
   designCompareDepsFor: (...a: unknown[]) => designCompareDepsFor(...a),
   filesystemReferenceMaterializer: async () => ({ path: '/tmp/reference.png' }),

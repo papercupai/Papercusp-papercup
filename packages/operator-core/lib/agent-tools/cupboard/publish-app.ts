@@ -26,7 +26,7 @@
  */
 import { z } from 'zod';
 import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
@@ -75,7 +75,7 @@ export default defineTool({
       .optional()
       .describe("`<owner>/<repo>` whose GitHub Releases host the installers, if different from the source repo."),
     iconUrl: z.string().max(500).optional().describe('https URL of the app icon for the storefront card.'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());

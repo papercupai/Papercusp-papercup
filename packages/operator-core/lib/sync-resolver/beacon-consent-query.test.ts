@@ -39,6 +39,8 @@ describe('hive.beaconConsent named query (WI-4137)', () => {
       expect.arrayContaining(['hive.steering', expect.objectContaining({ name: 'hive.beaconConsent' })]),
     );
     expect(queryNamesForTriggerEvent('harness_shared.pot_settings.changed', { harness_slug: 'acme-hive' })).toEqual([
+      // The pot directory reads pot_settings (hive-directory sharing flags), so it full-busts first.
+      'network.hiveDirectory',
       'hive.steering',
       'learning.dream',
       { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } },

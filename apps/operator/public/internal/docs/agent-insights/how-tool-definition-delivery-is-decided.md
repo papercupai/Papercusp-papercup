@@ -58,23 +58,47 @@ only way to afford another tool was to drop one. The real model has **three** ti
 | `compact`  | a capped SUMMARY of the prose + the projected schema  | a fraction           |
 | `deferred` | nothing — reachable via `tools:find` / `tools:invoke` | 0                    |
 
-COMPACT is the tier that changes the arithmetic. Measured against the live catalog of
-899 tools:
+COMPACT is the tier that changes the arithmetic. The 2026-10-23 current catalog
+report covers 986 tools:
 
 ```
-WIRE_BYTES       full=1,599,477  compact=649,761  savedByCompact=949,716   (-59.4%)
-GUIDANCE_BYTES   full=334,797    summary=81,030   savedBySummary=253,767   (-75.8%)
+WIRE_BYTES full=1920942 compact=674021 savedByCompact=1246921
+GUIDANCE_BYTES full=365184 partial=362400 summary=22218 savedByPartial=2784 savedBySummary=342966
 ```
 
-### ⚠ Those are BYTES. The context you actually save is smaller.
+### Separate schema and guidance measurements (2026-10-23)
+
+The current generator report measures the schema and guidance halves independently.
+This edition covers the entire 986-tool catalog, rather than the delivered seed.
+Schema inputs are exact `JSON.stringify(inputSchema)` strings before and after
+`compactInputSchema`; guidance inputs are the raw full descriptions and
+`summaryGuidanceDescription` output. Each string is encoded independently with
+`js-tiktoken` / `o200k_base`, with no byte-ratio conversion and no provider request
+overhead. These component counts must not be added to infer a combined request count:
+BPE token boundaries and provider framing differ.
+
+```
+SCHEMA_BYTES full=1495711 compact=592228 savedByCompact=903483 scope=catalog
+SCHEMA_TOKENS full=361197 compact=168644 savedByCompact=192553 provenance=measured tokenizer=o200k_base serialization=JSON.stringify scope=catalog
+GUIDANCE_TOKENS full=81616 summary=5254 savedBySummary=76362 provenance=measured tokenizer=o200k_base serialization=raw-description scope=catalog
+```
+
+Reproduce with `npm run gen:tool-delivery -- --report`. The measured output is
+`/tmp/su51f-r7-halves-report-final-20261023.log`; its source fingerprints are in
+`/tmp/su51f-r7-halves-source-proof-20261023.json`. This is a current catalog cost
+measurement, separate from the historical provider-counted sample below. It is
+not model-quality, R6/R9 acceptance, or shipment evidence.
+
+### Historical provider measurement: bytes and tokens differ
 
 A byte ratio is not a context saving. The provider bills **tokens**, and a tokenizer does
 not compress English prose and JSON punctuation at the same rate — compacting a definition
-strips proportionally more bytes than it strips tokens. So a byte percentage is always the
-more flattering number, and it is only ever an **UPPER BOUND** on what is actually saved.
+strips proportionally more bytes than it strips tokens. For the historical sample below the byte percentage was the
+more flattering number, so its byte saving is an **UPPER BOUND** on its measured token saving.
+This is an observation about that sample, not a universal property of tokenizers.
 
-Measured on the 63 definitions that actually ship (`buildShippingSeedCatalog`), counted
-with the provider's own tokenizer:
+The earlier 63-definition sample from `buildShippingSeedCatalog` was counted
+with the provider's tokenizer. It is historical evidence, not the current 64-tool seed:
 
 ```
 DEFINITION_BYTES  full=369,616  compact=100,418  savedByCompact=269,198   (-72.8%)
@@ -133,12 +157,12 @@ COMPACT ships a capped SUMMARY rather than either full prose or silence.
 ## What the budget actually buys
 
 All three agent kinds resolve from the same function and, per owner directive D-005,
-the same budget — so their maps are identical:
+the same budget. The 2026-10-23 report shows:
 
 ```
-TOOL_DELIVERY_REPORT kind=claude full=0 compact=63 deferred=836 spent=99996 budget=100000 overrun=0
-TOOL_DELIVERY_REPORT kind=codex  full=0 compact=63 deferred=836 spent=99996 budget=100000 overrun=0
-TOOL_DELIVERY_REPORT kind=omp    full=0 compact=63 deferred=836 spent=99996 budget=100000 overrun=0
+TOOL_DELIVERY_REPORT kind=claude full=0 compact=64 deferred=922 spent=99993 budget=100000 overrun=0
+TOOL_DELIVERY_REPORT kind=codex full=0 compact=64 deferred=922 spent=99993 budget=100000 overrun=0
+TOOL_DELIVERY_REPORT kind=omp full=0 compact=64 deferred=922 spent=99993 budget=100000 overrun=0
 ```
 
 `full=0` is the policy's CORRECT output, not a bug. D-004 holds a mandated floor at the
@@ -149,8 +173,8 @@ the pre-D-002 premise and reds the gate on a fully compliant seed.
 Upgrading the delivered set to partial or full guidance is priced, and refused:
 
 ```
-GUIDANCE_UPGRADE_PARTIAL deltaBytes=26163 wouldBe=126159 budget=100000 verdict=OVER
-GUIDANCE_UPGRADE_FULL    deltaBytes=26163 wouldBe=126159 budget=100000 verdict=OVER
+GUIDANCE_UPGRADE_PARTIAL deltaBytes=30533 wouldBe=130526 budget=100000 verdict=OVER
+GUIDANCE_UPGRADE_FULL deltaBytes=30533 wouldBe=130526 budget=100000 verdict=OVER
 ```
 
 ## Reading the generated artifact

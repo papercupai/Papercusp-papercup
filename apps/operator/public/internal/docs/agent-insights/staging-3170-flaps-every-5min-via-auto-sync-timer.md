@@ -90,27 +90,17 @@ below; it preserves those restart controls and has no raw-restart fallback.
 
 ## Current coordinated-restart contract (2026-10-01)
 
-The current `sync-staging-checkout.sh` requests `dev:restart` through `ptool`
-against the staging operator at `http://127.0.0.1:3170`, with
-`target: "staging"`, `confirm: true`, `authorize: true`, and a bounded
-`git_sync_drain_sec` (default 45 seconds, clamped to the oldest supported
-operator schema). This follows the normal `dev:restart` resource-drain and
-coalesce path. The sync script downgrades its checkout lock to shared before the
-request and holds it through readiness verification.
+Updated 2026-10-22 for EI-26707155664621627.
 
-The restart can close the HTTP stream that carried the ptool response, so the
-script verifies a changed systemd MainPID and the exact target source SHA from
-`:3170` health. Once that proof exists, it terminates only the ptool client; it
-does not repeat the restart mutation. A pre-dispatch refusal or invalid result
-fails loudly. A recognized transient git-sync barrier/collision refusal may
-defer to the next tick while the served build is younger than
-`PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC` (default 1800 seconds); it fails loudly
-at the ceiling. There is no raw `systemctl restart` fallback.
+The maintained sync script chooses its control endpoint before sending a restart. It prefers staging, then an explicitly configured local PAPERCUSP\_OPERATOR\_URL, the existing background operator on :3271, and the release operator on :3070. Candidates must be bare loopback HTTP origins. Each must pass a bounded health request and a read-only dev:restart preview using the same resolved client identity. HTTP health alone does not admit a legacy or unauthorized MCP dispatcher. No suitable candidate means a clear refusal before any restart mutation.
 
-`apps/operator/lib/release/sync-staging-checkout.test.ts` covers this contract,
-including the coordinated `dev:restart` arguments and the absence of a raw
-restart invocation. Use that focused suite as the recurrence guard when this
-path changes.
+The selected operator receives one ordinary dev:restart request with target staging, confirm true, authorize true, and the bounded git\_sync\_drain\_sec (default 45 seconds, clamped to the oldest supported schema). Identity and authorization are preserved. The checkout lock is downgraded to shared before this request and held through readiness verification. The selector never retries a dispatched mutation through another operator.
+
+A restart can close the HTTP stream carrying its result. The script independently verifies a changed systemd MainPID and the exact target source SHA from staging health before treating the cutover as observed; it then stops only the stale ptool client. Pre-dispatch refusal or an invalid result fails loudly. Recognized transient git-sync barrier/collision refusals may defer while the served build is below the existing staleness ceiling. There is no raw systemctl restart fallback.
+
+A corrected canonical dependency tree does not prove a previously materialized generation contains that tree. In the 2026-10-22 incident, the serving generation retained nested sdk-trace 3.0.0 against core 2.12 even after the canonical nested package was removed. Rebuilding that same generation reproduced the missing AddAttributeDecision import. Qualify the fresh generation and its actual serving artifact after the dependency owner repairs the graph.
+
+The maintained apps/operator/lib/release/sync-staging-checkout.test.ts covers endpoint health and authenticated-preview selection, unavailable or incompatible operators, loopback restrictions, identity propagation, separate launcher stderr, lock ordering, and exact-source restart observation. Run it through the normal test:file or testing:run route.
 
 ## Root-cause fix (WI-5710, 2026-07-26) — the branch moving is not the code changing
 

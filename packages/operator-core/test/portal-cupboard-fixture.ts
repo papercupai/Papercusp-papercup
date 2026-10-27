@@ -27,7 +27,10 @@ interface OperatorPublicCatalog {
 
 async function loadOperatorPublicCatalog(): Promise<OperatorPublicCatalog> {
   const src = '../../../apps/operator-public/src/';
-  const load = (path: string) => import(src + path) as Promise<Partial<OperatorPublicCatalog>>;
+  // Resolve to an absolute file URL against THIS file: vitest resolves a bare
+  // relative non-literal specifier against the server root ('/apps/…', not found).
+  const load = (path: string) =>
+    import(new URL(`${src}${path}.ts`, import.meta.url).href) as Promise<Partial<OperatorPublicCatalog>>;
   const [sqlite, fake, listings] = await Promise.all([
     load('__tests__/sqlite-d1'), load('__tests__/fake-d1'), load('routes/listings'),
   ]);

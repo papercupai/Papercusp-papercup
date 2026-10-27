@@ -136,6 +136,23 @@ const ALLOW = new Map([
       'addressed store to report its length/blocks. Read-only inspection on a store the caller ' +
       'already identified, not a replication participant being wired up.',
   ],
+  [
+    'apps/operator/lib/release/cut-seed-cli.ts',
+    'UUID idempotency export (cut-seed-cli). Opens its OWN unregistered Corestore with ' +
+      'readOnly:true, in a separate CLI process, on the explicitly passed source store dir. ' +
+      'It is never replicate()d and never joins a swarm, so it attaches no channel to the shared ' +
+      'peer muxer and cannot starve a sibling. The opened keys come from ' +
+      'enumerateOwnStoreCoreKeys(), so the population is the OWN log only (never deduped by ' +
+      'remote-core-host); a short/empty core fails closed ("own-log head missing"). Separate ' +
+      'entry on purpose: the seed-provider-corestore.ts entry must not be widened to new sites.',
+  ],
+  [
+    'packages/operator-core/test/fixtures/seed-restore-observer-worker.mts',
+    'Test-only worker fixture (spawned by the seed-restore observer test, never imported by ' +
+      'product code). Reads back a restored core from a readOnly private target Corestore in a ' +
+      'throwaway dir; no swarm, no shared muxer. Same reason *.test.ts files are not walked, but ' +
+      'its name carries no .test. suffix, so it needs an explicit entry.',
+  ],
 ]);
 
 function* walk(dir) {
@@ -211,22 +228,35 @@ function scanTree() {
   return { violations, everyOpen, allowedSeen, stale };
 }
 
-const { violations, everyOpen, allowedSeen, stale } = scanTree();
-
-if (LIST_ONLY) {
-  everyOpen.sort((a, b) => a.rel.localeCompare(b.rel) || a.line - b.line);
-  const files = new Set(everyOpen.map((p) => p.rel));
-  console.log(`${everyOpen.length} open-by-key site(s) across ${files.size} file(s):\n`);
-  for (const p of everyOpen) console.log(`  ${p.rel}:${p.line}`);
-  console.log('\nALLOW seed (paste into this script, and give each entry a REASON):\n');
-  for (const f of [...files].sort()) console.log(`  ['${f}', 'REASON REQUIRED'],`);
-  process.exit(0);
+/**
+ * Only scan when invoked as the CLI. The guard test imports `findOpensByKey`, and
+ * a top-level scan runs at import time: any real violation (`process.exit(1)`) or
+ * stale ALLOW entry (`process.exit(0)`) then kills the WHOLE test file under
+ * Vitest ("process.exit unexpectedly called") instead of failing the one ratchet
+ * case that execs this script against the tree. Basename pin, as in
+ * check-bundle-free-refs.mjs: immune to a bundler rewriting `import.meta.url`.
+ */
+function isDirectCliInvocation(entryPath = process.argv[1]) {
+  return typeof entryPath === 'string' && /(?:^|[\\/])check-no-unhosted-remote-core\.mjs$/.test(entryPath);
 }
 
-if (violations.length > 0) {
-  console.error('\n✖ lint:no-unhosted-remote-core — remote core(s) opened outside the seam:\n');
-  for (const v of violations) console.error(`  ${v.rel}:${v.line}`);
-  console.error(`
+function main() {
+  const { violations, everyOpen, allowedSeen, stale } = scanTree();
+
+  if (LIST_ONLY) {
+    everyOpen.sort((a, b) => a.rel.localeCompare(b.rel) || a.line - b.line);
+    const files = new Set(everyOpen.map((p) => p.rel));
+    console.log(`${everyOpen.length} open-by-key site(s) across ${files.size} file(s):\n`);
+    for (const p of everyOpen) console.log(`  ${p.rel}:${p.line}`);
+    console.log('\nALLOW seed (paste into this script, and give each entry a REASON):\n');
+    for (const f of [...files].sort()) console.log(`  ['${f}', 'REASON REQUIRED'],`);
+    process.exit(0);
+  }
+
+  if (violations.length > 0) {
+    console.error('\n✖ lint:no-unhosted-remote-core — remote core(s) opened outside the seam:\n');
+    for (const v of violations) console.error(`  ${v.rel}:${v.line}`);
+    console.error(`
 Open a remote log through the seam instead:
 
     import { openRemoteLog } from '<…>/sync/hyperbee/peer-log';
@@ -249,21 +279,24 @@ Mechanism + the negative control: packages/operator-core/lib/sync/hyperbee/remot
 If your site genuinely cannot collide (its own muxer, e.g. a local pipeReplicate),
 add it to ALLOW in scripts/check-no-unhosted-remote-core.mjs WITH THE REASON.
 `);
-  process.exit(1);
-}
+    process.exit(1);
+  }
 
-if (stale.length > 0) {
-  console.log('✔ lint:no-unhosted-remote-core — no unhosted remote-core opens.');
+  if (stale.length > 0) {
+    console.log('✔ lint:no-unhosted-remote-core — no unhosted remote-core opens.');
+    console.log(
+      `\n  ${stale.length} allowlist entr${stale.length === 1 ? 'y' : 'ies'} no longer match — ` +
+        'moved or migrated. Remove from ALLOW in scripts/check-no-unhosted-remote-core.mjs ' +
+        '(a stale entry silently exempts a path that may come back):',
+    );
+    for (const f of stale) console.log(`    ${f}`);
+    process.exit(0);
+  }
+
   console.log(
-    `\n  ${stale.length} allowlist entr${stale.length === 1 ? 'y' : 'ies'} no longer match — ` +
-      'moved or migrated. Remove from ALLOW in scripts/check-no-unhosted-remote-core.mjs ' +
-      '(a stale entry silently exempts a path that may come back):',
+    `✔ lint:no-unhosted-remote-core — every remote-core open goes through the seam ` +
+      `(${allowedSeen.size} reasoned exemption${allowedSeen.size === 1 ? '' : 's'}).`,
   );
-  for (const f of stale) console.log(`    ${f}`);
-  process.exit(0);
 }
 
-console.log(
-  `✔ lint:no-unhosted-remote-core — every remote-core open goes through the seam ` +
-    `(${allowedSeen.size} reasoned exemption${allowedSeen.size === 1 ? '' : 's'}).`,
-);
+if (isDirectCliInvocation()) main();

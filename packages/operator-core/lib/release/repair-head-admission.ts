@@ -29,7 +29,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { FrozenRepairAdmission } from './frozen-candidate-repair-queue';
 import { ADMISSION_GIT_DATE } from './admission-commit-date';
 
@@ -549,6 +549,14 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const submoduleCommits: Array<{ gitlink: string; repo: string; commit: string }> = [];
     const submoduleBlobs: Record<string, string | null> = {};
     let subIndexes = 0;
+    // The main worktree the serving root belongs to (the root itself when it IS the main one):
+    // a linked worktree's common git dir is `<main>/.git`. Resolved only when a submodule is named.
+    const mainWorktreeRoot = ((): string => {
+      if (submoduleGroups.size === 0) return input.root;
+      const r = run(['rev-parse', '--path-format=absolute', '--git-common-dir']);
+      const common = r.status === 0 ? r.stdout.trim() : '';
+      return common && basename(common) === '.git' ? dirname(common) : input.root;
+    })();
     for (const group of submoduleGroups.values()) {
       if (allowlist.includes(group.gitlink)) {
         return {
@@ -560,7 +568,19 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
           paths: [group.gitlink],
         };
       }
-      const repo = join(input.root, group.gitlink);
+      // The serving host can run from a LINKED worktree (:3170's staging generation). It shares
+      // the superproject's objects, but each submodule there is a separate clone frozen when the
+      // generation was built: it lacks newer pins, and a commit built and keep-ref'd there dies
+      // with the generation, while gate-pin publication looks for the ref in the MAIN tree's
+      // submodule (WI-6554700010030437). So build in the main worktree's submodule whenever it
+      // holds both pins, and fall back to the serving root only when it cannot.
+      const pins = [group.headPin, group.sourcePin];
+      const holdsPins = (candidateRepo: string): boolean =>
+        existsSync(join(candidateRepo, '.git')) &&
+        pins.every((pin) => git(['cat-file', '-e', `${pin}^{commit}`], { cwd: candidateRepo }).status === 0);
+      const mainRepo = join(mainWorktreeRoot, group.gitlink);
+      const servingRepo = join(input.root, group.gitlink);
+      const repo = [mainRepo, servingRepo].find(holdsPins) ?? mainRepo;
       const runSub = (argv: readonly string[], env?: NodeJS.ProcessEnv): AdmissionGitResult =>
         git(argv, { cwd: repo, env: env ? { ...process.env, ...env } : undefined });
       const outer = (inner: string) => `${group.gitlink}/${inner}`;

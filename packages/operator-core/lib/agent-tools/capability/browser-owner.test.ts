@@ -108,7 +108,7 @@ describe('browser follow-ups across request workers', () => {
       expect(opened.body.observation.text).toBe('1:0,127,255');
       const current = request(b, { real: true, args: { op: 'navigate', id, selector: '#ready', screenshot: true }, url, timeoutMs: 10_000 });
       const result = await current.result; const body = JSON.parse(result.content[0].text);
-      expect(body).toMatchObject({ ok: true, observation: { title: 'worker browser', text: '2:0,127,255' } });
+      expect(body, JSON.stringify(body)).toMatchObject({ ok: true, observation: { title: 'worker browser', text: '2:0,127,255' } });
       expect(Buffer.from(result.content[1].data, 'base64').subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
       expect(events.filter(e => e.type === 'fixture:fetch' && e.seq === current.seq)).toEqual([
         expect.objectContaining({ pid: b.pid, principalStayedLocal: true }), expect.objectContaining({ pid: b.pid, principalStayedLocal: true }),

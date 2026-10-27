@@ -61,6 +61,8 @@ describe('session roster — one read for desktop and device (P-001)', () => {
     const desktop = await resolveNamedQueryV2('advRoster.list', { workspaceId: 'ws-a', view: 'header' });
     const shared = await readSessionRoster({ workspaceId: 'ws-a', view: 'header' });
     expect(desktop).toEqual([shared]);
-    expect((shared as { active: Array<{ ownerId: string }> }).active.map((a) => a.ownerId)).toEqual(['su-live']);
+    // The header projection keeps BOTH living and between-turn (parked) sessions since 6e19cf7d91 —
+    // a parked su is still the owner's session, just idle between turns.
+    expect((shared as { active: Array<{ ownerId: string }> }).active.map((a) => a.ownerId)).toEqual(['su-live', 'su-parked']);
   });
 });

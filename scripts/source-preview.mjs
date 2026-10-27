@@ -687,9 +687,27 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
 }
 
 /** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string }} VerifierDependencyProgress */
-/** @typedef {(<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>) & {
+/** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean,
+ *   command: 'snapshot-locked' | 'snapshot-generation-locked' }} VerifierSnapshotSelection */
+/** @typedef {{ snapshotSelection?: VerifierSnapshotSelection }} VerifierPhaseMetadata */
+/** @typedef {(<T>(phase: string, operation: () => T | Promise<T>, metadata?: VerifierPhaseMetadata) => Promise<T>) & {
  *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
  * }} VerifierPhaseRunner */
+
+/** Keep the verifier's snapshot path selection explicit and independently checkable. */
+export function selectVerifierDependencySnapshot(copyMode, generationSnapshotSupported) {
+  assert.ok(['copy', 'hardlink'].includes(copyMode), 'Invalid verifier dependency copy mode');
+  assert.equal(typeof generationSnapshotSupported, 'boolean', 'Invalid generation snapshot capability');
+  return { copyMode, generationSnapshotSupported,
+    command: copyMode === 'copy' && generationSnapshotSupported
+      ? 'snapshot-generation-locked' : 'snapshot-locked' };
+}
+
+function assertVerifierSnapshotSelection(selection) {
+  assert.deepEqual(selection,
+    selectVerifierDependencySnapshot(selection?.copyMode, selection?.generationSnapshotSupported),
+    'Verifier snapshot selection metadata does not match its route inputs');
+}
 
 /** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
  * must leave the last started phase readable without claiming it completed.
@@ -731,9 +749,15 @@ export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
       progress.currentTree.length <= 256, 'Invalid verifier dependency progress');
     record(phase, 'progress', { progress });
   };
-  const run = async (phase, operation) => {
+  const run = async (phase, operation, metadata) => {
+    if (metadata !== undefined) {
+      assert.equal(phase, 'deps.snapshot', 'Only the snapshot phase accepts route metadata');
+      assert.deepEqual(Object.keys(metadata).sort(), ['snapshotSelection'],
+        'Verifier phase metadata must remain bounded');
+      assertVerifierSnapshotSelection(metadata.snapshotSelection);
+    }
     const before = performance.now();
-    record(phase, 'started');
+    record(phase, 'started', metadata ?? {});
     active.add(phase);
     try {
       const result = await operation();
@@ -1967,10 +1991,9 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   // must still refuse invalid custody rather than retrying through the donor.
   const snapshotHelper = join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh');
   const generationSnapshotSupported = /^\s*snapshot-generation-locked\s*\)/m.test(await fs.readFile(snapshotHelper, 'utf8'));
-  const snapshotCommand = copyMode === 'copy' && generationSnapshotSupported
-    ? 'snapshot-generation-locked' : 'snapshot-locked';
+  const snapshotSelection = selectVerifierDependencySnapshot(copyMode, generationSnapshotSupported);
   await runPhase('deps.snapshot', () => run('bash', [snapshotHelper,
-    snapshotCommand, realpathSync(donor), realpathSync(dest), copyMode]));
+    snapshotSelection.command, realpathSync(donor), realpathSync(dest), copyMode]), { snapshotSelection });
   await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
   const script = join(dest, 'scripts/source-preview.mjs');
   // The CLI imports workspace TypeScript, including extensionless and directory
@@ -2142,7 +2165,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       path: `${resolve(receiptPath)}.phases.jsonl`, archivePath: tracedPhase.archivePath,
     })}\n`);
     const measurements = {};
-    const executePhase = async (phase, operation) => {
+    const executePhase = async (phase, operation, metadata) => {
       // Synchronous archive/census work delays JS signal delivery. Yield before
       // admitting the next phase, so a pending cancellation cannot start tests.
       if (phase !== 'cleanup') {
@@ -2150,7 +2173,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         checkCancellation();
       }
       const before = performance.now();
-      const result = await tracedPhase(phase, operation);
+      const result = await tracedPhase(phase, operation, metadata);
       measurements[phase] = Math.ceil(performance.now() - before);
       if (phase !== 'cleanup') {
         await new Promise(resolve => setImmediate(resolve));
@@ -2514,6 +2537,10 @@ export function readVerifierPhaseMeasurements(path) {
     elapsed = row.elapsedMs;
     if (row.event === 'started') {
       assert.ok(!started.has(row.phase), 'Duplicate verifier phase start');
+      if (row.snapshotSelection !== undefined) {
+        assert.ok(row.phase === 'deps.snapshot', 'Snapshot selection belongs to the snapshot phase');
+        assertVerifierSnapshotSelection(row.snapshotSelection);
+      }
       started.add(row.phase);
     } else if (row.event === 'progress') {
       const progress = row.progress;

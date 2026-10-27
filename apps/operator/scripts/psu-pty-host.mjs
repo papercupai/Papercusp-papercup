@@ -763,11 +763,18 @@ export function stampLifecycleControlCarry(msg, sid, env = process.env, nowMs = 
  * turn-provenance.ts appendLedgerRow + formatEnvelope + payloadSha256.
  * @param {string} text
  * @param {string} sid
- * @param {string} origin
+ * @param {'session-port' | 'host-control'} requestedOrigin
  * @param {EnvironmentMap} env
  * @param {number} nowMs
  */
-function tagHostOriginTurn(text, sid, origin, env, nowMs) {
+function tagHostOriginTurn(text, sid, requestedOrigin, env, nowMs) {
+  // Fail closed on an unknown origin, then bind it to a FINITE literal domain so the
+  // envelope grammar guard (envelope-grammar-cross-language step 7) can prove every
+  // marker this host emits is one the provenance classifier accepts.
+  if (requestedOrigin !== 'session-port' && requestedOrigin !== 'host-control') {
+    throw new Error(`psu-pty-host: unknown turn origin ${JSON.stringify(requestedOrigin)}`);
+  }
+  const origin = requestedOrigin === 'host-control' ? 'host-control' : 'session-port';
   const nonce = randomBytes(8).toString('hex');
   const sha256 = createHash('sha256')
     .update(String(text).replace(/\r\n?/g, '\n').trim(), 'utf8')

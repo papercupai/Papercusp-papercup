@@ -125,7 +125,10 @@ describe('Settings routes with the real workspace registry resolver', () => {
     expect(await saved.json()).toMatchObject({ ok: true, written: ['config'], version: 4 });
     expect(settings.saveProjectFiles).toHaveBeenCalledTimes(1);
     expect(settings.writeFile).toHaveBeenCalledTimes(1);
-    expect(settings.notifySyncInvalidate).toHaveBeenCalledTimes(2);
+    // The PUT invalidates only the project-files query since e59a838a7e dropped the
+    // discordConfig.byHarness invalidate (no reader of it remains).
+    expect(settings.notifySyncInvalidate).toHaveBeenCalledTimes(1);
+    expect(settings.notifySyncInvalidate).toHaveBeenCalledWith('harnessProjectFiles.byHarness', { harnessSlug: 'sheets' });
     expect((await call('GET', '/blueprint-params', 'sheets')).status).toBe(200);
   });
 

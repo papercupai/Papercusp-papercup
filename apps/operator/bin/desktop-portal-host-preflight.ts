@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import Module, { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { writeStdoutSync } from '../../../scripts/lib/write-stdout-sync.mjs';
 import { parseArgs } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 import { prepareDesktopPortalHostBundle } from './desktop-portal-host-bundle.ts';
 import { createDesktopPortalHost } from './desktop-portal-host.ts';
 
@@ -12,7 +13,7 @@ const { values } = parseArgs({ options: {
   'compile-only': { type: 'boolean', default: false },
 } });
 if (!values['portal-root']) throw new Error('--portal-root must name the maintained portal checkout');
-const papercuspRoot = values['papercusp-root'] ?? fileURLToPath(new URL('../../../', import.meta.url));
+const papercuspRoot = values['papercusp-root'] ?? moduleRepoRoot(import.meta.url);
 const result = await prepareDesktopPortalHostBundle({
   portalRoot: values['portal-root'], papercuspRoot,
   outputFile: resolve(values['portal-root'], 'desktop-portal-memory-only.cjs'),
@@ -25,10 +26,11 @@ const identity = {
   outputFingerprint: createHash('sha256').update(result.outputFiles[0].contents).digest('hex'),
 };
 if (values['compile-only']) {
-  console.log(JSON.stringify({ schemaVersion: 'desktop-portal-host-preflight-v1', ok: true,
+  // Synchronous: process.exit() would truncate a buffered console.log to a pipe.
+  writeStdoutSync(`${JSON.stringify({ schemaVersion: 'desktop-portal-host-preflight-v1', ok: true,
     ...identity, outputsWritten: false, listenerStarted: false, persistentStoreOpened: false,
     scope: 'In-memory local portal host compilation only; runtime acceptance remains unverified.',
-  }));
+  })}\n`);
   process.exit(0);
 }
 // Evaluate the prepared CommonJS bytes in memory. External dependencies resolve

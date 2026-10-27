@@ -9,7 +9,8 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { isDeepStrictEqual } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
 import type { ManagedSpawnResult } from '../task-manager/managed-spawn';
@@ -322,7 +323,7 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
 async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string, options: {
   includeProcessLinks?: boolean; includeMappedFiles?: boolean; environmentByPath?: Readonly<Record<string, string>>;
 } = {}): Promise<OpenWriterScan> {
-  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? moduleRepoRoot(import.meta.url);
   const require = createRequire(join(repoRoot, 'package.json'));
   // Reuse the scanner from canonical source; the elevated child only reads /proc.
   // Both namespaces and the ORIGINAL caller's PID are positive controls.
@@ -458,7 +459,7 @@ export function createRetentionHolderScanner(deps: {
   };
   const start = () => starting ??= new Promise<ChildProcess>((resolveChild, rejectChild) => {
     const timer = setTimeout(() => { fail('holder worker startup deadline'); rejectChild(new Error('holder worker startup deadline')); }, RETENTION_HOLDER_SCAN_MS);
-    const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? moduleRepoRoot(import.meta.url);
     const worker = join(repoRoot, 'packages/operator-core/lib/storage/disk-reclaim-holder-worker.py');
     taskPromise = import('../task-manager/managed-spawn').then(({ managedSpawn }) => managedSpawn('/usr/bin/sudo', ['-n', '/usr/bin/python3', worker], {
       class: 'other', title: 'scheduled disk retention holder scanner',
@@ -1664,7 +1665,7 @@ try:
 finally:
     os.close(fd)
 `;
-  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? moduleRepoRoot(import.meta.url);
   const result = await execute(repoRoot, '/usr/bin/sudo', ['-n', '/usr/bin/python3', '-c', worker], {
     stdin: JSON.stringify({ ...entry, rootDev: root.dev, rootIno: root.ino, dryRun,
       buildNames: BUILD_DIR_NAMES, tagSignature: CACHEDIR_TAG_SIGNATURE }), timeoutMs, observeTiming,
@@ -1808,7 +1809,7 @@ export function createWorkspaceHostCutRetentionDelegate(input: {
 
 /** Runtime delegates preserve the owning program's leases and its original receipts. */
 export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun' | 'runBudgetMs'> = {}): Promise<DiskReclaimReceipt> {
-  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? moduleRepoRoot(import.meta.url);
   const { getOrgPg } = await import('@papercusp/db-org');
   const { activeWorkspaceId } = await import('../workspace-registry');
   const { readRetentionLeases, isLeaseLive, defaultRetentionDir } = await import('../release-cut-reclaim');

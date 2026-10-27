@@ -7,6 +7,7 @@ import { readFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { moduleRepoRoot } from '../../module-repo-root.ts';
 import { createAdaptorServer } from '@hono/node-server';
 import { nativeCliPlan, nativeCliResult } from '../native-cli.fixture.ts';
 import { createTextCollector } from '../../child-output.js';
@@ -61,7 +62,7 @@ const endpoint = new URL(`http://127.0.0.1:${address.port}/api/mcp`);
 for (const [key, value] of Object.entries({ workspace, harness: workspace, client: 'native-incident-private-owner' })) {
   endpoint.searchParams.set(key, value);
 }
-const repo = resolve(import.meta.dirname, '../../../../..');
+const repo = moduleRepoRoot(import.meta.url);
 async function call(name: string, args: Record<string, unknown>) {
   const startedAt = performance.now();
   console.log(`NATIVE_INCIDENT_API_STAGE=cli-start:${name}`);

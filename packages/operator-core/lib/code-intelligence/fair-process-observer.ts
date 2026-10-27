@@ -2,9 +2,9 @@
  * Optional host capability; absence or a damaged witness remains UNKNOWN.
  */
 import { readProcessIdentity } from '../process-identity';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { realpathSync } from 'node:fs';
-import { basename, isAbsolute, relative } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import { absCgroupDir, readProcessCgroupPath, sampleCgroup } from '../task-manager/cgroup-read';
 import { deriveUserManagerRoot, scopeCgroupRelPath, taskIdFromScopeUnit } from '../task-manager/types';
 
@@ -148,7 +148,7 @@ export async function startFairProcessObserver(cgroupPath: string,
   };
   try {
     if (process.platform !== 'linux') throw new Error('Linux BPF process observation unavailable');
-    const helper = fileURLToPath(new URL('../../../../scripts/lib/fair-process-observer.py', import.meta.url));
+    const helper = join(moduleRepoRoot(import.meta.url), 'scripts/lib/fair-process-observer.py');
     const argv = ['-n', '/usr/bin/python3', '-u', helper, '--cgroup', cgroupPath];
     launched = await managedSpawn('sudo', argv, { class: 'test-run', title: 'fair comparison process observer',
       argv: ['sudo', ...argv], launchedBy: process.env.PAPERCUSP_SID ?? 'human', workItemId: 'WI-10007889',

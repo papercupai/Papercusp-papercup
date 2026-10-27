@@ -2,7 +2,8 @@
 import { createHash } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { moduleRepoRoot } from './module-repo-root';
 import type { Duplex } from 'node:stream';
 import { z } from 'zod';
 import { RuntimeCustodyRefusal, runtimeCustodyFingerprint, RUNTIME_RESOURCE_KINDS,
@@ -15,7 +16,7 @@ import { killScopeUnit } from './task-manager/control';
 import { parseProcCgroup } from './task-manager/cgroup-read';
 import { deriveUserManagerRoot, scopeCgroupRelPath, scopeUnitForTask } from './task-manager/types';
 
-const helper = fileURLToPath(new URL('../../../scripts/lib/blind-review-sealed-source.py', import.meta.url));
+const helper = join(moduleRepoRoot(import.meta.url), 'scripts/lib/blind-review-sealed-source.py');
 const REQUIRED = RUNTIME_RESOURCE_KINDS.filter(kind => kind !== 'capture');
 const MAX_FRAME = 16 * 1024;
 type Provision = Parameters<RuntimeNamespaceBackend['provision']>[0];

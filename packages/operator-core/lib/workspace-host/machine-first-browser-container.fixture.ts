@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { startDockerAllocationOwner } from '../../../../scripts/with-documenso-sandbox.mjs';
 import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
@@ -17,7 +17,7 @@ import {
   WORKSPACE_HOST_HOSTED_PTY_SSH_KEY,
 } from '../../../../libs/generic/deployment-driver/src/workspace-host-bootstrap';
 
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const repo = moduleRepoRoot(import.meta.url);
 const args = process.argv.slice(2);
 assert(args.length === 2 && args[0] === '--evidence-dir' && args[1],
   'Use --evidence-dir <fresh-directory> beneath with-private-podman.mjs');

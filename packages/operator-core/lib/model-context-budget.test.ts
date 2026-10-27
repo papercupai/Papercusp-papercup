@@ -10,6 +10,8 @@ const {
   CODEX_SAFE_DEFAULT_MODEL,
   claudeInheritedEffortOverride,
   codexModelConfigToml,
+  codexModelIdFromSpec,
+  codexServiceableForModel,
   formatCodexLaunchContextSection,
   isCodexModelDenied,
   listCodexInstalledModels,
@@ -22,6 +24,26 @@ const {
   listLaunchModelAliases,
   resolveLaunchModelAlias,
 } = modelContextBudget;
+
+describe('codexModelIdFromSpec (WI-6554700010030413)', () => {
+  it('names the gateway model a launch asks for, resolving aliases exactly as the launch does', () => {
+    const sol = normalizeCodexCliModel('sol');
+    expect(sol).not.toBe('sol');
+    for (const spec of ['sol', ' SOL ', 'sol:high', 'sol[1m]']) expect(codexModelIdFromSpec(spec)).toBe(sol);
+    expect(codexModelIdFromSpec(' gpt-6.1-sol:xhigh ')).toBe('gpt-6.1-sol');
+    expect(codexModelIdFromSpec('gpt-6.1-sol[1m]')).toBe('gpt-6.1-sol');
+    expect(codexModelIdFromSpec('')).toBeNull();
+    expect(codexModelIdFromSpec(null)).toBeNull();
+  });
+
+  it('reads a per-model serviceable count only from a well-formed entry', () => {
+    expect(codexServiceableForModel({ 'GPT-5.5': 3 }, 'gpt-5.5')).toBe(3);
+    expect(codexServiceableForModel({ 'gpt-5.5': 0 }, 'gpt-5.5')).toBe(0);
+    expect(codexServiceableForModel({ 'gpt-5.5': -1 }, 'gpt-5.5')).toBeNull();
+    expect(codexServiceableForModel(['gpt-5.5'], 'gpt-5.5')).toBeNull();
+    expect(codexServiceableForModel(null, 'gpt-5.5')).toBeNull();
+  });
+});
 
 describe('shared launch model aliases', () => {
   it('resolves the requested model wording before backend selection', () => {

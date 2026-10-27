@@ -163,11 +163,44 @@ vi.mock('../../../memory/corpus-recall-io', () => ({ recallCorpusContext: recall
 // The endpoint's optional recall is host-admitted in production. Keep this
 // acceptance replay focused on retrieval and transport by admitting its real
 // pipeline inside the partial-PG fixture, as the sibling endpoint suite does.
-vi.mock('../../../memory/mid-turn-admission', () => ({
-  withMidTurnMemoryAdmission: withMidTurnMemoryAdmissionMock,
+// Mid-turn recall now runs under identity-declared bounds (P-012): the REAL
+// bounded wrapper runs, with only its host admission swapped for the fake.
+vi.mock('../../../memory/mid-turn-admission', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../memory/mid-turn-admission')>();
+  return {
+    ...actual,
+    withMidTurnMemoryAdmission: withMidTurnMemoryAdmissionMock,
+    withIdentityBoundedMemoryAdmission: (
+      readBounds: Parameters<typeof actual.withIdentityBoundedMemoryAdmission>[0],
+      run: Parameters<typeof actual.withIdentityBoundedMemoryAdmission>[1],
+    ) => actual.withIdentityBoundedMemoryAdmission(readBounds, run, withMidTurnMemoryAdmissionMock),
+  };
+});
+// The replayed session wears no identity, so its recall is unbounded — exactly
+// the recall this replay measured. The real read would hit the PG rail. PARTIAL:
+// the injection pipeline also uses this module's pure helpers (shareOfLimit, …).
+vi.mock('../../../agent-identities/identity-recall', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-identities/identity-recall')>()),
+  readAppliedIdentityRecall: async () => null,
 }));
+// No identity ⇒ no worn post-tool rules; the real sink reads identity rules from PG.
+vi.mock('../../../agent-identities/sync-hook-rules', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-identities/sync-hook-rules')>()),
+  evaluateHookContextSink: async () => ({ text: '', result: null }),
+}));
+vi.mock('../../../memory/agent-signals', () => ({
+  resolveClaimedWorkItemIdForOwner: async () => undefined,
+}));
+// The code-intel push is a separate leg with its own reserved budget and its own
+// suites; this replay asserts the MEMORY push, so that leg contributes nothing.
+vi.mock('../../../code-intelligence/push-channel', () => ({ codeIntelPushText: async () => '' }));
 
 import routes, { deriveBatchQuery, type BatchCall } from './mid-turn-context';
+// The endpoint fails CLOSED (empty push) for an owner-bearing request when no host
+// confinement resolver is installed — a unit process never boots the host. Install
+// the unconfined resolver the sibling endpoint suites use, so the replay measures
+// retrieval and transport rather than the missing-policy refusal.
+import { setSessionConfinementResolver } from '../../../capability-envelope/session-confinement-port';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // A generic lexical relevance model — blind to which record is "the answer"
@@ -360,6 +393,7 @@ let seq = 0;
 const newOwner = (): string => `p018-sess-${++seq}`;
 
 beforeEach(() => {
+  setSessionConfinementResolver(() => null);
   ledger.clear();
   backend.search.mockClear();
   getMemoryBackendMock.mockReset().mockReturnValue(backend);

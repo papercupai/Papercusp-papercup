@@ -2039,6 +2039,40 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
       .toHaveProperty('targetCapacityUnavailable', result.targetCapacityUnavailable);
   });
 
+  // WI-6554700010030413. Measured 2026-10-27: the only serviceable Codex account
+  // refused every allowed Codex model but served another. The router probed
+  // model-blind, so it paid a headless launch per rank that psu refused for its model.
+  const modelWalledProbe = () => vi.fn(async (_agent: string, _workspaceId: string, model?: string | null) =>
+    model === 'gpt-6.1-sol'
+      ? { available: false, failureReason: 'account-walled' as const, detail: 'every codex account refuses gpt-6.1-sol' }
+      : { available: true, detail: 'codex headroom' });
+  const MODEL_RANKS: AllowedExpertModel[] = [
+    { rank: 1, agent: 'codex', model: 'gpt-6.1-sol' },
+    { rank: 2, agent: 'codex', model: 'gpt-6-luna' },
+  ];
+
+  it('probes each rank with its own model and skips a model-walled rank without launching it', async () => {
+    const probe = modelWalledProbe();
+    const { deps, calls } = makeFakes({ loadRanks: async () => MODEL_RANKS, probeBackendAvailable: probe });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(probe).toHaveBeenCalledWith('codex', CTX.workspaceId, 'gpt-6.1-sol');
+    expect(result.attempts[0]).toMatchObject({ rank: 1, model: 'gpt-6.1-sol', outcome: 'skipped', reason: 'account-walled' });
+    expect(result).toMatchObject({ dispatched: true, agent: 'codex', model: 'gpt-6-luna' });
+    expect(calls.spawn).toHaveLength(1);
+  });
+
+  it('re-probes the first native rank by model instead of reusing the provider-wide target probe', async () => {
+    const probe = modelWalledProbe();
+    const { deps, calls } = makeFakes({ loadRanks: async () => MODEL_RANKS, probeBackendAvailable: probe });
+    const result = await dispatchConsultResponder({ ...OPTS,
+      nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' },
+    }, CTX, deps);
+    expect(probe.mock.calls.map((call) => call[2] ?? null)).toEqual([null, 'gpt-6.1-sol', 'gpt-6-luna']);
+    expect(result.attempts[0]).toMatchObject({ rank: 1, outcome: 'skipped', reason: 'account-walled' });
+    expect(result).toMatchObject({ dispatched: true, model: 'gpt-6-luna' });
+    expect(calls.spawn).toHaveLength(1);
+  });
+
   it('rechecks native source state before a later cascade instead of using a changed live source', async () => {
     const { deps, calls } = makeFakes({
       readDispatchChoice: async () => ({ reviewerModel: null,

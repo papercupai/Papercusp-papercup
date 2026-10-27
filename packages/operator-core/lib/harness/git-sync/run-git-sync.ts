@@ -8632,7 +8632,10 @@ async function runGitSyncPass(
   // WI-6554700010018899: a yield INSIDE the commit phase can follow published group
   // commits (the residual and earlier per-agent groups publish before a later group's
   // probe). Pin the pre-phase root HEAD so such a yield carries its commit proof.
-  const superprojectHeadBefore = await headSha(runGit, repo);
+  // The pin is taken as the FIRST act inside the pointer-bump step (every reader is
+  // inside it): outside the step it ran `git rev-parse HEAD` on a full DBOS replay,
+  // which must re-execute NOTHING (git-sync-checkpoint-resume.test.ts).
+  let superprojectHeadBefore = '';
   const localCommits: GitSyncRootCommit[] = [];
   const notifiedRootCommits = new Set<string>();
   const notifyRootCommit = (commit: GitSyncRootCommit): void => {
@@ -8663,6 +8666,7 @@ async function runGitSyncPass(
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
   const commitRes = await step('git-sync:pointer-bump', async () => {
+    superprojectHeadBefore = await headSha(runGit, repo);
     // EI-20428405431869483: detect generated routing drift while the dirty source
     // is still present, before the catch-all commit makes the source clean.
     try {

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +16,16 @@ const root = fileURLToPath(new URL('../../../', import.meta.url));
 // the inherited committed-source guard, which remains enabled in the child.
 async function readMixedLoaderClock() {
   const source = await readFile(new URL('./process-monotonic-clock.ts', import.meta.url));
+  // Outside the checkout, so the guard never sees these files. The clock's
+  // bare '@papercusp/module-singleton' import resolves to a vendored copy in
+  // the fixture's own node_modules. The checkout copy would load through
+  // TSX's CJS transform and the guard would refuse it as differs-from-head.
   const fixture = await mkdtemp(path.join(tmpdir(), 'process-clock-loader-'));
+  const singletonSrc = path.join(root, 'libs/generic/module-singleton');
+  const singletonDir = path.join(fixture, 'node_modules/@papercusp/module-singleton');
+  await mkdir(path.join(singletonDir, 'src'), { recursive: true });
+  await copyFile(path.join(singletonSrc, 'package.json'), path.join(singletonDir, 'package.json'));
+  await copyFile(path.join(singletonSrc, 'src/index.ts'), path.join(singletonDir, 'src/index.ts'));
   const clockFile = path.join(fixture, 'clock.ts');
   // operator-core is ESM while tsx -e uses CJS, as in the recorder's imports.
   await writeFile(path.join(fixture, 'package.json'), JSON.stringify({ type: 'module' }));

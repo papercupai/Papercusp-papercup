@@ -75,7 +75,13 @@ vi.mock('../../console-launcher', () => ({
 vi.mock('../../console-spawn', () => ({
   spawnHeadless: (...args: unknown[]) => h.spawnHeadless(...args),
 }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
+// Spread the real module: launchCleanupResolver's logDir goes through
+// papercusp-root, which also reads workspacesRoot/DEFAULT_WORKSPACE_ID — a
+// missing mock export throws inside its try/catch and the spawn never happens.
+vi.mock('../../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../workspace-registry')>()),
+  activeWorkspaceId: () => 'papercusp-workspace',
+}));
 vi.mock('../../mcp-base-url', () => ({
   resolveSpawnHostOperatorBaseUrl: vi.fn(async () => 'http://127.0.0.1:3070'),
 }));

@@ -82,6 +82,13 @@ describe('independent parent oracle producer', () => {
     const cli = join(f.root, 'cli.cjs');
     buildSync({ entryPoints: [fileURLToPath(new URL('./lsp-saturation-bench-cli.ts', import.meta.url))],
       outfile: cli, bundle: true, platform: 'node', format: 'cjs', packages: 'external',
+      // Bundle the workspace source the startup graph reaches eagerly: lib/verifier-source.ts
+      // re-exports @papercusp/test-config/verifier-source and self-imports operator-core by bare
+      // specifier (58ede1a50e), and this tmpdir holds only typescript in node_modules.
+      alias: {
+        '@papercusp/test-config': fileURLToPath(new URL('../../../../libs/test-config/src', import.meta.url)),
+        '@papercusp/operator-core': fileURLToPath(new URL('../..', import.meta.url)),
+      },
       banner: { js: 'process.umask(0);' },
       define: { 'import.meta.url': JSON.stringify(pathToFileURL(cli).href) }, logLevel: 'silent' });
     writeFileSync(join(f.root, 'lsp-replay-runtime-witness.cjs'),

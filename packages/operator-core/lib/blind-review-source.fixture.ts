@@ -2,12 +2,13 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from './module-repo-root';
 import { createHash } from 'node:crypto';
 import { captureVerifierDependencies, prepareVerifierSource } from '../../../scripts/source-preview.mjs';
 import { git, write } from './source-preview.fixture';
 
-const policy = fileURLToPath(new URL('../../../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
+const checkoutRoot = moduleRepoRoot(import.meta.url);
+const policy = join(checkoutRoot, 'apps/operator/bin/release/dependency-generation.sh');
 
 export async function brokerSourceFixture(roots: string[], options: {
   gitCheckout?: boolean; omitAssets?: boolean; native?: boolean; nativeStorageRefused?: boolean;
@@ -39,7 +40,7 @@ if(process.argv[2]==='prebuild') {
   // Exercise the production tree population: a hard-coded root-only stub hid
   // the captured driver's nested node_modules from every build regression.
   write(repositoryRoot, 'papercusp-desktop/bin/lib/pinned-deps.sh',
-    readFileSync(new URL('../../../papercusp-desktop/bin/lib/pinned-deps.sh', import.meta.url), 'utf8'));
+    readFileSync(join(checkoutRoot, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'utf8'));
   write(repositoryRoot, 'apps/operator/bin/release/dependency-generation.sh', readFileSync(policy, 'utf8'));
   if (options.native) {
     write(repositoryRoot, 'papercusp-desktop/src-tauri/Cargo.lock', `version = 4

@@ -590,6 +590,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${PAPERCUSP_REPO_DIR:-${VERIFY_TAURI_ORIGINAL_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
 
+# WI-10005763 (D-012): this verifier boots the desktop FROM the live shared tree with network
+# (cargo build.rs, the operator sidecar, the host bundle). Code a session holding an active
+# personal disclosure wrote there must not run that way, so refuse before sourcing any helper or
+# allocating anything — this block must stay ABOVE the first `node` call (the budget snapshot
+# and task-deadline preflight below run node). papercusp-desktop/bin/tauri-guarded re-checks at
+# `tauri dev`, closer to launch. The gate skips itself inside a test runner, the release gate,
+# and GitHub Actions.
+# WI-10005802: the gate starts under the committed-source loader, so the gate and the preflight
+# library it imports run their committed (HEAD) bytes: a held write to either cannot run here.
+if ! node --import "$REPO_DIR/scripts/lib/committed-source-loader.mjs" \
+    "$REPO_DIR/scripts/restricted-hold-tree-gate.mjs" --door verify-tauri-headless "$REPO_DIR"; then
+  echo "FATAL: the restricted-write fence refused this verifier launch (see the RESTRICTED_HOLD_REFUSED line above); nothing was booted." >&2
+  exit 1
+fi
+
 # Share source-preview's absolute task admission before dependencies or native
 # capacity are allocated. Recheck the real clock at each expensive boundary;
 # elapsed preparation is deducted from an optional prior phase forecast.
@@ -619,18 +634,6 @@ verifier_run_step() {
   vh_run_step "${1}-budget-admission" preflight_verifier_task_deadline prepare || return $?
   vh_run_step "$@"
 }
-# WI-10005763 (D-012): this verifier boots the desktop FROM the live shared tree with network
-# (cargo build.rs, the operator sidecar, the host bundle). Code a session holding an active
-# personal disclosure wrote there must not run that way, so refuse before sourcing any helper or
-# allocating anything. papercusp-desktop/bin/tauri-guarded re-checks at `tauri dev`, closer to
-# launch. The gate skips itself inside a test runner, the release gate, and GitHub Actions.
-# WI-10005802: the gate starts under the committed-source loader, so the gate and the preflight
-# library it imports run their committed (HEAD) bytes: a held write to either cannot run here.
-if ! node --import "$REPO_DIR/scripts/lib/committed-source-loader.mjs" \
-    "$REPO_DIR/scripts/restricted-hold-tree-gate.mjs" --door verify-tauri-headless "$REPO_DIR"; then
-  echo "FATAL: the restricted-write fence refused this verifier launch (see the RESTRICTED_HOLD_REFUSED line above); nothing was booted." >&2
-  exit 1
-fi
 # BASH_SOURCE points at the temporary entry after the source re-exec. Resolve
 # adjacent helpers from the preserved repository, and load their definitions
 # before preparing a runtime so a missing helper cannot waste a full build.

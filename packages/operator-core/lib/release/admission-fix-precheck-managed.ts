@@ -409,6 +409,26 @@ async function runBoundedAdmissionPrecheck(
       return { status: 'interrupted', reason: `${reason}; settlement refused: ${String(error)}` };
     }
   };
+  // WI-6554700010030460: a gate run holding the checkpoint tree (at the start, or taken between
+  // execution groups) makes the runner report `checkpoint-tree-busy`. Nothing ran, so this is a
+  // DEFERRAL, not a runner failure: settle it with the runner's own reason (status `deferred`,
+  // per-file rows kept) so the door's "wait for the gate run to release the tree" guidance is
+  // accurate and the next confirm resumes the kept rows. Settling it as runner-failed sent callers
+  // into retryPrecheck loops that re-failed for as long as the suite held the tree.
+  const deferred = async (run: Extract<FixPrecheckRunResult, { reason: 'checkpoint-tree-busy' }>): Promise<AdmissionPrecheckWorkerOutcome> => {
+    try {
+      await finalize();
+      const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
+      const verdict = evaluateFixPrecheck(population, run);
+      await deps.transition(input.queueTarget, fresh => {
+        assertFresh(fresh);
+        return admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, now());
+      });
+      return { status: 'settled', verdict };
+    } catch (error) {
+      return { status: 'interrupted', reason: `${run.detail}; settlement refused: ${String(error)}` };
+    }
+  };
   if (!operation.builtTree || new Set(operation.files).size !== operation.files.length)
     return unavailable('wide pre-check requires a built-tree identity and unique immutable population');
   const saved = operation.measurement;
@@ -459,7 +479,7 @@ async function runBoundedAdmissionPrecheck(
         // No failed or unmeasured completed file is ever rerun into a pass.
         return interrupted(String(error));
       }
-      if (!run.ran) return interrupted(run.detail);
+      if (!run.ran) return run.reason === 'checkpoint-tree-busy' ? deferred(run) : interrupted(run.detail);
       if (run.commit !== operation.builtCommit) return unavailable('execution-group commit mismatch');
       try { validateAdmissionPrecheckResults(files, run.results, true); }
       catch (error) { return unavailable(String(error)); }

@@ -24,15 +24,26 @@ vi.mock('../../attention/bulk-run-store', () => {
     BulkRunAlreadyActiveError,
     createRun: (...args: unknown[]) => H.createRun(...args),
     failRunIfExecuting: vi.fn(),
+    getRun: vi.fn(async () => null),
+    restartRun: vi.fn(),
+    resumeReviewRun: vi.fn(),
     setRunPhase: (...args: unknown[]) => H.setRunPhase(...args),
     settleRunPhase: vi.fn(),
   };
 });
-vi.mock('../../plan-cleanup/run-store', () => ({ markCleanupFindingAccepted: vi.fn() }));
+// Every name the route + plan-cleanup/start-run import from a mocked module
+// must exist on its mock: vitest refuses a missing named export at import time.
+vi.mock('../../plan-cleanup/run-store', () => ({
+  getRunFindings: vi.fn(),
+  markCleanupFindingAccepted: vi.fn(),
+  markCleanupFindingDismissed: vi.fn(),
+  reclassifyLegacyFindings: vi.fn(),
+}));
 vi.mock('../../plan-cleanup/resolver-brief', () => ({ buildCleanupResolverBrief: vi.fn(() => 'brief') }));
 vi.mock('../../plan-cleanup/deterministic-runner', () => ({
   buildPlanCleanupSystemCall: (args: unknown) => H.buildCall(args),
   runDeterministicPlanCleanup: (args: unknown) => H.deterministic(args),
+  scanCleanupRun: vi.fn(),
 }));
 vi.mock('../routes/admin/attention-bulk-resolve', () => ({
   buildResolverLaunchCommand: vi.fn(() => 'psu'),
@@ -40,8 +51,17 @@ vi.mock('../routes/admin/attention-bulk-resolve', () => ({
     ok: true,
     launch: { model: null, effort: null, account: 'default', carry: 'warm', backend: 'claude' },
   })),
+  resolvePersistedResolverLaunch: vi.fn(),
   resolverSpawnOutcome: vi.fn(),
 }));
+// The standing policy lives in operator state; keep the unit test off the live store.
+vi.mock('../../attention/automation-policy', async (importOriginal) => {
+  const { DEFAULT_STANDING_BULK_AUTOMATION_POLICY } = await import('../../attention/bulk-dispositions');
+  return {
+    ...(await importOriginal<typeof import('../../attention/automation-policy')>()),
+    readStandingBulkAutomationPolicy: vi.fn(async () => ({ ...DEFAULT_STANDING_BULK_AUTOMATION_POLICY })),
+  };
+});
 
 import { planCleanupHandler } from '../routes/admin/plan-cleanup';
 

@@ -3499,10 +3499,14 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
   // name a follow-up tool only when this session was listed it. Record the final listing
   // durably (a hook push can land on another process); off the response path, never fatal.
   if (spawnRes.kind === 'ok') {
-    const ownerId = resolveAgentIdentity(spawnRes.ctx).ownerId;
+    const ctx = spawnRes.ctx;
     const names = listings.flatMap(listing => typeof listing.name === 'string' ? [listing.name] : []);
+    // The owner is resolved inside recordListedTools: resolveAgentIdentity THROWS for a ctx it
+    // cannot attribute (an app-key principal), and evaluated here it failed the whole listing
+    // (EI-27158841329142596).
     void import('../../../code-intelligence/push-toolset')
-      .then(({ rememberExposedTools }) => rememberExposedTools({ workspace: spawnRes.ctx.workspaceId, owner: ownerId, tools: names }))
+      .then(({ recordListedTools }) => recordListedTools({
+        workspace: ctx.workspaceId, resolveOwner: () => resolveAgentIdentity(ctx).ownerId, tools: names }))
       .catch(() => { /* advisory: an unrecorded listing reads as an unknown toolset */ });
   }
   return { kind: spawnRes.kind, spawnRes, listings };

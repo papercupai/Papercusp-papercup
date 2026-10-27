@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -14,6 +14,9 @@ function productionFiles(): string[] {
   })
     .split('\0')
     .filter(Boolean)
+    // A tracked file rm-ed on the shared tree stays in the index until git-sync
+    // commits the deletion; reading it would throw ENOENT (WI-10004176).
+    .filter((file) => existsSync(resolve(repoRoot, file)))
     .filter((file) => /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(file))
     .filter((file) => /^(?:apps\/operator|packages\/operator-core|packages\/agent-mcp|libs\/host-platform)\//.test(file))
     .filter((file) => !/(?:^|\/)(?:node_modules|dist|build|coverage|scratch|test|tests|__tests__|__fixtures__|fixtures|e2e)(?:\/|$)/.test(file))

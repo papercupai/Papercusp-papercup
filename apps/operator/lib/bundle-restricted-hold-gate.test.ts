@@ -15,6 +15,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  BUNDLE_PREFLIGHT_SKIP_REASONS,
   RESTRICTED_HOLD_PREFLIGHT_EXIT,
   RESTRICTED_HOLD_PREFLIGHT_MARKER,
   interpretRestrictedHoldPreflight,
@@ -442,15 +443,74 @@ describe('GitHub Actions runners host no Papercusp operator (WI-10006976)', () =
     expect(lines.join('\n')).toMatch(/census skipped \(github-actions/);
   });
 
-  it('runGate still fails closed on any other skip reason', () => {
+  it('runGate still fails closed on any other skip reason, under a refusal that names it', () => {
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
+    publish('hono-host.mjs', 'new host');
+    const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
+    const lines: string[] = [];
+    const code = runGate({
+      root: work, baseDir, outdir, snapshotDir, metafiles: [main],
+      preflight: () => ({ verdict: 'skipped', reason: 'testing-run' }) as never,
+      log: (line) => lines.push(line),
+    });
+    expect(code).toBe(GATE_EXIT.refuse);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
+    // A bare skipped verdict used to print `error=undefined ... undefined`.
+    expect(lines.join('\n')).toMatch(/BUNDLE_RESTRICTED_HOLD_REFUSED error=restricted_hold_skip_undeclared .*"testing-run"/);
+    expect(lines.join('\n')).not.toMatch(/undefined/);
+  });
+});
+
+describe('every bundle-preflight skip is admitted by the gate (WI-6554700010030421)', () => {
+  // 3632d7de77 taught runBundleRestrictedHoldPreflight to skip on the green-checkpoint identity while
+  // runGate admitted only github-actions: every gate-run host bundle was refused and, with no
+  // last-known-good artifact, bundle-host.sh exited 1 (native-ecosystem.e2e red on every gate run).
+  const neverCensus = (calls: string[]) => (_cmd: string, args: readonly string[]) => {
+    calls.push(args.join(' '));
+    return { status: 1, stdout: '', stderr: 'census must not run on a declared skip', signal: null };
+  };
+  // The env that produces each declared skip. A reason added to BUNDLE_PREFLIGHT_SKIP_REASONS with no
+  // row here fails the completeness check below, so the table cannot drift from the preflight.
+  const skipEnvs: Record<string, NodeJS.ProcessEnv> = {
+    'release-gate': { PC_HEAVY_RELEASE_GATE: '1', GREEN_CHECKPOINT: '1' },
+    'github-actions': { GITHUB_ACTIONS: 'true' },
+  };
+
+  it('the table lists exactly the reasons the preflight can return', () => {
+    expect(Object.keys(skipEnvs).sort()).toEqual(Object.keys(BUNDLE_PREFLIGHT_SKIP_REASONS).sort());
+  });
+
+  it.each(Object.keys(skipEnvs))('the REAL preflight skip "%s" keeps the fresh bundle through runGate', (reason) => {
+    const calls: string[] = [];
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
+    publish('hono-host.mjs', 'new host');
+    const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
+    const lines: string[] = [];
+    const code = runGate({
+      root: work, baseDir, outdir, snapshotDir, metafiles: [main],
+      preflight: ((opts: Parameters<typeof runBundleRestrictedHoldPreflight>[0]) =>
+        runBundleRestrictedHoldPreflight({ ...opts, env: skipEnvs[reason], spawn: neverCensus(calls) as never })) as never,
+      log: (line) => lines.push(line),
+    });
+    expect(calls).toHaveLength(0);
+    expect(code).toBe(GATE_EXIT.admit);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('new host');
+    expect(existsSync(snapshotDir)).toBe(false);
+    expect(lines.join('\n')).toContain(`census skipped (${reason}: `);
+  });
+
+  it('only the PAIRED gate identity skips: GREEN_CHECKPOINT=1 alone still runs the census and fails closed', () => {
+    const calls: string[] = [];
     snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
     publish('hono-host.mjs', 'new host');
     const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
     const code = runGate({
       root: work, baseDir, outdir, snapshotDir, metafiles: [main],
-      preflight: () => ({ verdict: 'skipped', reason: 'testing-run' }) as never,
+      preflight: ((opts: Parameters<typeof runBundleRestrictedHoldPreflight>[0]) =>
+        runBundleRestrictedHoldPreflight({ ...opts, env: { GREEN_CHECKPOINT: '1' }, spawn: neverCensus(calls) as never })) as never,
       log: () => {},
     });
+    expect(calls).toHaveLength(1);
     expect(code).toBe(GATE_EXIT.refuse);
     expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
   });

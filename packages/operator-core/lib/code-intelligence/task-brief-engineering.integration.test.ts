@@ -4,6 +4,7 @@ import { getClaimTimeTaskBrief } from './task-brief';
 import { readEngineeringEvidence } from './engineering-evidence';
 import { DEFAULT_PACKER_EFFECTS, packerFacade } from './packer-facade';
 import { readWorkItemResume } from '../agent-tools/work_items/resume';
+import { toolsetFromNames } from './push-toolset';
 
 describe('canonical engineering evidence in agent resume', () => {
   let state: Awaited<ReturnType<typeof setupEngineeringEvidenceFixture>>;
@@ -12,7 +13,10 @@ describe('canonical engineering evidence in agent resume', () => {
   it('ee.brief-resolving-refs: claim and resume share exact private-PG authority without requiring source paths or tracing', async () => {
     const item = { id: 'WI-ee-brief', harness: state.harness, sourcePlanSlug: state.plan, sourcePlanItemIds: ['P-001'],
       payload: { plan_item: { plan_slug: state.plan, item_id: 'P-001' } } };
-    const source: typeof getClaimTimeTaskBrief = ref => getClaimTimeTaskBrief({ ...ref, workspaceId: state.scope.workspaceId }, {
+    // P-006: the recipient was listed graph:query, so the brief may name its engineering recovery call.
+    const source: typeof getClaimTimeTaskBrief = ref => getClaimTimeTaskBrief({ ...ref, workspaceId: state.scope.workspaceId,
+      owner: 'su-ee-integration' }, {
+      toolset: async () => toolsetFromNames(['graph:query', 'work_items:get', 'plans:get', 'code:pack']),
       root: async () => state.root, effects: DEFAULT_PACKER_EFFECTS, pack: packerFacade,
       graph: async () => { throw new Error('No source paths requested'); },
       engineering: (query, scope) => readEngineeringEvidence(query, scope, state.store()),
@@ -24,7 +28,7 @@ describe('canonical engineering evidence in agent resume', () => {
     const resume = await readWorkItemResume(item, { checkpoint: async () => ({ checkpoint: null, updatedAtMs: null }),
       freshness: async () => undefined, evidence: async () => [], taskBrief: source });
     expect(resume.taskBrief).toHaveProperty('engineering.intent', claim.engineering?.intent);
-    const recovery = claim.engineering!.recover.args;
+    const recovery = claim.engineering!.recover!.args;
     const graph = await readEngineeringEvidence({ item: { plan: String(recovery.plan), id: String(recovery.item) } },
       state.scope, state.store());
     expect(graph.nodes.find(node => node.kind === 'proof')?.data.id).toBe(state.bindingId);

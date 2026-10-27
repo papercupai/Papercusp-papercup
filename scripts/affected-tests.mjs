@@ -242,7 +242,7 @@ import {
   classifyAffectedCargoFailure,
   shouldRunAffectedCargoSuite,
 } from "./lib/cargo-result.mjs";
-import { listFilesIncludingUntracked, listTrackedFiles } from "./lib/tracked-files.mjs";
+import { coverageOf, describeUnscanned, listFilesIncludingUntracked, listTrackedFiles } from "./lib/tracked-files.mjs";
 import {
   classifyRetryTreeProvenance,
   formatRetryTreeProvenanceNotice,
@@ -5250,7 +5250,16 @@ function testReferenceLines(stems) {
   return lines;
 }
 
-/** Every tracked Vitest config with its source; null when they cannot all be read. */
+/**
+ * Every tracked Vitest config with its source; null when they cannot all be read, or
+ * when the enumeration could not see a submodule whose source is on disk.
+ *
+ * In a release-shaped checkout (submodule source `git archive`-extracted, no .git —
+ * the green gate's own tree can be one) `--recurse-submodules` reaches no submodule
+ * file, here or in testReferenceLines' `git grep`. A search that never opened those
+ * files cannot prove a changed test file unreachable, so the gap is reported and the
+ * caller takes the conservative full walk instead of under-selecting dependents.
+ */
 function trackedVitestConfigs() {
   const r = spawnSync("git", ["ls-files", "--recurse-submodules", "-z"], {
     cwd: ROOT,
@@ -5259,9 +5268,14 @@ function trackedVitestConfigs() {
     timeout: 60_000,
   });
   if (r.error || r.status !== 0) return null;
+  const files = r.stdout.split("\0").filter(Boolean);
+  const coverage = coverageOf(files, ROOT);
+  if (coverage.unscannedPresent.length > 0) {
+    errSync(`TEST_ONLY_PROPAGATION coverage=incomplete${describeUnscanned(coverage, ROOT)} — reference search cannot prove reachability`);
+    return null;
+  }
   try {
-    return r.stdout
-      .split("\0")
+    return files
       .filter(isVitestConfigPath)
       .map((path) => ({ path, text: readFileSync(join(ROOT, path), "utf8") }));
   } catch {

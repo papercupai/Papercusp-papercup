@@ -1,13 +1,24 @@
 /** Lightweight process/identity seam shared with the structural facade and native worker. */
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 export const AST_GREP_VENDOR_DIR = papercuspPath('vendor', 'ast-grep');
-export function resolveAstGrepBin() {
-  const bin = join(AST_GREP_VENDOR_DIR, 'node_modules', '.bin', 'ast-grep');
-  return existsSync(bin) ? bin : null;
+// A workspace-scoped PAPERCUSP_HOME can hide the canonical host installation.
+// The host path is an explicit, pinned tool asset root: it is never a PATH
+// lookup, and ast-grep receives only the facade's read-only argv.
+function candidateVendorDirs(env, fallbackHome) {
+  const homes = [papercuspHome(env, fallbackHome), papercuspHome({}, fallbackHome)];
+  return [...new Set(homes)].map((home) => join(home, 'vendor', 'ast-grep'));
+}
+export function resolveAstGrepBin({ env = process.env, fallbackHome = homedir() } = {}) {
+  for (const vendorDir of candidateVendorDirs(env, fallbackHome)) {
+    const bin = join(vendorDir, 'node_modules', '.bin', 'ast-grep');
+    if (existsSync(bin)) return bin;
+  }
+  return null;
 }
 export function assertIsAstGrep(output) {
   const match = /^ast-grep\s+(\d+\.\d+\.\d+)/.exec(output.trim());
@@ -16,7 +27,10 @@ export function assertIsAstGrep(output) {
 }
 export async function astGrepIdentity() {
   const bin = resolveAstGrepBin();
-  if (!bin) return { ok: false, reason: `pinned ast-grep is not provisioned. Expected it under ${AST_GREP_VENDOR_DIR}. Provision it (P-014) rather than falling back to a PATH lookup — on Linux that resolves shadow-utils' \`sg\`, not ast-grep.` };
+  if (!bin) {
+    const expected = candidateVendorDirs(process.env, homedir());
+    return { ok: false, reason: `pinned ast-grep is not provisioned. Expected it under ${expected.join(' or ')}. Provision it (P-014) rather than falling back to a PATH lookup — on Linux that resolves shadow-utils' \`sg\`, not ast-grep.` };
+  }
   try {
     const { stdout } = await promisify(execFile)(bin, ['--version'], { timeout: 10_000 });
     const verdict = assertIsAstGrep(stdout);

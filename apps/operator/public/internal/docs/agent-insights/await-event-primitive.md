@@ -270,20 +270,57 @@ before federation is attempted, so a federation miss never loses the local wake.
   `lock_id` with the TTL **already running**: edit, then `locks:release`. The
   old "pivot/retry" advice is retired.
 * **Blocked on a peer:** they tell you a key (or you agree on one) → you
-  `events:await`, they `events:emit`. Built-in keys that fire today:
-  `work-item:done:<id>`, `work-item:unblocked:<id>` (last blocker settled),
+  `events:await`, they `events:emit`. Check `events:catalog` for the full, current registry — its
+  rows also carry `live_awaiters` (EI-9000: how many agents are actually listening
+  RIGHT NOW, not just whether the key is wired). Keys that fire today include
+  `work-item:done:<id>`, `work-item:settled:<id>`, `work-item:unblocked:<id>` (last blocker settled),
   `plan-run:finished:<runId>`, `plan:draft-ready:<slug>`,
   `conversation:answered:<id>` (coord:ask's miss path names it),
   `release:green` (plus the pipeline-scoped `release:green:<pipeline>` /
   `green-checkpoint:red:<pipeline>` — prefer the scoped keys on a box hosting
-  several pipelines, EI-7646), `release:deployed` / `release:deploy-failed`,
+  several pipelines, EI-7646), `release:deployed:<sha>` / `release:deploy-failed`,
   `escalation:resolved:<msgId>`, `handoff:accepted:<msgId>`,
   `rate-limit:paused/reset:gym-judge|gym-ab`, `lock:grant:<ticket>`,
   `work-item:created:<severity>` (payload-filtered global key, EI-8296),
   `git-sync:committed:<sha>`, `service:up|down:<name>`, `claim:released:<id>`,
-  `fleet:drained:<slug>`. Check `events:catalog` for the full, current registry — its
-  rows now also carry `live_awaiters` (EI-9000: how many agents are actually listening
-  RIGHT NOW, not just whether the key is wired).
+  `fleet:drained:<slug>`. Any of them can WAKE you. Only some can stand as a recorded
+  wait — see the next bullet.
+* **A wake is not a wait: blockers and durable parks need a PROVING key**
+  (`event-wait-settlement-2026-10-20`). `events:await` accepts any key, because a fire only
+  wakes you and you re-check. A recorded wait is different: a work-item blocker
+  (`work_items:set_blocker { kind:'event'|'gate', ref }`) or a durable park (a
+  `work_items:release { claimHold }` trigger) is RELEASED by a fire, so the write is admitted
+  only when a fire can prove the condition (`packages/operator-core/lib/wait-ref-admission.ts`).
+  Accepted: a catalogued completion family (`fireProves:'condition'`) with its subject id —
+  `work-item:done:<id>`, `work-item:settled:<id>`, `plan-run:finished:<runId>`,
+  `release:deployed:<sha>`, `lock:grant:<ticket>`, `escalation:resolved:<msgId>`,
+  `conversation:answered:<id>`, `handoff:accepted:<acceptMsgId>`; an announced gate (the
+  condition's owner calls `events:emit { event, announce:true }` and the waiter names the key it
+  returns); or a predicate watch's `predicate:<id>` key. Refused, with a code and the options
+  that would work:
+
+  * `wait_ref_unprovable` — a broad wake (`coord:inbox-wake:<owner>`, `git-sync:committed`);
+    a change notification (`work-item:status:<id>`, `work-item:unblocked:<id>`,
+    `work-item:blocked:<id>`, `work-item:claimed:<id>`, `claim:released:<id>` — a fire says the
+    subject CHANGED, not that it reached the state you wait for); any other family whose
+    `fireProves` is not `'condition'` (for example `service:up|down:<name>`,
+    `fleet:drained:<slug>`); or an uncatalogued key or free text.
+  * `wait_ref_already_satisfied` — the key already fired. A fire before the wait is never
+    credited to it, so the wait would strand at once.
+  * `wait_ref_unreachable` — the key's producer announcement was cancelled or expired.
+  * `wait_ref_unmeasured` — the resolver failed. Admission fails closed; retry.
+
+  When no event can prove the condition, record a `runtime` or `human` blocker with
+  `recheckAt`: the blocker re-check sweep escalates it to you on that date.
+* **How a recorded wait settles.** Emit-time settlement, announced settlement, the blocker
+  re-check sweep and durable-park settlement all release on ONE predicate: the fire certifies
+  the condition. An unprovable wait written before admission existed, or by a build or write
+  path that lacks it, is stamped with a `recheckAt` by a recurring backfill leg of the
+  `gate-watcher-tick` routine, so the sweep escalates it to its holder instead of leaving it
+  silent. That takes up to a full tick pass, which ran 14–25 min on 2026-10-27. The work-item
+  dependency graph pane draws event/gate blockers as waits (`workItems.depWaits`), a sibling
+  read kept out of depth and the critical path (accepted risk:
+  `event-wait-settlement-2026-10-20#D-014`).
 * **Directed-wake honesty (`coord:send`):** a `coord:send { wake:'required', to:[agent] }`
   that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** —
   a loud miss to act on (they're not running: spawn fresh or pick another addressee), not

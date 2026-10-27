@@ -29,7 +29,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:
 import { homedir, loadavg } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import type { ArmDeps } from './engine-comparison-arms';
 import { hashCases, hashKeys, hashPreregistration, preregister, type AnswerKey, type AdjudicationVerdict, type ArmCapabilities, type Preregistration } from './fair-comparison';
 import { admitArm } from './fair-comparison-admission';
@@ -376,7 +377,7 @@ export function fairProcessCensus(expected: { taskId: string; cgroupPath: string
  * This is a precondition, not a claim that all transitive source is qualified. */
 export async function verifyFairWorkerSource(readSource?:
   (path: string, version: 'working' | 'committed') => Promise<string>): Promise<void> {
-  const root = fileURLToPath(new URL('../../../../', import.meta.url));
+  const root = moduleRepoRoot(import.meta.url);
   const read = readSource ?? (async (path: string, version: 'working' | 'committed') => {
     if (version === 'working') return readFile(join(root, path), 'utf8');
     return (await run('git', ['-C', root, 'show', `HEAD:${path}`], { maxBuffer: 1 << 24 })).stdout;
@@ -773,7 +774,7 @@ async function worker(id: FairArmId): Promise<void> {
 
 /** Reuse the maintained npm workspace resolver, including negated patterns. */
 export async function workspaceDirs(root: string, patterns: readonly string[]): Promise<string[]> {
-  const resolverUrl = new URL('../../../../scripts/assert-workspace-links.mjs', import.meta.url).href;
+  const resolverUrl = pathToFileURL(join(moduleRepoRoot(import.meta.url), 'scripts/assert-workspace-links.mjs')).href;
   const { expandWorkspaces } = await import(resolverUrl) as {
     expandWorkspaces(patterns: readonly string[], root: string): string[];
   };

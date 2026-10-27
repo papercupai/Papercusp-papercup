@@ -24,6 +24,9 @@ import {
   type ProviderInvokeRequest,
 } from '@papercusp/plugin-sdk';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { createProviderRegistry, providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import type { OutboundDispatchDeps } from './provider-dispatch';
 
@@ -128,7 +131,7 @@ export function invokedArgs<T>(installed: InstalledSocialPackages): T[] {
 
 /** Current package descriptors are the acceptance inputs, including unload/additions. */
 export function bundledSocialProviderDescriptors(): ProviderDescriptor[] {
-  const directory = new URL('../../../../libs/papercusp/plugins/', import.meta.url);
+  const directory = pathToFileURL(`${join(moduleRepoRoot(import.meta.url), 'libs/papercusp/plugins')}/`);
   return readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .sort((a, b) => a.name.localeCompare(b.name))

@@ -5,7 +5,7 @@ import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup
 import type { Sql } from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { createRequire } from 'node:module';
 import { createHash, createDecipheriv, scryptSync } from 'node:crypto';
 import { constants } from 'node:fs';
@@ -840,7 +840,7 @@ export async function historicalPlaywrightStateCensusProducer(evidence: readonly
  * Decrypted values never leave this function or appear in the census manifest.
  */
 export async function historicalHostedProfileCensusProducer(evidence: readonly HostedProfileWriterEvidence[],
-  home = homedir(), readerPath = fileURLToPath(new URL('../../../../node_modules/verdict-cli/src/server.mjs', import.meta.url))) {
+  home = homedir(), readerPath = join(moduleRepoRoot(import.meta.url), 'node_modules/verdict-cli/src/server.mjs')) {
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
   if (evidence.length > 100) throw new Error('Hosted profile evidence bound exceeded');

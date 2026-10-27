@@ -325,6 +325,24 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     expect(hook.map(row => row.subject)).toEqual(['i-1', 'i-2']);
   });
 
+  it('code-intel-delivery-and-outcomes P-006 (SPEC-P-006-B): a brief whose recovery call was withheld records no suggested call', async () => {
+    const workspace = 'push-integration-withheld-recover';
+    const intent = {
+      status: 'current' as const, intent: { text: 'fix target', fingerprint: 'w'.repeat(64) }, sourceFingerprint: 'v'.repeat(64),
+      commit: 'a'.repeat(40), files: [{ path: 'target.ts', sha256: 'b'.repeat(64), kind: 'implementation' as const }],
+    };
+    const completion = {
+      status: 'measured' as const,
+      changes: [{ file: 'target.ts', symbol: 'run', sourceFingerprint: 'q'.repeat(64), consumers: ['caller.ts'] }],
+      limitations: [],
+    };
+    expect(await recordIntentTaskBrief({ workspace, owner: input.owner }, intent)).toBe(true);
+    expect(await recordCompletionTimeBrief({ workspace, owner: input.owner, workItem: 'WI-withheld' }, completion)).toBe(true);
+    const rows = await db.adminSql<{ leg: string; suggested_call: string | null }[]>`
+      SELECT leg, suggested_call FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace} ORDER BY leg`;
+    expect(rows).toEqual([{ leg: 'completion', suggested_call: null }, { leg: 'intent', suggested_call: null }]);
+  });
+
   it('code-intel-delivery-and-outcomes P-002: a delivered completion brief is one completion row that never spends the hook budget', async () => {
     const workspace = 'push-integration-completion';
     const brief = {

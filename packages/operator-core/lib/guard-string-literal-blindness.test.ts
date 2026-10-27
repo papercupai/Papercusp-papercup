@@ -533,7 +533,7 @@ const REVIEWED_READER_CORPUS: Record<string, { sha256: string; reason: string }>
   'check-peer-dep-conflicts.mjs': { sha256: '85339c2018f8247451cdf4f10ff719dcf36b3b269ff491f3d672e007e0f7a3af', reason: 'Workspace globs select package.json manifests, lock JSON and dependency package.json metadata.' },
   'check-reachable-advisories.mjs': { sha256: 'ed17468fca3e2a6d4cc1099ab2dc0af3f911026e645ba6335cd172405ee3bc6b', reason: 'Default package manifests, baseline JSON and npm JSON diagnostics; optional fixture paths are unrestricted.' },
   'check-rust-advisories.mjs': { sha256: '0b301c96b171e6b58480ac40736325628de5801a1aef567dc340b5fe5a9c6fec', reason: 'Default Cargo.lock, baseline JSON and OSV records; explicit --lock/--osv-json paths are outside this review.' },
-  'check-systemd-dropins-installed.mjs': { sha256: '1d83d17d6c4a7c7ccdc9a1160cb6d91026f95f83678b893002ae2d4be42c828a', reason: 'Tracked service/slice/scope .conf inputs, systemctl properties/live prefix-unit names and fixed autostart .desktop bytes; source re-reviewed after 839a99e8ea.' },
+  'check-systemd-dropins-installed.mjs': { sha256: '27a924f38f144dd87d01299b603eaf4278ffb8eb3a629b7c99aabea8d6052ebd', reason: 'Tracked service/slice/scope .conf inputs, systemctl properties/live prefix-unit names and fixed autostart .desktop bytes; source re-reviewed after b6aae68230 (its gnome-terminal-server LimitNOFILESoft check is one more systemctl property read).' },
   'check-vite-externalized-warnings.mjs': { sha256: '70fe3293f3b40271c07994c416c7b266cc49a27450f9792d783982f79c0a3d7d', reason: 'Baseline JSON and child build diagnostics; child source loading is distinct from this direct text consumer.' },
 };
 
@@ -542,26 +542,30 @@ const REVIEWED_READER_CORPUS: Record<string, { sha256: string; reason: string }>
 // pin the reviewed direct text consumers without allowing their effects to run.
 // Scope is test callbacks in the default inert environment (no env overrides).
 // Imports loading implementation code are not themselves direct text consumers.
-const REVIEWED_TEST_READER_CORPUS: Record<string, { sha256: string; status: 'source' | 'non-source'; reason: string }> = {
+// `sha256` may list SEVERAL reviewed blobs when the frozen repair lineage and staging carry
+// different reviewed versions of one file, so the same guard bytes pass on both
+// (frozen-lineage-red-burndown-2026-10-27#D-001 rule 2). Every listed blob is one a person
+// reviewed; drop the superseded one once the lineages converge.
+const REVIEWED_TEST_READER_CORPUS: Record<string, { sha256: string | readonly string[]; status: 'source' | 'non-source'; reason: string }> = {
   'apps/operator-vite/src/__tests__/dark-flag-route-contract.test.ts': { sha256: '322a839a3d202eb7cd478ab0fba70eba245e7a99b53747ea6eb5571a4919695f', status: 'source', reason: 'listSourceFiles selects non-test .ts/.tsx route files; gatedRoutes reads and strips their bytes.' },
   'apps/operator-vite/src/__tests__/no-server-leak-in-client-graph.test.ts': { sha256: 'cc75f6b293ce65d632e7d839c84047b13f545eda5ea03cee1d3bfa5b36552f81', status: 'source', reason: 'Reads vite.config.ts and traverses client/workspace JS/TS imports, then inspects each selected source.' },
   'apps/operator/app/_components/monaco-cdn.test.ts': { sha256: '97a5d44ac35a76868e1c036e76b6a2110a6b942a47730df711ad3616cd336824', status: 'source', reason: 'Async live TypeScript enumeration and fixed live-source-files.ts/Monaco runtime reads; fs/promises is unsupported by the VM.' },
   'apps/operator/app/_components/porcupine-cdn.test.ts': { sha256: '632e01f0b5fbba4b1c12ec5740075ee32c1e79248fe3bc9ac9aa745173f6e5df', status: 'source', reason: 'Async fixed Porcupine engine TypeScript reads, alongside shell setup and model bytes.' },
   'apps/operator/app/_components/vditor-cdn.test.ts': { sha256: 'f302eb4a6012012d5fa492b77d1593ce4c648afd501de061dc725e02eccd5652', status: 'source', reason: 'Reads MarkdownEditor.tsx and enumerated live TypeScript constructors, plus fixed JavaScript bundles.' },
   'apps/operator/lib/chat-actions/ctx-wiring.test.ts': { sha256: '3e260183930b03b2453e8195dccb0d4e165378e214bf3ce4c6b6b7f36f1622ac', status: 'source', reason: 'actionModules reads sibling .ts action files; CTX_SITE reads SessionChatModal.tsx for supplied keys.' },
-  'apps/operator/scripts/__tests__/backup-tier-split.test.ts': { sha256: 'd86d3c6ec7bd334ac6b24335958ecaac01f6b6a15809514fb3d05a1343ae487b', status: 'non-source', reason: 'Default direct reads are two .sh backup scripts. Env override paths and child shell execution are outside this review.' },
-  'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts': { sha256: 'f4c869ba15625bec7f98c2640c2b882f1190f451c2b200671f51560e5ba903b0', status: 'source', reason: 'Directly reads affected-tests.mjs, green-checkpoint.ts, cache/scheduler/launcher sources and capability TypeScript.' },
+  'apps/operator/scripts/__tests__/backup-tier-split.test.ts': { sha256: ['d86d3c6ec7bd334ac6b24335958ecaac01f6b6a15809514fb3d05a1343ae487b', '44158090bbf15a40756eb23ee90f9bd4c8aee211c0883f0fda1390167486db3b'], status: 'non-source', reason: 'Default direct reads are .sh backup scripts (incl. kopia-cache-bootstrap.sh since 6878d407a4) and temp archive fixture bytes. Env override paths and child shell execution are outside this review.' },
+  'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts': { sha256: ['aa56e01f22082d49168585df1d79c6c6840893307f51bb03c9d25611d2ce35ad', '07105649a749de82a0aa555afd41c2737f92c15bb2daadc535f17329ada03813'], status: 'source', reason: 'Directly reads affected-tests.mjs, green-checkpoint.ts, cache/scheduler/launcher sources and capability TypeScript, plus binary/package-lock bytes it only hashes.' },
   'packages/operator-core/lib/agent-tools/coordination/dispatch-intervention-reachable.test.ts': { sha256: 'f51d25a475aa5c9f609ed595180790b0eb58cde392f5953bcf474705b5663e34', status: 'source', reason: 'INVOKE_TS is a fixed orchestrator invoke.ts path; describe callback reads it to parse seed lists.' },
   'packages/operator-core/lib/chat-protocol-nodenext-export-extensions.test.ts': { sha256: 'f60b1c861e7c5e0752aaca5f1112c04ec5e321ab44a9109cd79c76f85d7c528b', status: 'source', reason: 'publishedSourceFiles enumerates chat-protocol/src .ts files and tests read each selected file.' },
-  'packages/operator-core/lib/coord/holder-context.test.ts': { sha256: '7e7cad5f5ec7c295f47a75ffea03af7d5569bba9716529b9cef41e02b8f839fe', status: 'source', reason: 'readRepoFile selects fixed holder-context/lock/tool TypeScript; parity traversal reads selected .ts/.tsx sources.' },
+  'packages/operator-core/lib/coord/holder-context.test.ts': { sha256: '8a0c2079118b67c04a920990f1255dc9bc4e52bab6d4a5367b66a728eee839d5', status: 'source', reason: 'readRepoFile selects fixed holder-context/lock/tool TypeScript; parity traversal reads selected .ts/.tsx sources.' },
   'packages/operator-core/lib/desktop-acl-command-sync.test.ts': { sha256: '22ec2dd8eb9ad20680f781a3494ec1af387ed096240688a3b962688997c14582', status: 'non-source', reason: 'Direct consumers are fixed main.rs, build.rs and capabilities/default.json; Rust is outside this JS/TS corpus.' },
   'packages/operator-core/lib/doc-claims/staging-sync-target-ref.test.ts': { sha256: '2bcc36e9d842fc7c72809edf7e224b3762977280a05c05326e97f6e0105bd05a', status: 'non-source', reason: 'Fixed sync-staging-checkout.sh and CLAUDE.md text consumers, plus inline shell control strings.' },
   'packages/operator-core/lib/doc-claims/system-closer-identity-registration.test.ts': { sha256: '560618e85f39a71c0a035a41546aa5d2371f83667954b47c8d71731ea567b36f', status: 'source', reason: 'walk traverses registered source roots and readFileSync consumes selected TypeScript terminal-state sites.' },
   'packages/operator-core/lib/execute-action-dispatch-contract.test.ts': { sha256: '0ce39f4d8085efe61432c14484d2e41019e72318a6e6609d7c50a1fc8959c405', status: 'source', reason: 'Reads execute-action.ts and recursively selected source emitters; duplicate __dirname blocks VM execution, not these selectors.' },
   'packages/operator-core/lib/harness/improvements/recursion-safety-invariants.test.ts': { sha256: '41747440bacff704c38e819dae21a4bc3693d30909497a661343b5420648ed7e', status: 'source', reason: 'TypeScript source walk reads and strips files to find recordBehaviorChange call sites.' },
   'packages/operator-core/lib/inference-gateway/egress-pool-resolution.test.ts': { sha256: '44d56a3cccb38072bdf91fd1b4ce1aa1c3f7edbe03db90e42ceba9f233cbde6d', status: 'source', reason: 'readdirSync(DIR) selects gateway .ts files; the guard reads and strips each candidate.' },
-  'packages/operator-core/lib/scheduler/claimability-snapshot-projection-covers-floors.test.ts': { sha256: '8fd085a521e8381112eb791d41e6d2128c0c9a4fafa15d63cfa328489084c0e9', status: 'non-source', reason: 'No direct file reads: stripComments consumes SQL rendered by the real query builder and inline SQL controls.' },
-  'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts': { sha256: '9d242066f01c4812e592fa0f89685be40cd485b7a4a38f3490456f349079b778', status: 'source', reason: 'walkTests selects .test.ts files and scanSource consumes their bytes, alongside fixed binding policy source.' },
+  'packages/operator-core/lib/scheduler/claimability-snapshot-projection-covers-floors.test.ts': { sha256: 'cf648cb9b09aaaf7929f9f3c599c274583afcee50fc9abdeff902f72ee24fe22', status: 'non-source', reason: 'No direct file reads: stripComments consumes SQL rendered by the real query builder and inline SQL controls.' },
+  'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts': { sha256: ['9d242066f01c4812e592fa0f89685be40cd485b7a4a38f3490456f349079b778', '8868713f863cf9f6c6ff8fe0efe21d38787a9de736a60e5a86b131392a587993'], status: 'source', reason: 'walkTests selects .test.ts files and scanSource consumes their bytes, alongside fixed binding policy source.' },
   'packages/operator-core/lib/sync-interest-single-contract.test.ts': { sha256: 'f587b3cbc136355bd6d310cc37792ee13cc842ab127d4dc5979c6cbad95e9bcf', status: 'source', reason: 'SCAN_ROOTS traverses apps/packages/libs, reads selected source files and a fixed probe route.' },
   'templates/papercusp-ui/checks/theme-tokens.test.ts': { sha256: 'b39ed85da2a53cb8c5fad3a1c909e430640b367e94ac5eba5eb504638f511355', status: 'non-source', reason: 'Default inert environment has no TEMPLATE_CHECKS_CONFIG and skips the suite. Configured paths are unrestricted and explicitly outside this review.' },
   // Positive executed-selector receipts from the last full census. Pin their exact
@@ -587,18 +591,29 @@ const REVIEWED_TEST_READER_CORPUS: Record<string, { sha256: string; status: 'sou
   'packages/operator-core/lib/sync/hyperbee/projections/__tests__/lww-guard-registry-lint.test.ts': { sha256: '8157b5e45793dfedd5dffb46a74de615a8f7dfb55781284342f38e611d04ab62', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
   'packages/operator-core/lib/work-item-born-claimable.test.ts': { sha256: 'acf79adb2e6bdefe908f2ac9558ee38ed597e34410df305c5077021d5e6020d5', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
   'packages/operator-core/lib/work-item-claim-freshness.kind-gate.test.ts': { sha256: 'f7883be5d412353dc77dac53a20211f70005c2dd83207eb0295ef06373dba9ac', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
-  'packages/operator-core/lib/workspace-reg-current-guard.test.ts': { sha256: 'b5e0354d403a97f7f354dd03e819ac68a3b629308df32260bf1f8bdba40ed82f', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/workspace-reg-current-guard.test.ts': { sha256: '8539d2134408051ba9af7c27761e0251307099c03a77f6b4f90e16ed231b936d', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
 };
+
+/** True when `hex` is one of the reviewed blob pins for a REVIEWED_TEST_READER_CORPUS entry. */
+function isReviewedBlob(pins: string | readonly string[], hex: string): boolean {
+  return (typeof pins === 'string' ? [pins] : pins).includes(hex);
+}
 
 beforeAll(() => {
   // Fail at the pre-run boundary, before the expensive inert corpus census.
   // Concurrent edits need a content review, never an automatic hash refresh.
-  for (const [file, review] of Object.entries(REVIEWED_READER_CORPUS)) {
-    expect(crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, file), 'utf8')).digest('hex'), file + ': reviewed source drifted; reclassify before the census').toBe(review.sha256);
-  }
-  for (const [file, review] of Object.entries(REVIEWED_TEST_READER_CORPUS)) {
-    expect(crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, '..', file), 'utf8')).digest('hex'), file + ': reviewed test source drifted; reclassify before the census').toBe(review.sha256);
-  }
+  // Collect EVERY drifted pin before failing: stopping at the first one hid six more
+  // drifts and, behind them, an unrelated census red (WI-6554700010030423).
+  const sha = (abs: string) => crypto.createHash('sha256').update(readFileSync(abs, 'utf8')).digest('hex');
+  const drifted = [
+    ...Object.entries(REVIEWED_READER_CORPUS)
+      .filter(([file, review]) => sha(join(SCRIPTS_DIR, file)) !== review.sha256)
+      .map(([file]) => `scripts/${file}: reviewed source drifted`),
+    ...Object.entries(REVIEWED_TEST_READER_CORPUS)
+      .filter(([file, review]) => !isReviewedBlob(review.sha256, sha(join(SCRIPTS_DIR, '..', file))))
+      .map(([file]) => `${file}: reviewed test source drifted`),
+  ];
+  expect(drifted, 'review each drifted file\'s change and reclassify it before the census; never refresh a hash unread').toEqual([]);
 });
 
 function reviewedReaderCorpus(entry: string, result: ReturnType<typeof observeReaderCorpus>, source: string, argv: string[] = []) {
@@ -615,7 +630,7 @@ function reviewedReaderCorpus(entry: string, result: ReturnType<typeof observeRe
 
 function reviewedTestReaderCorpus(entry: string, result: ReturnType<typeof observeReaderCorpus>, source: string, scope: { testCallbacks: boolean; defaultEnvironment: boolean }) {
   const review = REVIEWED_TEST_READER_CORPUS[entry];
-  if (!scope.testCallbacks || !scope.defaultEnvironment || !review || crypto.createHash('sha256').update(source).digest('hex') !== review.sha256) {
+  if (!scope.testCallbacks || !scope.defaultEnvironment || !review || !isReviewedBlob(review.sha256, crypto.createHash('sha256').update(source).digest('hex'))) {
     return { ...result, review: undefined };
   }
   return {
@@ -638,7 +653,7 @@ function observeReviewedTestReaderCorpus(
     scope.testCallbacks &&
     scope.defaultEnvironment &&
     review?.status === 'source' &&
-    crypto.createHash('sha256').update(source).digest('hex') === review.sha256;
+    isReviewedBlob(review.sha256, crypto.createHash('sha256').update(source).digest('hex'));
   if (exactSourceReview) {
     // The exact-byte review is already positive source evidence. Re-executing the whole
     // test module in the inert VM adds no coverage and made this census exceed Vitest's

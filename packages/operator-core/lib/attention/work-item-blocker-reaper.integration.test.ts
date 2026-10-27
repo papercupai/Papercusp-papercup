@@ -459,3 +459,70 @@ describe('the re-check sweep repairs missed settlements and stranded items (P-00
     }
   });
 });
+
+describe('durable parks on unprovable triggers get a re-check against the real store (WI-6554700010030346)', () => {
+  // Blind review #110 G-5: a park keeps its wait in claim_hold_release.trigger, which the
+  // unprovable-wait backfill above never reads. This runs the production listing, ledger
+  // classification and compare-and-set write (only the escalation transport is spied).
+  const legacy = (trigger: string) => ({
+    condition: `resume once ${trigger} says so`, owner: 'park-owner', trigger,
+    reachability: 'blocked' as const, evidence: 'no producer registration or catalogued resolver was found',
+  });
+  async function seedPark(id: string, releaseContract: {
+    condition: string; owner: string; trigger: string;
+    reachability: 'reachable' | 'blocked' | 'unreachable' | 'satisfied'; evidence: string;
+  }, status = 'open'): Promise<void> {
+    await db.sql`INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, ${id}, 'change', ${`title ${id}`}, ${status}, NULL, ${WS}, 100, 0, NULL)`;
+    await wi.setWorkItemClaimHold(id, true, { harness: H, parkedBy: 'park-owner', parkedReason: 'waiting', releaseContract });
+  }
+
+  it('stamps only live unprovable parks, escalates them when due, re-arms a day out, and a re-park drops the date', async () => {
+    const { backfillUnprovableParkRecheckDates, sweepDueParkRechecks, defaultDurableParkRecheckDeps, UNPROVABLE_PARK_RECHECK_ACTOR } =
+      await import('./durable-park-recheck');
+    const { assertHoldRegistered } = await import('../hold-registry');
+    await seedPark('EI-park-broad', legacy('coord:inbox-wake:su-park-test'));
+    await seedPark('EI-park-freetext', legacy('A new trace is attached to this item.'));
+    await seedPark('EI-park-provable',
+      await buildDurableParkReleaseContract({ condition: 'the deploy landed', trigger: 'release:deployed:parkrecheck' }, 'park-owner'));
+    await seedPark('EI-park-done', legacy('coord:inbox-wake:su-park-test'), 'done');
+    await seedPark('EI-park-cleared', legacy('coord:inbox-wake:su-park-test'));
+    await wi.setWorkItemClaimHold('EI-park-cleared', false, { harness: H });
+    const escalate = vi.fn(async (_park: { id: string }) => undefined);
+    const deps = { ...defaultDurableParkRecheckDeps, escalate };
+    const now = new Date();
+
+    const stamped = await backfillUnprovableParkRecheckDates({ now, deps });
+
+    expect(stamped).toMatchObject({ parks: 3, unprovable: 2, stamped: 2, provable: 1, skipped: {}, truncatedByLimit: false });
+    expect(stamped.byReason).toEqual({ broad: 1, uncatalogued: 1 });
+    const broad = await rowOf('EI-park-broad');
+    expect(broad.payload).toMatchObject({ _claimHold: true, claim_hold_by: 'park-owner', claim_hold_reason: 'waiting' });
+    expect(broad.payload.claim_hold_release).toMatchObject({
+      ...legacy('coord:inbox-wake:su-park-test'),
+      recheckAt: now.toISOString(), recheckSource: UNPROVABLE_PARK_RECHECK_ACTOR, recheckReason: 'broad',
+    });
+    expect((await rowOf('EI-park-provable')).payload.claim_hold_release).not.toHaveProperty('recheckAt');
+    expect((await rowOf('EI-park-done')).payload.claim_hold_release).not.toHaveProperty('recheckAt');
+    // Idempotent: nothing left to stamp.
+    expect((await backfillUnprovableParkRecheckDates({ now, deps })).stamped).toBe(0);
+
+    const swept = await sweepDueParkRechecks({ now, deps });
+
+    expect(swept).toEqual({ examined: 2, escalated: 2, provable: 0, skipped: {}, truncatedByLimit: false });
+    expect(escalate.mock.calls.map(([park]) => park.id).sort()).toEqual(['EI-park-broad', 'EI-park-freetext']);
+    const rearmed = new Date(now.getTime() + assertHoldRegistered('park', 'park').recheckSec * 1000).toISOString();
+    expect((await rowOf('EI-park-broad')).payload.claim_hold_release).toMatchObject({
+      recheckAt: rearmed, recheckDisposition: 'escalated', recheckedAt: now.toISOString(), reachability: 'blocked',
+    });
+    expect((await sweepDueParkRechecks({ now, deps })).examined).toBe(0);
+
+    // The compare-and-set refuses a contract that moved underneath it.
+    expect(await deps.writeRelease('EI-park-broad', H, { stale: true }, legacy('coord:inbox-wake:su-park-test'))).toBe(false);
+    // A re-park replaces the contract, so the re-check date goes with the old one.
+    await wi.setWorkItemClaimHold('EI-park-broad', true, { harness: H, parkedBy: 'park-owner',
+      releaseContract: await buildDurableParkReleaseContract({ condition: 'the deploy landed', trigger: 'release:deployed:parkrecheck' }, 'park-owner') });
+    expect((await rowOf('EI-park-broad')).payload.claim_hold_release).not.toHaveProperty('recheckAt');
+  });
+});

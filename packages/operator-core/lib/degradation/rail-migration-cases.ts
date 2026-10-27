@@ -627,6 +627,8 @@ const coordinationReadCases: RailMigrationCase[] = ['inbox', 'outbox'].map((scop
       coordHasPgFastPath: () => pg, coordWorkspaceId: () => 'fixture',
       pageCoordEventLogDesc: async () => { if (fail) throw new Error('page unavailable'); return { raw: primary, pages: 2, exhausted: false }; },
       filterInbox: (rows: unknown) => rows, filterOutbox: (rows: unknown) => rows,
+      // readInboxWindow ages out stale broadcasts; a pass-through keeps this case on the rail.
+      inboxBroadcastCutoff: () => '1970-01-01T00:00:00.000Z', dropAgedBroadcasts: (rows: unknown) => rows,
       suppressRetracted: (rows: unknown) => rows, collectRetractedIds: () => new Set(),
       warnOnPageBudgetExhausted() {}, INBOX_SINCE_TS_SKEW_PAD_MS: 1000,
       INBOX_FAST_PATH_ROW_CAP: 25000, OUTBOX_FAST_PATH_ROW_CAP: 25000,
@@ -1500,14 +1502,19 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
       compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
     const sql = (async (parts: TemplateStringsArray) => {
       const query = parts.join('');
+      // The roster read (coord_presence ... compaction_limit IS NOT NULL) now LATERAL-joins
+      // adv_sessions for turn evidence, so it must be matched BEFORE the adv_sessions probe.
+      if (query.includes('compaction_limit IS NOT NULL')) return omitted ? [] : [row];
       if (query.includes('FROM harness_shared.adv_sessions')) return [{ owner_id: row.owner_id }];
-      return query.includes('compaction_limit IS NOT NULL') && !omitted ? [row] : [];
+      return [];
     }) as unknown as import('postgres').Sql;
     const warnings: string[] = [];
     const flags = { CONTEXT_GAUGE: 'gauge', GATEWAY_MAINTENANCE_CARRY: 'carry', COMPACTION_WATCHDOG_FORCE_COMPACT: 'force' };
     const producer = execute('console.warn = collectWarning;\n' + originalModule, {
       collectWarning: (message: string) => warnings.push(message),
       ...await import('../agent-config-constants'), DEFAULT_COORD_WORKSPACE: 'fixture', hostname: () => 'fixture-host', process,
+      // The watchdog's turn-evidence constants (turn-proof imports only ./types, so it is safe here).
+      ...await import('../events/await/turn-proof'),
       estimateContextTokensForOwner: async () => estimate, estimateContextWindowForOwner: async () => 200_000,
       observedPromptFloorForOwner: () => null, resolveSessionRefReconciled: async () => ({ agent: 'claude', sessionId: 'current' }),
       detectContextDeathForOwner: async () => dead, detectToolReferenceDeathForOwner: async () => null,
@@ -1701,7 +1708,8 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
     const sql = (async (parts: TemplateStringsArray) => parts.join('').includes('FROM harness_shared.agent_fleets')
       ? [{ workspace_id: 'fixture', fleet_slug: 'drain' }] : successes) as unknown as import('postgres').Sql;
     const readers = {
-      listRoster: (async () => ({ entries: [{ agentId: 'worker', agentRole: 'su', sessionState: 'live',
+      // fleetRole 'member': the watchdog counts only live su MEMBERS (a leader never pulls).
+      listRoster: (async () => ({ entries: [{ agentId: 'worker', agentRole: 'su', fleetRole: 'member', sessionState: 'live',
         startedAt: new Date(at - 900_000).toISOString() }], degradedLegs: degraded ? ['wakeability'] : [] })) as never,
       listEverMembers: (async () => ['worker', 'departed-worker']) as never,
       onSuccessfulPull: (subject: typeof fleet, atMs: number) => resolveGoalDrainPullRecovery(subject, atMs, rail, exact),
@@ -2901,6 +2909,8 @@ RAIL_MIGRATION_CASES.push({
         bootHarnessSubstrate: async () => { boots++; return {}; }, defaultMergeCursorStoreFactory: null,
         createPgMergeCursorStore: () => ({}), process: { env: {} }, workspaceRootForId: () => '/fixture',
         evictionTrackingEnabled: false, disarmSubstrateWakeKeepalive: async () => {},
+        // The fixture hive is never the dogfood hive, so the boot proceeds to the routing latch.
+        isDisabledDogfoodHive: async () => false,
         observeFallback: (mechanism: string, row: typeof observations[number]) => {
           expect(mechanism).toBe('substrate-boot-routing'); observations.push(row); return true;
         },
@@ -2985,6 +2995,9 @@ for (const cleanup of [false, true]) {
         stopSubstrateSidecar: async () => { stops++; if (failStop) throw new Error('stop failed'); },
         registerSidecarShutdownHooks() {}, ensureSidecarRespawnReconcileRegistered() {},
         getSubstrateIpcClient: () => ({ call: async () => ({}) }), closeInProcessBootedHarnesses: async () => [],
+        // Model a Node host: the producer reads process.versions.bun to decide whether a Bun
+        // operator must route every boot through the Node sidecar.
+        process: { versions: {} },
         observeFallback: (name: string, row: typeof observations[number]) => {
           if (name === mechanism) observations.push(row); return true;
         },
@@ -3461,7 +3474,15 @@ RAIL_MIGRATION_CASES.push({
     const sql = Object.assign(async () => Object.assign([], { count: 1 }), { unsafe: async (text: string) =>
       text.includes('SELECT') ? [{ lf: null, ftm: 'true', cs: snapshot }]
         : Object.assign([{ written: true }], { count: 1 }) });
+    // The stale-candidate check (the only path that RESOLVES this alarm) runs only with a
+    // resolved fixer root. Pin a fixture root and routing so the case does not depend on
+    // which tree runs it: the gate's checkpoint checkout makes integrationRoot() refuse, and
+    // the real routing reads live install config.
+    const routing = await import('../harness/routines/hive-release-env');
+    const priorRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/coverage';
     const mocks = [
+      vi.spyOn(routing, 'resolveCheckpointRouting').mockResolvedValue({ skip: false, extraEnv: {}, clearEnv: [] } as never),
       vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
       vi.spyOn(scope, 'gateWorkScope').mockResolvedValue({ allowed: true } as never),
       vi.spyOn(blueprint, 'fireLaunchBlueprintForEvent').mockResolvedValue({
@@ -3482,7 +3503,11 @@ RAIL_MIGRATION_CASES.push({
       await producer.dispatchReleaseFixer(ctx, candidate, failures, undefined, undefined,
         { alarm, checkCandidate: async () => ({ candidateExists: true, candidatePromoted: true }) });
       return { route: 'condition', openedKeys, resolvedKeys };
-    } finally { mocks.reverse().forEach((mock) => mock.mockRestore()); }
+    } finally {
+      mocks.reverse().forEach((mock) => mock.mockRestore());
+      if (priorRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorRoot;
+    }
   },
 }, {
   id: 'idle-repair-owner-escalation-readable-recovery', item: 'P-008', route: 'condition',
@@ -3516,6 +3541,9 @@ RAIL_MIGRATION_CASES.push({
     }) as unknown as import('postgres').Sql;
     const read = vi.spyOn(actions, 'readFrozenCandidateRepairQueueState').mockResolvedValue({ status: 'value', queue } as never);
     const mocks = [read, vi.spyOn(actions, 'dispatchReleaseFixer').mockResolvedValue(null),
+      // The fixer rung reserves the queue on the org pool; an unavailable reservation is the
+      // same ladder outcome (move on to the owner rungs) without a live-PostgreSQL escape.
+      vi.spyOn(actions, 'reserveFrozenCandidateRepairFixer').mockResolvedValue(null as never),
       vi.spyOn(ownership, 'readGateOwnership').mockResolvedValue(null as never),
       vi.spyOn(deploy, 'integrationRoot').mockReturnValue('/coverage-isolated'),
       vi.spyOn(checkpoint, 'isCheckpointRunLockHeldCheap').mockReturnValue({ held: false, elapsedSec: null }),
@@ -3956,9 +3984,14 @@ const alarmCases: Array<{ id: string; rowId: string; run: (deps: AlarmCapture) =
   { id: 'disk-space', rowId: 'owner-only-alarm|packages/operator-core/lib/storage/disk-space-alarm.ts|runDiskSpaceAlarmOnce|1',
     run: async (attention) => {
       const { runDiskSpaceAlarmOnce, DEFAULT_DISK_POLICY } = await import('../storage/disk-space-alarm');
+      // Declared bind mounts: missing on the first pass, back on the second, so that
+      // condition opens and recovers too, and the case never reads the real host's fstab.
+      let mountReads = 0;
       const deps = { ...attention, emitToast: async () => {}, recentlyEscalated: async () => true,
         readContext: async () => ({ devices: [], receipt: null }),
-        attributeUsage: async () => ({ entries: [], truncated: false }) };
+        attributeUsage: async () => ({ entries: [], truncated: false }),
+        readMissingMounts: async () => (mountReads++ === 0
+          ? [{ source: '/fixture-src', target: '/coverage', options: ['bind', 'nofail'] }] : []) };
       const snapshot = { path: '/coverage', totalBytes: 100 * 1024 ** 3, freeBytes: 1,
         freePct: 0, totalInodes: 100, freeInodes: 100, freeInodesPct: 1 };
       await runDiskSpaceAlarmOnce({ ...deps, sample: async () => [snapshot] }, DEFAULT_DISK_POLICY);
@@ -3970,7 +4003,9 @@ const alarmCases: Array<{ id: string; rowId: string; run: (deps: AlarmCapture) =
       const { runStorageGrowthAlarmOnce } = await import('../storage/storage-growth-alarm');
       const deps = { ...attention, emitToast: async () => {}, recentlyEscalated: async () => true,
         listTableSizes: async () => [], listDiskRootChildren: async () => ({ entries: [], truncated: false }),
-        countExemptSubsets: async () => [], readRetentionAges: async () => [] };
+        countExemptSubsets: async () => [], readRetentionAges: async () => [],
+        // The headroom sub-alarm's default census reads PostgreSQL; an empty census keeps it hermetic.
+        readDiskCensus: async () => [] };
       const row: import('../storage/usage').StorageUsageRow = { id: 'coverage', label: 'Coverage',
         kind: 'pg', federation: 'local-diagnostic', trimmable: true, bloats: false,
         totalBytes: 1024 ** 4, totalRows: 1, ageBuckets: [], description: 'Coverage' };

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -97,7 +98,12 @@ async function trackedCargoManifests(repoRoot: string): Promise<string[]> {
   const { stdout } = await execFileAsync('git', ['ls-files', '--recurse-submodules', '--', '*Cargo.toml'], {
     cwd: repoRoot, maxBuffer: 8 * 1024 * 1024, timeout: 30_000,
   });
-  return stdout.split('\n').map((line) => line.trim()).filter((line) => line && !line.includes('node_modules/'));
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.includes('node_modules/'))
+    // An rm-ed manifest stays in the index until git-sync commits the deletion (WI-10004176).
+    .filter((rel) => existsSync(path.join(repoRoot, rel)));
 }
 
 /**

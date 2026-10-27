@@ -275,6 +275,13 @@ export async function resolveDependencyGraphEdges(
 //     carries an explicit park note; `policy='announce'` rows are gate DECLARATIONS, not waits.
 //   • 'item-blocker' — the item's OWN active `event`/`gate` external blocker
 //     (`work_items:set_blocker`).
+//   • 'item-park' — the item's DURABLE PARK (`work_items:release { claimHold, claimHoldRelease }`).
+//     A park keeps its wait only in `payload.claim_hold_release.trigger` and writes no
+//     externalBlockers row, so without this family a parked item showed no wait at all
+//     (WI-6554700010030343, blind review #110 G-1). Same population as the park audit and
+//     attention/durable-park-recheck.ts: `_claimHold` true with a string trigger. A held-open
+//     lease alone carries no contract and is not a wait. Each row names who parked it and the
+//     re-check date an unprovable trigger is given (WI-6554700010030346).
 //
 // Each row carries the item's node fields (title/status/kind/plan), for the same reason the
 // edge rows do (WI-36045): the item may sit outside the list's 500-row window.
@@ -296,7 +303,10 @@ export async function resolveDependencyGraphEdges(
 // COST (R-19, measured 2026-10-21 on papercusp, 217,649 non-terminal items): blocker leg 31 ms
 // on work_items_external_blockers_gin_idx (migration 1539); holder leg 46 ms on
 // hfc_taken_by_idx + idx_event_awaits_subscriber; bound leg on event_awaits_bound_to_active.
-// Four SQL statements per call regardless of corpus size, plus the liveness oracle's batch.
+// Park leg (measured 2026-10-27, 895 live parks): 58 ms on work_items_claim_hold_release_trigger_idx,
+// which is why its WHERE repeats that partial index's `payload ? 'claim_hold_release'`. The
+// blocker and park legs share ONE statement (a UNION ALL of two independently capped branches),
+// so a call is still four SQL statements regardless of corpus size, plus the liveness batch.
 
 /** The `bound_to.kind` values that bind an await to a work item by id. */
 export const ITEM_BOUND_AWAIT_KINDS = ['work-item-claim', 'work-item-blocked'] as const;
@@ -312,7 +322,7 @@ const WAIT_LEG_TERMINAL = ['done', 'resolved', 'closed', 'dropped', 'deprecated'
  * ended while holding items). Ordered by the item's recency, so the cap drops the least
  * recently touched holds first.
  */
-export const DEP_WAITS_LIMITS = { bound: 1000, holder: 600, blocker: 2000 } as const;
+export const DEP_WAITS_LIMITS = { bound: 1000, holder: 600, blocker: 2000, park: 2000 } as const;
 /** The holder's other awaits shown per held item — the most recent first. */
 export const DEP_WAITS_PER_HOLDER = 3;
 /** The liveness oracle gets this long before every subscriber reads as not measured. */
@@ -329,8 +339,8 @@ export interface DependencyGraphWait {
   itemPlanSlug: string | null;
   /** The item's current holder (`taken_by`), or null when unclaimed. */
   holderId: string | null;
-  waitKind: 'session-await' | 'item-blocker';
-  /** The event key waited on — for a blocker, its ref. */
+  waitKind: 'session-await' | 'item-blocker' | 'item-park';
+  /** The event key waited on — for a blocker, its ref; for a park, its release trigger. */
   eventKey: string;
   /** 'session-await' only: the `event_awaits` row id. */
   awaitId: string | null;
@@ -344,8 +354,15 @@ export interface DependencyGraphWait {
   subscriberId: string | null;
   /** 'session-await' only: the subscriber currently holds the item. */
   subscriberIsHolder: boolean;
-  /** ISO — when the await / blocker was registered. */
+  /** ISO — when the await / blocker was registered, or the item was parked. */
   since: string | null;
+  /** 'item-park' only: who parked the item (`claim_hold_by`). */
+  parkedBy: string | null;
+  /**
+   * 'item-park' only: ISO `claim_hold_release.recheckAt` — set when no fire can prove the
+   * trigger, so the park is escalated for review on that date (WI-6554700010030346).
+   */
+  recheckAt: string | null;
   /** Whether one fire of the key proves the condition, or why not. */
   certification: DependencyGraphWaitCertification;
   /** A producer declared (announced) this key. */
@@ -422,6 +439,15 @@ type AwaitRow = WaitItemRow & {
   bound_kind: string | null;
   bound_ref: string | null;
 };
+/** One row of the combined blocker/park statement; the unused branch's columns are NULL. */
+type ItemLegRow = WaitItemRow & {
+  leg: 'blocker' | 'park';
+  blockers: unknown;
+  park_trigger: string | null;
+  park_recheck_at: string | null;
+  parked_by: string | null;
+  parked_at: string | null;
+};
 
 /**
  * Every live event wait on an item in (workspace, harness): session awaits bound to it, its
@@ -437,7 +463,7 @@ export async function resolveDependencyGraphWaits(
   const boundKinds = ITEM_BOUND_AWAIT_KINDS as unknown as string[];
   const parkNoteLike = `${EXPLICIT_PARK_NOTE_MARKER}%`;
 
-  const [bound, holder, blockers] = await Promise.all([
+  const [bound, holder, itemLegs] = await Promise.all([
     // Leg 1 — awaits BOUND to an item in this harness (any subscriber).
     sql<AwaitRow[]>`
       SELECT a.id AS await_id, a.subscriber_id, a.event_key, a.created_at, a.expires_ts,
@@ -486,28 +512,54 @@ export async function resolveDependencyGraphWaits(
          AND w.status <> ALL(${terminal})
        ORDER BY w.updated_ts DESC NULLS LAST, w.feature_id, a.created_at DESC
        LIMIT ${DEP_WAITS_LIMITS.holder + 1}`,
-    // Leg 3 — items carrying an ACTIVE event/gate external blocker. The `@>` shape is what
-    // work_items_external_blockers_gin_idx (migration 1539) serves; the payload sub-object is
-    // projected instead of the whole payload.
-    sql<Array<WaitItemRow & { blockers: unknown }>>`
-      SELECT w.feature_id, w.item_kind, w.title, w.status, w.source_plan_slug, w.taken_by,
-             w.payload -> 'externalBlockers' AS blockers
-        FROM harness_shared.work_items w
-       WHERE w.workspace_id = ${opts.workspaceId}
-         AND w.harness_slug = ${opts.harnessSlug}
-         AND w.status <> ALL(${terminal})
-         AND ((w.payload -> 'externalBlockers') @> '[{"kind":"event","status":"active"}]'::jsonb
-              OR (w.payload -> 'externalBlockers') @> '[{"kind":"gate","status":"active"}]'::jsonb)
-       ORDER BY w.feature_id
-       LIMIT ${DEP_WAITS_LIMITS.blocker + 1}`,
+    // Legs 3 + 4 — ONE statement, two independently capped branches (so a call stays at four
+    // statements). Branch 'blocker': items carrying an ACTIVE event/gate external blocker; the
+    // `@>` shape is what work_items_external_blockers_gin_idx (migration 1539) serves. Branch
+    // 'park': durably parked items with a string release trigger; `payload ? 'claim_hold_release'`
+    // is work_items_claim_hold_release_trigger_idx's predicate. Payload sub-objects are projected
+    // instead of the whole payload.
+    sql<Array<ItemLegRow>>`
+      (SELECT 'blocker' AS leg, w.feature_id, w.item_kind, w.title, w.status, w.source_plan_slug, w.taken_by,
+              w.payload -> 'externalBlockers' AS blockers,
+              NULL::text AS park_trigger, NULL::text AS park_recheck_at,
+              NULL::text AS parked_by, NULL::text AS parked_at
+         FROM harness_shared.work_items w
+        WHERE w.workspace_id = ${opts.workspaceId}
+          AND w.harness_slug = ${opts.harnessSlug}
+          AND w.status <> ALL(${terminal})
+          AND ((w.payload -> 'externalBlockers') @> '[{"kind":"event","status":"active"}]'::jsonb
+               OR (w.payload -> 'externalBlockers') @> '[{"kind":"gate","status":"active"}]'::jsonb)
+        ORDER BY w.feature_id
+        LIMIT ${DEP_WAITS_LIMITS.blocker + 1})
+      UNION ALL
+      (SELECT 'park' AS leg, w.feature_id, w.item_kind, w.title, w.status, w.source_plan_slug, w.taken_by,
+              NULL::jsonb AS blockers,
+              btrim(w.payload -> 'claim_hold_release' ->> 'trigger') AS park_trigger,
+              w.payload -> 'claim_hold_release' ->> 'recheckAt' AS park_recheck_at,
+              w.payload ->> 'claim_hold_by' AS parked_by,
+              w.payload ->> 'claim_hold_at' AS parked_at
+         FROM harness_shared.work_items w
+        WHERE w.workspace_id = ${opts.workspaceId}
+          AND w.harness_slug = ${opts.harnessSlug}
+          AND w.status <> ALL(${terminal})
+          AND w.payload ? 'claim_hold_release'
+          AND w.payload ->> '_claimHold' = 'true'
+          AND jsonb_typeof(w.payload -> 'claim_hold_release' -> 'trigger') = 'string'
+          AND btrim(w.payload -> 'claim_hold_release' ->> 'trigger') <> ''
+        ORDER BY w.feature_id
+        LIMIT ${DEP_WAITS_LIMITS.park + 1})`,
   ]);
 
+  const blockers = itemLegs.filter((r) => r.leg === 'blocker');
+  const parks = itemLegs.filter((r) => r.leg === 'park');
   const boundTruncated = bound.length > DEP_WAITS_LIMITS.bound;
   const holderTruncated = holder.length > DEP_WAITS_LIMITS.holder;
   const blockerTruncated = blockers.length > DEP_WAITS_LIMITS.blocker;
+  const parkTruncated = parks.length > DEP_WAITS_LIMITS.park;
   const boundRows = bound.slice(0, DEP_WAITS_LIMITS.bound);
   const holderRows = holder.slice(0, DEP_WAITS_LIMITS.holder);
   const blockerRows = blockers.slice(0, DEP_WAITS_LIMITS.blocker);
+  const parkRows = parks.slice(0, DEP_WAITS_LIMITS.park);
 
   type BlockerWait = { item: WaitItemRow; kind: 'event' | 'gate'; ref: string; since: string | null };
   const blockerWaits: BlockerWait[] = [];
@@ -517,12 +569,15 @@ export async function resolveDependencyGraphWaits(
       blockerWaits.push({ item: row, kind: b.kind, ref: b.ref, since: isoOrNull(b.createdAt) });
     }
   }
+  // The SQL already requires a non-blank string trigger; the guard keeps the type honest.
+  const parkWaits = parkRows.flatMap((row) => row.park_trigger ? [{ item: row, trigger: row.park_trigger }] : []);
 
   // One read for "which of these keys did a producer announce", and one oracle batch.
   const keys = [...new Set([
     ...boundRows.map((r) => r.event_key),
     ...holderRows.map((r) => r.event_key),
     ...blockerWaits.map((w) => w.ref),
+    ...parkWaits.map((w) => w.trigger),
   ])];
   const subscribers = [...new Set([...boundRows, ...holderRows].map((r) => r.subscriber_id))];
   const [announcedRows, states] = await Promise.all([
@@ -571,6 +626,8 @@ export async function resolveDependencyGraphWaits(
       subscriberId: r.subscriber_id,
       subscriberIsHolder: r.taken_by != null && r.taken_by === r.subscriber_id,
       since: isoOrNull(r.created_at),
+      parkedBy: null,
+      recheckAt: null,
       certification: certify(r.event_key),
       announced: announced.has(r.event_key),
       subscriberState,
@@ -594,12 +651,34 @@ export async function resolveDependencyGraphWaits(
       subscriberId: null,
       subscriberIsHolder: false,
       since: w.since,
+      parkedBy: null,
+      recheckAt: null,
       certification: certify(w.ref),
       announced: announced.has(w.ref),
       subscriberState: null,
       stale: false,
       staleReason: null,
       legTruncated: blockerTruncated,
+    })),
+    ...parkWaits.map(({ item, trigger }): DependencyGraphWait => ({
+      ...itemFields(item),
+      waitKind: 'item-park',
+      eventKey: trigger,
+      awaitId: null,
+      blockerKind: null,
+      bound: false,
+      boundKind: null,
+      subscriberId: null,
+      subscriberIsHolder: false,
+      since: isoOrNull(item.parked_at),
+      parkedBy: item.parked_by,
+      recheckAt: isoOrNull(item.park_recheck_at),
+      certification: certify(trigger),
+      announced: announced.has(trigger),
+      subscriberState: null,
+      stale: false,
+      staleReason: null,
+      legTruncated: parkTruncated,
     })),
   ];
 }

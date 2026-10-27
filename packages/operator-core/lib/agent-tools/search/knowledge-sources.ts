@@ -25,14 +25,24 @@ type SectionRow = {
 
 /** Use the existing cancellation/transaction contract on both search legs. */
 export function boundedSource(source: SearchSource): SearchSource {
-  const run = (leg: NonNullable<SearchSource['lexical']>, p: SearchSourceParams, vector: boolean) =>
-    boundedOrgTxn(async sql => vector
-      ? withIterativeScan(sql, tx => leg({ ...p, sql: tx }), {
-        runReadOnlyTransaction: async body => body(sql),
-      })
-      : leg({ ...p, sql }), {
-      client: p.sql, signal: p.signal, readOnly: true, statementTimeoutMs: 1_500,
-    });
+  const run = async (leg: NonNullable<SearchSource['lexical']>, p: SearchSourceParams, vector: boolean) => {
+    const finishSetup = p.phaseTimer?.start('bounded-org-txn-setup');
+    try {
+      return await boundedOrgTxn(async sql => {
+        finishSetup?.('fulfilled');
+        return vector
+          ? withIterativeScan(sql, tx => leg({ ...p, sql: tx }), {
+            runReadOnlyTransaction: async body => body(sql),
+          })
+          : leg({ ...p, sql });
+      }, {
+        client: p.sql, signal: p.signal, readOnly: true, statementTimeoutMs: 1_500,
+      });
+    } catch (error) {
+      finishSetup?.('rejected');
+      throw error;
+    }
+  };
   return { ...source,
     lexical: p => run(source.lexical, p, false),
     embedding: source.embedding ? p => run(source.embedding!, p, true) : undefined,

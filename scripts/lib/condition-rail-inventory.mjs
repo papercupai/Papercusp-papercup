@@ -530,6 +530,20 @@ export function manifestProblems(manifest, live, options = {}) {
     }
     if (amendments.has(amendment.rowId)) problems.push(`duplicate amendment: ${amendment.rowId}`);
     amendments.set(amendment.rowId, amendment);
+    // `relocatedTo` renames a removed seed site to its live identity: same class and file,
+    // a different enclosing/ordinal, and only on a removal (it never re-dispositions).
+    const target = amendment.change.relocatedTo;
+    if (target !== undefined) {
+      const head = (id) => String(id).split('|').slice(0, 2).join('|');
+      if (typeof target !== 'string' || amendment.change.disposition !== 'removed' ||
+          target === amendment.rowId || head(target) !== head(amendment.rowId)) {
+        problems.push(`invalid relocation: ${amendment.rowId}`);
+      } else if (manifest.rows.some((row) => row.id === target)) {
+        problems.push(`relocation onto an existing seed ID: ${amendment.rowId} -> ${target}`);
+      } else if (!sites.has(target)) {
+        problems.push(`relocation target absent from the tree: ${amendment.rowId} -> ${target}`);
+      }
+    }
   }
   for (const row of manifest.rows) {
     if (ids.has(row.id)) problems.push(`duplicate seed ID: ${row.id}`);
@@ -571,7 +585,26 @@ export function migrationCoverageProblems(manifest, cases, completedItems, regis
     }
   }
   const seeds = new Set(manifest.rows.map((row) => row.id));
-  for (const id of byRow.keys()) if (!seeds.has(id)) problems.push(`${id}: coverage names unknown row`);
+  // A reviewed `removed` amendment may name the live identity its seed site moved to
+  // (`change.relocatedTo`). Coverage may name that live ID; it is judged against the
+  // seed row's item/route, because relocation renames a site without re-dispositioning it.
+  const relocatedFrom = new Map();
+  for (const amendment of manifest.amendments ?? []) {
+    const target = amendment.change?.relocatedTo;
+    const source = manifest.rows.find((row) => row.id === amendment.rowId);
+    if (typeof target === 'string' && amendment.change.disposition === 'removed' && source) {
+      relocatedFrom.set(target, source);
+    }
+  }
+  for (const [id, testCase] of byRow) {
+    if (seeds.has(id)) continue;
+    const source = relocatedFrom.get(id);
+    if (!source) { problems.push(`${id}: coverage names unknown row`); continue; }
+    if (testCase.item !== source.item || testCase.route !== source.route) problems.push(`${id}: case route/item mismatch`);
+    if (testCase.route === 'observation' && !registeredMechanisms.includes(testCase.mechanism)) {
+      problems.push(`${id}: unregistered observation mechanism`);
+    }
+  }
   for (const row of manifest.rows) {
     const amendment = (manifest.amendments ?? []).find((a) => a.rowId === row.id);
     const effective = amendment ? { ...row, ...amendment.change } : row;

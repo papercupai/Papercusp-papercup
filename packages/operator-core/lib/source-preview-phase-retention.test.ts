@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { captureVerifierDependencies, readVerifierPhaseMeasurements, verifierPhaseRunner } from '../../../scripts/source-preview.mjs';
+import { captureVerifierDependencies, readVerifierPhaseMeasurements, selectVerifierDependencySnapshot,
+  verifierPhaseRunner } from '../../../scripts/source-preview.mjs';
 
 const fixtures: string[] = [];
 afterEach(() => { for (const root of fixtures.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -16,6 +17,8 @@ describe('verifier phase evidence retention', () => {
     const run = verifierPhaseRunner(path, { PAPERCUSP_HOME: join(root, 'persistent'),
       PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'retention-fixture' }, join(root, 'child.json'));
     await run('source.freeze', () => 1);
+    const selection = selectVerifierDependencySnapshot('copy', true);
+    await run('deps.snapshot', () => 2, { snapshotSelection: selection });
     const failure = new Error('fixture failed');
     await expect(run('child.run', () => { throw failure; })).rejects.toBe(failure);
     const original = readFileSync(path);
@@ -27,10 +30,21 @@ describe('verifier phase evidence retention', () => {
     expect(existsSync(path)).toBe(false);
     expect(hash(readFileSync(run.archivePath))).toBe(hash(original));
     const rows = original.toString().trim().split('\n').map(line => JSON.parse(line));
-    expect(rows.map(row => row.sequence)).toEqual([1, 2, 3, 4]);
+    expect(rows.map(row => row.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(rows.every(row => row.taskId === 'retention-fixture')).toBe(true);
+    expect(rows.find(row => row.phase === 'deps.snapshot' && row.event === 'started').snapshotSelection)
+      .toEqual({ copyMode: 'copy', generationSnapshotSupported: true, command: 'snapshot-generation-locked' });
+    expect(selectVerifierDependencySnapshot('hardlink', true)).toEqual({
+      copyMode: 'hardlink', generationSnapshotSupported: true, command: 'snapshot-locked',
+    });
+    expect(selectVerifierDependencySnapshot('copy', false)).toEqual({
+      copyMode: 'copy', generationSnapshotSupported: false, command: 'snapshot-locked',
+    });
     expect(rows.at(-1)).toMatchObject({ phase: 'child.run', event: 'failed', error: 'fixture failed' });
-    expect(readVerifierPhaseMeasurements(run.archivePath)).toEqual({ 'source.freeze': rows[1].durationMs });
+    expect(readVerifierPhaseMeasurements(run.archivePath)).toEqual({
+      'source.freeze': rows[1].durationMs,
+      'deps.snapshot': rows[3].durationMs,
+    });
     expect(() => readVerifierPhaseMeasurements(path)).toThrow('ENOENT');
   });
 

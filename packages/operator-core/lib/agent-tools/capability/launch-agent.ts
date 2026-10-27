@@ -604,7 +604,7 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          'Harness slug to bootstrap for an operator-scope launch. Required when the caller context is wildcard/unset; otherwise the caller harness is used.',
+          'Harness slug for an operator-scope launch; required when the caller context is wildcard/unset, else the caller harness is used.',
         ),
       mcpTarget: z
         .enum(['stable', 'spawn-host'])
@@ -713,7 +713,7 @@ export default defineTool({
         .array(z.string().min(1))
         .max(40)
         .optional()
-        .describe('Repeatable psu --stack `<slot>:<id>` bindings or one `composition:<id>` named composition for every fresh launch; bare ids are invalid. members[i].stack overrides this list.'),
+        .describe('psu --stack `<slot>:<id>` bindings, or one `composition:<id>`, for every fresh launch; bare ids are invalid. members[i].stack overrides.'),
       fleet: z
         .string()
         .max(120)
@@ -725,17 +725,17 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          "Keep a FRESH launch out of the caller's presence fleet; an explicit `fleet` still wins (RESUME/FORK membership: see `fleet`).",
+          "Keep a FRESH launch out of the caller's presence fleet; an explicit `fleet` still wins (RESUME/FORK: see `fleet`).",
         ),
       goalVerifier: z
         .enum(['grade', 'test'])
         .optional()
-        .describe('GOAL holder only: launch one independent GRADE or TEST session, bind its matching goal launch profile and mode before turn one, and couple the holder to the verifier.'),
+        .describe('GOAL holder only: launch one independent GRADE/TEST session, its goal launch profile and mode bound before turn one, coupled to the holder.'),
       headless: z
         .boolean()
         .optional()
         .describe(
-          'No window; logs in workspace fleet-logs. Default false=visible. Headless retains injectable managed pty.',
+          'No window; logs in workspace fleet-logs. Default false=visible. Keeps an injectable managed pty.',
         ),
       count: z
         .number()
@@ -777,15 +777,15 @@ export default defineTool({
         .string()
         .max(80)
         .optional()
-        .describe('FRESH/successor model override. For ordinary in-place resume, omit it to retain target model; explicit overrides may conflict with saved fleet profile.'),
+        .describe('FRESH/successor model override. Omit on in-place resume to keep the target model; an override may conflict with the saved fleet profile.'),
       effort: z.string().min(1).max(40).optional()
-        .describe('Reasoning effort for every member (low|medium|high|xhigh|max); members[].effort overrides it. Human model aliases resolve through config:tiers-get launchAliases.'),
+        .describe('Reasoning effort (low|medium|high|xhigh|max) for every member; members[].effort overrides. Model aliases: config:tiers-get launchAliases.'),
       extraArgs: z
         .array(z.string().max(200))
         .max(20)
         .optional()
         .describe(
-          "Extra psu flags as individually shell-quoted argv entries; structured JSON and new flags need no tool change.",
+          "Extra psu flags, each a shell-quoted argv entry; structured JSON and new flags need no tool change.",
         ),
       idempotencyKey: z
         .string()

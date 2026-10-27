@@ -154,7 +154,8 @@ describe('retained committed reader producer and consumer', () => {
     }, qualification: { status: 'preparation-qualified',
       pending: ['actual-private-schema', 'actual-private-environment', 'loaded-host'] } });
     expect(receipt.artifactCensus.map((file: { path: string }) => file.path)).toEqual([
-      'asset.sql', 'hono-host.mjs', 'hono-host.mjs.builds', 'hono-host.mjs.meta.json', 'operator-api-build.log',
+      'asset.sql', 'hono-host.mjs', 'hono-host.mjs.builds', 'hono-host.mjs.meta.json',
+      'operator-api-build-result.json', 'operator-api-build.log',
     ]);
     expect(() => f.produce()).toThrow(/fresh allocated/);
     expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');

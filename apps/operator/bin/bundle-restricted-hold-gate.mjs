@@ -37,6 +37,7 @@ import {
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
+  BUNDLE_PREFLIGHT_SKIP_REASONS,
   formatBundleRestrictedHoldRefusal,
   recordBundleHoldProgress,
   runBundleRestrictedHoldPreflight,
@@ -174,16 +175,23 @@ export function runGate({ root, baseDir, outdir, snapshotDir, metafiles, metafil
     log(`✓ restricted-hold gate: ${inputCount} bundle inputs checked, none is a held restricted write (D-012)`);
     return GATE_EXIT.admit;
   }
-  if (verdict.verdict === 'skipped' && verdict.reason === 'github-actions') {
-    // WI-10006976: a hosted runner has no Papercusp operator, so no restricted session can hold a
-    // write there; the preflight declines to census rather than fail closed. Disclosed, never silent.
+  if (verdict.verdict === 'skipped' && Object.hasOwn(BUNDLE_PREFLIGHT_SKIP_REASONS, verdict.reason)) {
+    // The preflight declined to census for a declared reason (BUNDLE_PREFLIGHT_SKIP_REASONS: the
+    // green-checkpoint's committed-code checkout, a hosted GitHub runner — WI-10006976). No
+    // restricted session can hold a write there. Disclosed, never silent.
     rmSync(snapshotDir, { recursive: true, force: true });
-    log(`✓ restricted-hold gate: census skipped (${verdict.reason}: no Papercusp operator or restricted session on this runner); ${inputCount} bundle inputs kept`);
+    log(`✓ restricted-hold gate: census skipped (${verdict.reason}: ${BUNDLE_PREFLIGHT_SKIP_REASONS[verdict.reason]}); ${inputCount} bundle inputs kept`);
     return GATE_EXIT.admit;
   }
+  // An undeclared skip still fails closed, under a refusal that names it (a bare skipped verdict
+  // used to print `error=undefined ... undefined`, which hid the cause from every log tail).
+  const refusal = verdict.verdict === 'skipped'
+    ? { verdict: 'refuse', error: 'restricted_hold_skip_undeclared',
+      hint: `the census was skipped for "${verdict.reason}", which the host-bundle gate does not admit (BUNDLE_PREFLIGHT_SKIP_REASONS); the host bundle was not published` }
+    : verdict;
   const restored = restoreArtifacts({ outdir, snapshotDir });
   rmSync(snapshotDir, { recursive: true, force: true });
-  log(formatBundleRestrictedHoldRefusal(verdict));
+  log(formatBundleRestrictedHoldRefusal(refusal));
   log(`🚨 restored ${restored.filter((entry) => entry.existed).length} last-known-good artifact(s) in ${outdir}; removed ${restored.filter((entry) => !entry.existed).length} that had no predecessor`);
   return GATE_EXIT.refuse;
 }

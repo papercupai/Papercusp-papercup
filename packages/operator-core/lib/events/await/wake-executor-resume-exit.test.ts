@@ -61,6 +61,10 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       // The resume leg's harness fallback reads the live loop row. That blocked
       // real-PG attempt ran in every test here; model "no loop row" instead.
       getLoopStatusFn: (async () => null) as never,
+      // EI-203843: executeWake's FIRST gate reads the owner's session lifecycle fail-closed.
+      // Without a stub it hits real PG, throws, and parks every case as "custody unknown".
+      // Model "no lifecycle row" (not shut down, not paused) so the resume ladder runs.
+      getSessionLifecycle: async () => null,
       ...over,
     };
     // Hermetic owner election (WI-10008189): the handle reads not-alive, so executeWake elects

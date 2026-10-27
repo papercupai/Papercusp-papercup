@@ -14,7 +14,7 @@
  * install-leg symmetry with cupboard:install-plugin / cupboard:install-blueprint.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -42,7 +42,7 @@ export default defineTool({
     listingId: z.string().max(200).optional().describe('The Cupboard listing id — resolves the mirror repo URL + listing_ref from the listing.'),
     githubUrl: z.string().max(500).optional().describe('Install a mirror repo directly instead of resolving a listing (needs listingRef).'),
     listingRef: z.string().max(200).optional().describe('Within-repo template discriminator (the per-ref subdir to install). Required with githubUrl; resolved from the listing when only listingId is given.'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     const subject = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();

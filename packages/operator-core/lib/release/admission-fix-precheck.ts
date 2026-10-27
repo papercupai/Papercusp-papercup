@@ -1266,6 +1266,14 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         opts.integrationRoot,
         '--release',
         precheckRoot,
+        // WI-6554700010030437: the pre-check renders an admission VERDICT, so it must never
+        // judge a tree that corresponds to no commit — the gate's own checkout passes the same
+        // flag. Without it, a pinned submodule commit that is unreadable from the integration
+        // root (measured 2026-10-27, pre-check ee001775: libs/test-config@c7ed0a53 built in the
+        // :3170 throwaway checkout) was rsync'd from the live working tree and all 42 files came
+        // back `unmeasured`. object-sourced turns that into a loud setup FATAL naming the pin.
+        '--source-integrity',
+        'object-sourced',
         '--node-modules',
         'auto',
         '--node-modules-copy',

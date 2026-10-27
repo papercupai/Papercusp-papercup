@@ -1,6 +1,7 @@
 /** P-011: exercise the maintained sibling builder, including its rejected-build
  * publish contract. This guard never launches a host or uses the live database. */
 import { spawnSync } from 'node:child_process';
+import { DEFAULT_SPAWNER_READY_TIMEOUT_MS } from './fleet/spawner-sidecar-spawn';
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -58,7 +59,7 @@ it.each([
     // metadata are fixture inputs; the whole distribution need not be assembled.
     const desktop = readFileSync(join(root, 'papercusp-desktop/bin/build-desktop-sidecar.sh'), 'utf8');
     const externals = desktop.match(/^HOST_EXTERNALS=\([\s\S]*?^for np in .*$/m)?.[0];
-    const minify = desktop.match(/^MINIFY_ARGS=\(.*\)$/m)?.[0];
+    const minify = desktop.match(/^[ \t]*MINIFY_ARGS=\(.*\)$/m)?.[0];
     const version = desktop.match(/^  VERSION_DEFINE_ARGS=\([\s\S]*?^  \)/m)?.[0];
     const spawner = desktop.match(/^bundle_host_spawner "\$REPO_ROOT" "\$SIDECAR_DIR"[\s\S]*?\|\| exit 1/m)?.[0];
     expect({ externals, minify, version, spawner }).toEqual({
@@ -112,6 +113,7 @@ it.each([
             devScriptPath: 'unused.ts', bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
             execPath: process.execPath, spawnerPid: process.pid, bundledScriptName: 'spawner-sidecar.mjs' });
           assert.deepEqual(plan.args, [path.join(e.TEST_BUNDLE_DIR, 'spawner-sidecar.mjs')]);
+          const readinessStartedAt = Date.now();
           host = spawn(plan.cmd, plan.args, { cwd: path.join(e.TEST_REPO_ROOT, 'apps/operator'),
             env: { ...e, ...plan.env, VITEST: '', MALLOC_ARENA_MAX: '2', PAPERCUSP_HARNESS_DIR: harness,
               PAPERCUSP_SPAWNER_IPC_SOCKET: socket, PAPERCUSP_DB_POOL_MAX: '2',
@@ -121,18 +123,24 @@ it.each([
             stdio: ['ignore', 'pipe', 'pipe'] });
           report.hostPid = host.pid; report.entry = plan.args[0];
           for (const stream of [host.stdout, host.stderr]) stream.on('data', value => { tail = (tail + value).slice(-12000); });
-          const deadline = Date.now() + 90000;
+          const deadline = readinessStartedAt + ${DEFAULT_SPAWNER_READY_TIMEOUT_MS};
           while (!tail.includes('PAPERCUSP_SPAWNER_READY socket=' + socket) ||
               !/PAPERCUSP_SPAWNER_IDENTITY (\{[^\n]+\})/.test(tail)) {
             if (host.exitCode !== null || host.signalCode !== null) throw Error('packaged boot exited: ' + tail);
-            if (Date.now() >= deadline) throw Error('packaged boot deadline: ' + tail);
+            if (Date.now() >= deadline) throw Error('packaged boot exceeded production READY budget ('
+              + ${DEFAULT_SPAWNER_READY_TIMEOUT_MS} + 'ms): ' + tail);
             await wait(50);
           }
           report.ready = true;
+          report.readyElapsedMs = Date.now() - readinessStartedAt;
+          report.readyBudgetMs = ${DEFAULT_SPAWNER_READY_TIMEOUT_MS};
+          assert.ok(report.readyElapsedMs <= ${DEFAULT_SPAWNER_READY_TIMEOUT_MS},
+            'packaged sidecar READY exceeded production budget: ' + report.readyElapsedMs + 'ms');
           client = new SpawnerIpcClient(socket);
           const options = { timeoutMs: 20000, onPid: pid => childPids.add(pid) };
-          const capability = await client.call('spawn:cancel', {}, options);
+          const capability = await client.call('spawn:cancel', { prepareProcessExec: true }, options);
           assert.equal(capability.processExecCancellation, true);
+          assert.ok(Object.hasOwn(capability.processExecFence, 'forkserverIdentity'));
           const readyIdentity = JSON.parse(tail.match(/PAPERCUSP_SPAWNER_IDENTITY (\{[^\n]+\})/)[1]);
           const expectedBuild = { sha: e.TEST_BAKED_SHA || null, version: '0.0.0-packaged-fixture' };
           assert.deepEqual(capability.processExecIdentity, { pid: host.pid, buildInfo: expectedBuild });
@@ -152,7 +160,8 @@ it.each([
             args: ['-e', 'process.stdout.write("packaged-process-ok")'], cwd: e.TMPDIR,
             timeoutMs: 15000, workspaceId: e.PAPERCUSP_WORKSPACE_ID, ownerId: 'p011-packaged-fixture',
             fence: capability.processExecFence }, options);
-          assert.equal(commandResult.code, 0); assert.equal(commandResult.stdout, 'packaged-process-ok');
+          assert.equal(commandResult.code, 0, JSON.stringify({ commandResult, tail: tail.slice(-3000) }));
+          assert.equal(commandResult.stdout, 'packaged-process-ok', JSON.stringify({ commandResult }));
           report.processRpc = true;
           const invoked = await client.call('spawn:invokeOnce', { projectDir: e.TMPDIR, role: 'cup',
             extras: ['PACKAGED=1'], extraEnv: { TEST_TOKEN: 'packaged-invoke-ok', PAPERCUSP_SPAWN_BACKEND: 'omp' },

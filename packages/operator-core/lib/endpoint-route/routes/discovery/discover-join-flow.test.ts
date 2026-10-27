@@ -34,6 +34,13 @@ const joinHiveAsView = vi.fn();
 const bustProjectsLiteCache = vi.fn();
 const ensureHiveDirectoryWired = vi.fn();
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+// The directory also folds in JOINED remote views from the harness registry
+// (discovery-hive-rows joinedRemoteRows), which reads org PG. This suite is about
+// DISCOVERED hives, so the registry is empty: no joined rows, no live database.
+vi.mock('../../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../harness-registry')>()),
+  loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
+}));
 vi.mock('../../../harness/join-hive', () => ({
   joinHiveAsView: (...a: unknown[]) => joinHiveAsView(...a),
 }));

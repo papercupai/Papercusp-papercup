@@ -468,6 +468,25 @@ export type FrozenCandidateRepairPhase =
  */
 export type FrozenCandidateBlockedReason = 'attempts-exhausted' | 'dispatch-infeasible';
 
+/**
+ * EI-27159974011446383: the terminal statuses that mean "this candidate's suite was started and never
+ * concluded" — the self-watchdog/crash bucket ('error') and the suite-budget kill
+ * ('deadline-exceeded'). Standing environment conditions (disk headroom, a missing prewarm, a refused
+ * promotion push) are deliberately absent: a verify run at the repair head would hit them equally.
+ */
+export type FrozenCandidateNoVerdictStatus = 'error' | 'deadline-exceeded';
+
+export interface FrozenCandidateNoVerdictStreak {
+  /** Run ids (bounded, oldest first) of terminal no-verdict runs that judged the candidate. */
+  runs: string[];
+  lastStatus: FrozenCandidateNoVerdictStatus;
+  lastAtMs: number;
+}
+
+/** How many unjudged runs on the SAME candidate end its initial test when an admitted head waits. */
+export const FROZEN_CANDIDATE_NO_VERDICT_LIMIT = 2;
+const FROZEN_CANDIDATE_NO_VERDICT_RUN_CAP = 8;
+
 export interface FrozenRepairDispatchReservation {
   token: string;
   claimedAtMs: number;
@@ -616,6 +635,12 @@ export interface FrozenCandidateRepairQueue {
   fixerSpawnId: string | null;
   /** Automation may stop, but the queue head remains immutable until it is green. */
   blockedReason?: FrozenCandidateBlockedReason;
+  /**
+   * EI-27159974011446383: the terminal no-verdict runs that judged THIS queue's candidate while it
+   * was `ready-to-test`. See `recordFrozenCandidateNoVerdict`. Optional and additive: an older
+   * build's whole-row write drops it, which only restarts the count (never wedges).
+   */
+  candidateNoVerdict?: FrozenCandidateNoVerdictStreak;
   /**
    * P-010: the highest 8h age rung the gate has already escalated for this queue (absent = none
    * yet). A monotone high-water mark so the age alert fires once per rung, never per tick.
@@ -2456,7 +2481,19 @@ export function createFrozenCandidateRepairQueue(
 }
 
 /** Parse a JSONB metadata value without letting a malformed queue steer the release gate. */
+function parseCandidateNoVerdictStreak(value: unknown): FrozenCandidateNoVerdictStreak | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (!Array.isArray(raw.runs) || raw.runs.length === 0) return undefined;
+  const runs = raw.runs.filter((run): run is string => nonBlank(run)).slice(-FROZEN_CANDIDATE_NO_VERDICT_RUN_CAP);
+  if (runs.length === 0) return undefined;
+  if (raw.lastStatus !== 'error' && raw.lastStatus !== 'deadline-exceeded') return undefined;
+  if (!validTimestamp(raw.lastAtMs)) return undefined;
+  return { runs, lastStatus: raw.lastStatus, lastAtMs: raw.lastAtMs as number };
+}
+
 export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidateRepairQueue | null {
+
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
   if (
@@ -2554,6 +2591,9 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     Number.isInteger(row.ageEscalatedRung) && (row.ageEscalatedRung as number) > 0
       ? (row.ageEscalatedRung as number)
       : undefined;
+  // EI-27159974011446383: observability-adjacent bookkeeping on the same terms as rounds above — a
+  // malformed streak reads as absent (the count restarts), never as an unparseable live queue.
+  const candidateNoVerdict = parseCandidateNoVerdictStreak(row.candidateNoVerdict);
   // P-003 cross-plan integration: malformed/forward-skewed clock state is observability
   // metadata, not a reason to discard the queue. Accept it only when it is a sane timestamp
   // no newer than the row version; the classifier falls back to `updatedAtMs` otherwise.
@@ -2592,6 +2632,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     fixerSpawnId: row.fixerSpawnId as string | null,
     ...(blockedReason ? { blockedReason } : {}),
     ...(ageEscalatedRung !== undefined ? { ageEscalatedRung } : {}),
+    ...(candidateNoVerdict ? { candidateNoVerdict } : {}),
     ...(liveDispatchReservation ? { dispatchReservation: liveDispatchReservation } : {}),
     ...(fixerDispatchReceipt ? { fixerDispatchReceipt } : {}),
     ...(admissionPrecheck ? { admissionPrecheck } : {}),
@@ -3189,8 +3230,69 @@ export function markFrozenCandidateVerificationRed(
   };
 }
 
+/**
+ * EI-27159974011446383: record one terminal no-verdict run against a `ready-to-test` queue, and end
+ * the candidate's initial test once it has proven unjudgeable while an admitted head waits.
+ *
+ * Without this a `ready-to-test` queue has no exit when its candidate's suite cannot finish inside
+ * the run ceiling: every tick decides `test-candidate` and re-judges the same immutable sha, a
+ * no-verdict terminal moves only `gate_health.consecutiveNoVerdict`, retire refuses the phase as
+ * unsafe, and an admitted repair head is never verified. Measured 2026-10-27 on
+ * papercusp-pr-drill-20261014: candidate 2c26b2b9 hit the 3h absolute ceiling twice (10800088ms),
+ * while an admission had already moved repairHead to 6bf1c1a5.
+ *
+ * After `limit` distinct unjudged runs on the SAME candidate, a queue with an admitted head moves to
+ * `ready-to-verify`, exactly as `markFrozenCandidateVerificationRed` does when that candidate goes
+ * red under a waiting admission. The candidate's own measurement is simply absent: no convergence
+ * round and no signature are recorded, so the verify run finds no failure signature and the FULL
+ * gate at the repair head decides (never a narrowed, vacuous re-test). A queue with no admission is
+ * left in `ready-to-test` with its streak counted; admitting a fix is its way forward.
+ *
+ * Identity (no write) when the input does not apply: another phase, another sha, a non-counting
+ * status, or a run id already recorded (a terminal reported twice must not count twice).
+ */
+export function recordFrozenCandidateNoVerdict(
+  queue: FrozenCandidateRepairQueue,
+  input: {
+    status: string;
+    /** The sha the terminal run judged; a 7+ char prefix of the candidate also matches. */
+    judgedSha: string | null | undefined;
+    runId?: string | null;
+    nowMs: number;
+    limit?: number;
+  },
+): FrozenCandidateRepairQueue {
+  if (queue.phase !== 'ready-to-test') return queue;
+  if (input.status !== 'error' && input.status !== 'deadline-exceeded') return queue;
+  const judged = (input.judgedSha ?? '').trim().toLowerCase();
+  if (judged.length < 7 || !queue.candidate.toLowerCase().startsWith(judged)) return queue;
+  assertTimestamp(input.nowMs, 'nowMs');
+  const limit = input.limit ?? FROZEN_CANDIDATE_NO_VERDICT_LIMIT;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error(`invalid no-verdict limit ${limit}`);
+  const prior = queue.candidateNoVerdict?.runs ?? [];
+  const key = nonBlank(input.runId) ? (input.runId as string).trim() : `at:${input.nowMs}`;
+  if (prior.includes(key)) return queue;
+  const runs = [...prior, key].slice(-FROZEN_CANDIDATE_NO_VERDICT_RUN_CAP);
+  // A ready-to-test row reaches repairHead != candidate only through admission; requiring the
+  // admission record too keeps the transitioned row valid for parseFrozenCandidateRepairQueue,
+  // which rejects a verification phase reached by neither a fixer nor an admission.
+  const admittedHeadWaiting = queue.repairHead !== queue.candidate && (queue.admissions?.length ?? 0) > 0;
+  const unjudgeable = admittedHeadWaiting && runs.length >= limit;
+  return {
+    ...queue,
+    ...(unjudgeable ? { phase: 'ready-to-verify' as const } : {}),
+    updatedAtMs: Math.max(input.nowMs, queue.updatedAtMs + 1),
+    candidateNoVerdict: {
+      runs,
+      lastStatus: input.status,
+      lastAtMs: input.nowMs,
+    },
+  };
+}
+
 /** Stop automated churn while preserving the same immutable queue head. */
 export function markFrozenRepairExhausted(
+
   queue: FrozenCandidateRepairQueue,
   input: { reason: FrozenCandidateBlockedReason; nowMs: number },
 ): FrozenCandidateRepairQueue {

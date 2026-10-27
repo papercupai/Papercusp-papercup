@@ -91,5 +91,21 @@ export async function rememberExposedTools(input: { workspace: string; owner: st
   }
 }
 
+/** The tools/list hook's entry point. Resolves the owner LAZILY, inside the advisory path, so a
+ * caller with no attributable session (a connected-app key, an anonymous loopback) gets its
+ * listing back with nothing recorded instead of a thrown identity error (EI-27158841329142596).
+ * Never throws. */
+export async function recordListedTools(
+  input: { workspace: string; resolveOwner: () => string; tools: readonly string[] },
+  remember: typeof rememberExposedTools = rememberExposedTools,
+): Promise<'recorded' | 'unchanged' | 'unattributed'> {
+  let owner: string;
+  try { owner = input.resolveOwner(); } catch { return 'unattributed'; }
+  if (typeof owner !== 'string' || !owner.trim()) return 'unattributed';
+  try {
+    return (await remember({ workspace: input.workspace, owner, tools: input.tools })) ? 'recorded' : 'unchanged';
+  } catch { return 'unchanged'; }
+}
+
 /** Test seam: forget the per-process write memo. */
 export function resetExposedToolsMemo(): void { recorded.byKey.clear(); }

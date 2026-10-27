@@ -14,11 +14,14 @@
  * Vitest still resolves it at run time. The return type comes from a
  * Workers-free contract that the fixture's own signature is annotated with.
  */
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { DaoHrWalletBindingFixture } from '../../../../scripts/fixtures/dao-hr-wallet-binding-contract';
+import { moduleRepoRoot } from '../module-repo-root';
 
 export type { DaoHrWalletBindingFixture };
 
-const FIXTURE_MODULE = new URL('../../../../scripts/fixtures/dao-hr-wallet-binding.ts', import.meta.url).href;
+const FIXTURE_MODULE = pathToFileURL(join(moduleRepoRoot(import.meta.url), 'scripts/fixtures/dao-hr-wallet-binding.ts')).href;
 
 export async function startDaoHrWalletBindingFixture(): Promise<DaoHrWalletBindingFixture> {
   const fixture = (await import(FIXTURE_MODULE)) as {

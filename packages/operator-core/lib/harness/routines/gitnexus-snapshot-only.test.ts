@@ -41,7 +41,7 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   writeFileSync(fixture.snapshot, JSON.stringify({ schema: 'graph-dependency-snapshot-v1',
-    index: { lastCommit: 'a'.repeat(40), backend: 'first-party-imports' }, generatedAt: new Date(Date.now() - 7_200_000).toISOString(),
+    index: { lastCommit: 'a'.repeat(40), backend: 'first-party-imports' }, generatedAt: new Date(Date.now() - 1_800_000).toISOString(),
     edges: [{ importer: 'app/use.ts', imported: 'lib/target.ts', importerSha256: 'b'.repeat(64) }] }));
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
@@ -54,7 +54,7 @@ describe('registered hourly source-only maintenance', () => {
       expect(result).toEqual({ diagnostics: { maintenanceMode: 'first-party-snapshot',
         snapshotBackend: 'first-party-imports', analyzeEnabled: false,
         dependencySnapshot: { backend: 'first-party-imports', status: 'fresh', reason: null,
-          checkedAt: Date.now(), generatedAt: '2026-10-16T22:00:00.000Z', ageMs: 7_200_000,
+          checkedAt: Date.now(), generatedAt: '2026-10-16T23:30:00.000Z', ageMs: 1_800_000,
           edges: 1, selectorCeilingMs: 86_400_000, producerRan: false, producerExit: null } } });
       expect(fixture.sql).toHaveBeenCalledTimes(2);
       expect(fixture.sql.mock.calls[1]?.[1]?.[1]).toContain('"status":"fresh"');
@@ -83,7 +83,7 @@ describe('registered hourly source-only maintenance', () => {
     const result = await getSystemAction('gitnexus-reindex')!({ installSlug: 'snapshot-fixture', workspaceId: 'fixture',
       triggerConfig: {}, payloadTemplate: null });
     expect(result).toMatchObject({ diagnostics: { dependencySnapshot: { status: 'fresh',
-      checkedAt: Date.now(), generatedAt: '2026-10-16T22:00:00.000Z', ageMs: 7_200_000,
+      checkedAt: Date.now(), generatedAt: '2026-10-16T23:30:00.000Z', ageMs: 1_800_000,
       trackingError: 'metadata write unavailable' } }, softError: 'dependency snapshot: metadata write unavailable' });
     expect(fixture.spawn).not.toHaveBeenCalled();
   });

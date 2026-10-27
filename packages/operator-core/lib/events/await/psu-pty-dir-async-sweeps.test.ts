@@ -194,8 +194,20 @@ describe('psu-pty directory sweeps never touch the directory synchronously (WI-1
   });
 
   it('carry-drill-drop watchdog: production-delivery read (runs every 60s)', async () => {
+    // The reader keeps only TERMINAL carry-respawn outcomes, so a bare `respawned` line
+    // (what the shared fixture writes) is filtered out by design. Append one terminal
+    // outcome to BOTH ledgers: su-old then carries a matching event too, so its absence
+    // below is the window's doing, not the kind filter's.
+    const outcome = `${JSON.stringify({ ts: new Date(NOW).toISOString(), kind: 'respawn-carry-delivered', mode: 'carry-respawn' })}\n`;
+    writeFileSync(join(dir, 'su-live.events.jsonl'), outcome, { flag: 'a' });
+    const oldLedger = join(dir, 'su-old.events.jsonl');
+    writeFileSync(oldLedger, outcome, { flag: 'a' });
+    const old = new Date(NOW - 3 * 60 * 60_000);
+    utimesSync(oldLedger, old, old);
+
     const events = await readRecentProductionCarryEvents(dir, NOW);
-    expect(events).toEqual([expect.objectContaining({ kind: 'respawned' })]); // su-live only; su-old is outside the window
+    // su-live's terminal outcome only: its `respawned` line is not terminal, and su-old is outside the window.
+    expect(events).toEqual([expect.objectContaining({ kind: 'respawn-carry-delivered', mode: 'carry-respawn' })]);
     expect(syncCallsUnder(dir)).toEqual([]);
   });
 

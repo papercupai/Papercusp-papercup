@@ -145,7 +145,9 @@ describe('census: no new fixed import.meta.url climbs to the repo root', () => {
   });
 
   it('the scanned tree has no unlisted site, and every listed site still exists (shrink-only)', () => {
-    const files = presentOnDisk(execFileSync('git', ['ls-files', '-z', '--', ...SOURCE_PATHSPECS], { cwd: REPO_ROOT, encoding: 'utf8' })
+    // The -z census is >1 MiB (1,190,385 bytes measured 2026-10-27), past execFileSync's default
+    // maxBuffer, which surfaced as `spawnSync git ENOBUFS`. Size the buffer for a growing tree.
+    const files = presentOnDisk(execFileSync('git', ['ls-files', '-z', '--', ...SOURCE_PATHSPECS], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
       .split('\0')
       .filter((f) => /\.(ts|mts|tsx)$/.test(f) && !/\.(test|spec)(?:-helper)?\.tsx?$/.test(f) && !f.includes('/__tests__/')), REPO_ROOT);
     expect(files.length).toBeGreaterThan(1000); // the census really read the tree

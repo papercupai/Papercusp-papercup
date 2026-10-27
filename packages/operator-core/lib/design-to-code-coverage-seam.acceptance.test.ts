@@ -96,10 +96,25 @@ describe('design-to-code coverage seam: not-code accounting searches', () => {
       .filter((file) => /\.(?:ts|mjs)$/.test(file) && !file.includes('.test.'))
       .filter((file) => /completionAuthority|completion_authority/.test(readTracked(file)));
     expect(authorityCorpus).toContain('packages/operator-core/lib/work-item-completion-authority.ts');
+    // The falsifier is an AUTHORITY distribution, so "distribution" must sit next
+    // to "authority" (either order). A bare /distribution/ also matched unrelated
+    // vocabulary in the same files, e.g. the scorecard rating key
+    // 'canonicalRatings.degenerate-distribution.rating' in result-door.ts.
+    const authorityDistribution =
+      /authorit\w*[\s_.:-]*distribution|distribution[\s_.:-]*(?:(?:of|by|per|across)[\s_.:-]*)?(?:completion[\s_.:-]*)?authorit/i;
+    for (const positive of [
+      'const completionAuthorityDistribution = new Map();',
+      'export function authority_distribution(rows) {',
+      'return { distributionByAuthority };',
+      "label: 'distribution of completion authority',",
+    ]) {
+      expect(authorityDistribution.test(positive), `positive control: ${positive}`).toBe(true);
+    }
+    expect(authorityDistribution.test("'canonicalRatings.degenerate-distribution.rating',")).toBe(false);
     const distributionHits = authorityCorpus.flatMap((file) =>
       withoutComments(readTracked(file))
         .split('\n')
-        .filter((line) => /distribution/i.test(line))
+        .filter((line) => authorityDistribution.test(line))
         .map((line) => `${file}: ${line.trim()}`),
     );
     expect(

@@ -55,6 +55,7 @@ import {
   fetchContextPressure,
 } from '../agent-tools/coordination/context-pressure';
 import { tokensFromFileSize } from '../compaction-usage';
+import { codexModelIdFromSpec, codexServiceableForModel } from '../model-context-budget.mjs';
 import {
   analyzeClaudeResumeTranscriptFile,
   type ClaudeResumeTranscriptAnalysis,
@@ -492,6 +493,8 @@ export interface CodexGatewayPoolStats {
   codexTotalAccounts?: unknown;
   codexEarliestRecoveryAt?: unknown;
   codexUnserviceableCause?: unknown;
+  /** Serviceable accounts that accept each model with a live refusal (WI-6554700010029748). */
+  codexServiceableByModel?: unknown;
 }
 
 export interface CodexGatewayLaunchRefusal {
@@ -674,10 +677,25 @@ export function rejudgeFirstTurn(
 export function codexGatewayLaunchRefusal(
   stats: CodexGatewayPoolStats | null | undefined,
   now: number,
+  model?: string | null,
 ): CodexGatewayLaunchRefusal | null {
   if (!stats || typeof stats !== 'object') return null;
   const healthy = stats.codexHealthyAccounts;
   const total = stats.codexTotalAccounts;
+  // WI-6554700010030413: the provider-wide count is model-blind. The launcher also
+  // refuses when every serviceable account refuses the requested model, so a rank
+  // whose model has a measured zero is walled before any launch is paid for. The
+  // model id is resolved by the launcher's own helper, aliases included.
+  const modelId = codexModelIdFromSpec(model);
+  if (modelId && typeof healthy === 'number' && Number.isInteger(healthy) && healthy > 0 &&
+      codexServiceableForModel(stats.codexServiceableByModel, modelId) === 0) {
+    return {
+      failureReason: 'account-walled',
+      routeReason: 'codex gateway can route to ' + healthy + ' account(s), but every one refuses model ' +
+        modelId + ' (gateway /stats codexServiceableByModel)',
+      recoveryAt: null,
+    };
+  }
   const hasRecovery = Object.prototype.hasOwnProperty.call(stats, 'codexEarliestRecoveryAt');
   const raw = stats.codexEarliestRecoveryAt;
   // Speak only from the complete stats contract, exactly as the launcher does:
@@ -727,9 +745,10 @@ export function applyCodexGatewayRefusal(
   provider: 'claude' | 'codex',
   stats: CodexGatewayPoolStats | null | undefined,
   now: number,
+  model?: string | null,
 ): BackendAvailability {
   if (provider !== 'codex' || !verdict.available || verdict.accountRoute !== 'auto') return verdict;
-  const refusal = codexGatewayLaunchRefusal(stats, now);
+  const refusal = codexGatewayLaunchRefusal(stats, now, model);
   if (!refusal) return verdict;
   return {
     available: false,
@@ -801,7 +820,8 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   /** WI-10004888: bucket that estimate against the source owner's own compaction limit. */
   bucketTranscriptPressure: typeof bucketTokensAgainstOwnerLimit;
   /** Is there budget to run this backend at all right now? (D-004 walls.) */
-  probeBackendAvailable: (agent: ExpertBackend, workspaceId: string) => Promise<BackendAvailability>;
+  /** `model` is the rank's launch spec; omitted, the probe answers provider-wide. */
+  probeBackendAvailable: (agent: ExpertBackend, workspaceId: string, model?: string | null) => Promise<BackendAvailability>;
   mintOwnerId: () => string;
   /**
    * Stop a session this rank SPAWNED but then failed (EI-24106882795589775).
@@ -1385,6 +1405,7 @@ function providerForBackend(agent: ExpertBackend): 'claude' | 'codex' | null {
 async function defaultProbeBackendAvailable(
   agent: ExpertBackend,
   workspaceId: string,
+  model?: string | null,
 ): Promise<BackendAvailability> {
   const provider = providerForBackend(agent);
   if (!provider) return { available: true, detail: `${agent} is not a pooled subscription — no wall to probe` };
@@ -1420,7 +1441,7 @@ async function defaultProbeBackendAvailable(
     // The local pool view cannot see gateway-side exclusions; ask the gateway the
     // same question the launcher will (WI-6554700010029514).
     if (provider === 'codex' && verdict.available && verdict.accountRoute === 'auto') {
-      return applyCodexGatewayRefusal(verdict, provider, await readCodexGatewayPoolStats(), Date.now());
+      return applyCodexGatewayRefusal(verdict, provider, await readCodexGatewayPoolStats(), Date.now(), model);
     }
     return verdict;
   } catch (e) {
@@ -1913,8 +1934,10 @@ async function walkConsultDispatch(
         continue;
       }
 
-      const capacity = nativeCapacity ?? await d.probeBackendAvailable(rank.agent, ctx.workspaceId);
-      nativeCapacity = null; // Later ranks recheck capacity after a launch may change it.
+      // Every rank re-probes with its own model: the native target probe above
+      // answers provider-wide, and an account can serve one model but refuse
+      // another (WI-6554700010030413). Later ranks also see capacity a launch changed.
+      const capacity = await d.probeBackendAvailable(rank.agent, ctx.workspaceId, rank.model);
       if (!capacity.available) {
         attempts.push({
           rank: rank.rank,
@@ -2015,7 +2038,7 @@ async function walkConsultDispatch(
           detail: citedTurnsFailure ?? 'no cited turns' });
         continue;
       }
-      const capacity = await d.probeBackendAvailable(rank.agent, ctx.workspaceId);
+      const capacity = await d.probeBackendAvailable(rank.agent, ctx.workspaceId, rank.model);
       if (!capacity.available) {
         attempts.push({
           ...base,

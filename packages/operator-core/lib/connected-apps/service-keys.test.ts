@@ -92,6 +92,11 @@ import { mintAppKey } from './key';
 import { resolveAppKeyToken } from './principal';
 import { appKeyVerdictOf, createAppKey, createServiceKey, resolveAppKeyScopes, rotateAppKey, type StoredAppKeyRow } from './store';
 import { DEFAULT_SPEND_CAP_WINDOW_SEC, SpendCapError, resolveSpendCap } from './service-keys';
+import { setKernelEnforcementResolver } from '../projected-tool-deps';
+// lib/events/index.ts installs the DB-backed control-anchor kernel resolver at import time.
+// This fixture mocks @papercusp/db-org, so that control-anchor read rejects and every call is
+// denied policy-unavailable. Uninstall it: app-key scope + structural kernel checks stay real.
+beforeEach(() => { setKernelEnforcementResolver(null); });
 
 const CTX: RouteContext = { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
 const postRoute = catchall.find((d) => d.method === 'POST');

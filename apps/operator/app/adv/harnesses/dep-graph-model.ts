@@ -103,10 +103,18 @@ export interface DepGraphWaitInput {
   itemTitle?: string | null;
   itemStatus?: string | null;
   itemPlanSlug?: string | null;
-  /** 'session-await' = an events:await registration; 'item-blocker' = the item's own blocker. */
-  waitKind: 'session-await' | 'item-blocker';
+  /**
+   * 'session-await' = an events:await registration; 'item-blocker' = the item's own blocker;
+   * 'item-park' = the item's durable park, whose release trigger is `eventKey`
+   * (WI-6554700010030343).
+   */
+  waitKind: 'session-await' | 'item-blocker' | 'item-park';
   eventKey: string;
   blockerKind?: 'event' | 'gate' | null;
+  /** 'item-park' only: who parked the item. */
+  parkedBy?: string | null;
+  /** 'item-park' only: ISO date the park is next escalated for review (unprovable trigger). */
+  recheckAt?: string | null;
   /** The await's bound_to names this item (vs. one of its holder's other awaits). */
   bound?: boolean;
   subscriberId?: string | null;
@@ -175,6 +183,8 @@ export interface DepGraphEdge {
     stale: boolean;
     staleReason: string | null;
     since: string | null;
+    /** Set only when the wait is the item's durable park (an 'item-waits-on-event' edge). */
+    park?: { by: string | null; recheckAt: string | null };
   };
 }
 
@@ -567,8 +577,10 @@ export function buildDepSubgraph(opts: {
     }
     hydrate(w.itemId, w.itemKind, w.itemTitle, w.itemStatus, w.itemPlanSlug);
     const source = eventNodeId(w.eventKey);
-    const kind: DepGraphWaitEdgeKind = w.waitKind === 'item-blocker' ? 'item-waits-on-event' : 'session-awaits-event';
-    const id = `wait:${kind}:${w.subscriberId ?? w.blockerKind ?? 'item'}:${source}->${w.itemId}`;
+    // A blocker and a park are both the ITEM waiting on the event; only an await has a subscriber.
+    const kind: DepGraphWaitEdgeKind = w.waitKind === 'session-await' ? 'session-awaits-event' : 'item-waits-on-event';
+    const isPark = w.waitKind === 'item-park';
+    const id = `wait:${kind}:${isPark ? 'park' : (w.subscriberId ?? w.blockerKind ?? 'item')}:${source}->${w.itemId}`;
     if (seenWaitIds.has(id)) continue;
     seenWaitIds.add(id);
     const stale = Boolean(w.stale);
@@ -596,6 +608,7 @@ export function buildDepSubgraph(opts: {
         stale,
         staleReason: w.staleReason ?? null,
         since: w.since ?? null,
+        ...(isPark ? { park: { by: w.parkedBy ?? null, recheckAt: w.recheckAt ?? null } } : {}),
       },
     });
   }

@@ -91,6 +91,7 @@ import {
   describeUnreadableFrozenCandidateRepairQueue,
   parseFrozenCandidateRepairQueue,
   parseFrozenCandidateRepairQueueRead,
+  recordFrozenCandidateNoVerdict,
   markFrozenRepairFixerDispatched,
   buildFrozenRepairConvergenceGateHealth,
   buildFrozenRepairStatusIdentity,
@@ -5191,6 +5192,9 @@ export async function trackGateStall(
         );
       }
     }
+    // EI-27159974011446383: a ready-to-test queue whose candidate keeps ending unjudged must not
+    // re-judge that sha forever while an admitted head waits (see recordFrozenCandidateNoVerdict).
+    await recordFrozenCandidateNoVerdictTick(ctx, { status, candidate, runId: options.runId ?? null });
     await refreshGateRedStreakHeadline(ctx);
     return;
   }
@@ -6715,7 +6719,52 @@ export async function applyFrozenCandidateRepairQueueTransition(
   throw lastConflict ?? new Error('frozen repair queue transition exhausted its attempts');
 }
 
+/**
+ * EI-27159974011446383: the effectful half of `recordFrozenCandidateNoVerdict`, run on every
+ * non-verdict tick. Only the two "started and never concluded" statuses reach the queue read.
+ * Fail-safe like the streak write beside its call site: a failure leaves the queue exactly as it
+ * was (the pre-fix behaviour), never a wrong phase.
+ */
+export async function recordFrozenCandidateNoVerdictTick(
+  target: GateVerdictTarget,
+  input: { status: string; candidate?: string | null; runId?: string | null; nowMs?: number },
+  deps: { applyTransition?: typeof applyFrozenCandidateRepairQueueTransition } = {},
+): Promise<FrozenRepairQueueTransitionOutcome | null> {
+  if (input.status !== 'error' && input.status !== 'deadline-exceeded') return null;
+  if (!input.candidate) return null;
+  const nowMs = input.nowMs ?? Date.now();
+  try {
+    const outcome = await (deps.applyTransition ?? applyFrozenCandidateRepairQueueTransition)(target, (fresh) =>
+      recordFrozenCandidateNoVerdict(fresh, {
+        status: input.status,
+        judgedSha: input.candidate,
+        runId: input.runId ?? null,
+        nowMs,
+      }),
+    );
+    if (outcome.status === 'written' && outcome.queue) {
+      const queue = outcome.queue;
+      const moved = outcome.fresh?.phase === 'ready-to-test' && queue.phase === 'ready-to-verify';
+      console.log(
+        `${orchestratorStdoutTag()} FROZEN_REPAIR_CANDIDATE_NO_VERDICT candidate=${queue.candidate.slice(0, 12)} ` +
+          `unjudgedRuns=${queue.candidateNoVerdict?.runs.length ?? 0} status=${input.status} ` +
+          (moved
+            ? `transition=ready-to-verify repairHead=${queue.repairHead.slice(0, 12)} — the candidate proved ` +
+              `unjudgeable, so the admitted head is verified next by the full gate`
+            : 'transition=none'),
+      );
+    }
+    return outcome;
+  } catch (e) {
+    console.warn(
+      `${orchestratorStdoutTag()} frozen-candidate no-verdict record failed: ${e instanceof Error ? e.message : e}`,
+    );
+    return null;
+  }
+}
+
 export async function writeFrozenCandidateRepairQueue(
+
   target: GateVerdictTarget,
   queue: FrozenCandidateRepairQueue | null,
   opts: WriteFrozenCandidateRepairQueueOptions,

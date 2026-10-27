@@ -127,13 +127,16 @@ describe('psu-pty regression: bg-host runs the fix, :3070 does not ⇒ not block
         loadRuntimeVintage: async () => vintageRows,
         localRuntimeHost: 'box',
         readCgroup: async (pid) => (pid === 5151 ? '0::/user.slice/papercusp-bg-host.service' : null),
-        probeHealthSha: async (port) => (port === 3070 ? RELEASE_BUILD : null),
-        probeHealthBundle: async () => null,
+        // bg-host bundles the canonical tree, so only the sha baked into the bundle it
+        // serves on :3271 can prove containment (EI-26048015059197913): a runtime-vintage
+        // boot sha describes the tree at boot, not the bytes the loaded bundle carries.
+        probeHealthSha: async (port) => (port === 3070 ? RELEASE_BUILD : port === 3271 ? BG_BUILD : null),
+        probeHealthBundle: async (port) => (port === 3271 ? { stale: false, servingBuiltAtMs: null } : null),
         fileMtimeMs: async () => startedAtMs - 60_000,
       },
     );
     const bg = res.servingRuntimes.find((r) => r.runtime === 'bg-host');
-    expect(bg).toMatchObject({ role: 'owner', buildSha: BG_BUILD, containsChange: true, buildShaSource: 'runtime-vintage' });
+    expect(bg).toMatchObject({ role: 'owner', buildSha: BG_BUILD, containsChange: true, buildShaSource: 'health' });
     const release = res.servingRuntimes.find((r) => r.runtime === 'release-operator');
     // Measured at :3070's OWN health sha — independent of the git-ancestry `positions.deployed`
     // flag (which this fake git happens to report as reached; the runtime row must not copy it).

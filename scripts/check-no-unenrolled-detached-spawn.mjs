@@ -87,7 +87,7 @@ const ROOT = new URL('..', import.meta.url).pathname;
  */
 export const ALLOWLIST = new Map([
   ['scripts/source-preview.mjs', 'detached ONLY for awaited verifier dependency preflights; processGroupLifetime joins every descendant before owned-tree cleanup, with measured-progress watchdog and bounded termination (WI-6554700010016556)'],
-  ['libs/test-config/src/admin-test-runs-reporter.ts', 'detached ONLY to lead a process group so the timeout group-kills the bounded git helper; runGitProcessGroup reaps the group and settles the promise on child close'],
+  ['libs/test-config/src/git-read-worker.mjs', 'detached ONLY to lead a process group so the timeout group-kills the bounded git helper; the worker reaps the group and posts its result on child close (moved here from admin-test-runs-reporter.ts runGitProcessGroup)'],
   ['packages/operator-core/lib/dao-hr/native-bootstrap-runtime.ts', 'detached ONLY to lead a process group so cancellation or phase timeout group-kills the native verifier tree; runNativeVerifier awaits child close and termination escalation before returning'],
   ['packages/operator-core/test/private-http-workspace-preflight.ts', 'test preflight: detached ONLY to lead a process group so timeout group-kills the retained bundle builder tree; the async builder awaits close and the sync builder waits for spawnSync before returning'],
   ['packages/operator-core/lib/harness/git-sync/run-git-sync.ts', 'detached ONLY for group cancellation of referenced, awaited local Git; processGroupLifetime proves helper exit before resolution and lease release (EI-24141765530574665)'],
@@ -337,11 +337,20 @@ function hasEnrolmentEvidence(relPath, source) {
     && ['begin', 'complete', 'finish'].every((name) => called.has(name));
 }
 
-/** Callee names treated as process launches. `spawnFn` is the repo's DI seam name. */
-const SPAWN_CALLEES = new Set(['spawn', 'childSpawn', 'spawnFn', 'fork']);
+/**
+ * Callee names treated as process launches. `spawnFn` is the repo's DI seam name;
+ * `spawnSidecarChild` is the forkserver client (a detached request through it creates a
+ * process group exactly like `spawn`, so it must not be a blind spot).
+ */
+const SPAWN_CALLEES = new Set(['spawn', 'childSpawn', 'spawnFn', 'fork', 'spawnSidecarChild']);
 
-/** Cheap RAW pre-filter: no spawn token in the raw bytes ⇒ no need to parse at all. */
-const SPAWN_TOKEN = /\b(spawn|childSpawn|spawnFn|fork)\s*\(/;
+/**
+ * Cheap RAW pre-filter: no spawn token in the raw bytes ⇒ no need to parse at all.
+ * MONOTONIC over isSpawnCall: a callee name is followed by `(` when called directly, and
+ * by `)`, `??` or `||` when it is an operand of a parenthesised fallback callee such as
+ * `(deps.spawnChild ?? spawnSidecarChild)(…)`, which isSpawnCall unwraps.
+ */
+const SPAWN_TOKEN = /\b(spawn|childSpawn|spawnFn|fork|spawnSidecarChild)\s*(\(|\)|\?\?|\|\|)/;
 
 /**
  * TRIGGER (3) — callees that launch a process SYNCHRONOUSLY. Deliberately absent from
@@ -462,12 +471,27 @@ export function spawnTriggers(relPath, source) {
     return n;
   };
 
-  const isSpawnCall = (node) => {
-    if (!t.isCallExpression(node)) return false;
-    const e = node.expression;
+  /**
+   * A callee names a launch when it IS one (`spawn`, `cp.spawn`) or when either operand of
+   * a fallback callee is one: `(deps.spawnChild ?? spawnSidecarChild)(…)` launches through
+   * the real seam whenever the injected one is absent, so it counts.
+   */
+  const isSpawnCallee = (expr) => {
+    const e = unwrap(expr);
     if (t.isIdentifier(e)) return SPAWN_CALLEES.has(e.text);
     if (t.isPropertyAccessExpression(e)) return SPAWN_CALLEES.has(e.name.text);
+    if (
+      t.isBinaryExpression(e) &&
+      (e.operatorToken.kind === t.SyntaxKind.QuestionQuestionToken || e.operatorToken.kind === t.SyntaxKind.BarBarToken)
+    ) {
+      return isSpawnCallee(e.left) || isSpawnCallee(e.right);
+    }
     return false;
+  };
+
+  const isSpawnCall = (node) => {
+    if (!t.isCallExpression(node)) return false;
+    return isSpawnCallee(node.expression);
   };
 
   // TRIGGER (1): `detached` present in an options object and NOT the literal `false`.
