@@ -398,6 +398,60 @@ describe('runPureLaneProofCapture', () => {
     expect(dirty.slices.length + noSha.slices.length).toBe(0);
   });
 
+  // WI-6554700010030332: the gate's legs leave test artifacts in the disposable checkpoint, so
+  // capture skipped dirty-checkout(1) on four runs and never named the path.
+  describe('dirty checkout restore (WI-6554700010030332)', () => {
+    const dirtyUntilRestored = () => {
+      const state = { dirty: true, restoredWith: [] as string[] };
+      const git = (_r: string, a: string[]) =>
+        a[0] === 'rev-parse' ? `${SHA}\n` : a[0] === 'status' ? (state.dirty ? ' M lib/x.ts\n' : '') : null;
+      return { state, git };
+    };
+
+    it('restores a dirty checkout through the injected restore, then captures', async () => {
+      const { state, git } = dirtyUntilRestored();
+      const h = harness({
+        git,
+        restoreCheckout: (sha: string) => {
+          state.restoredWith.push(sha);
+          state.dirty = false;
+          return { ok: true, restored: true };
+        },
+      });
+      const result = await run(h);
+      expect(state.restoredWith).toEqual([SHA]);
+      expect(result.reason ?? '').not.toMatch(/^dirty-checkout/);
+      expect(result.evidence.clean).toBe(true);
+      expect(h.slices.length).toBeGreaterThan(0);
+      expect(h.logs.some((l) => /state=restore dirty=1 result=restored paths=\["M lib\/x\.ts"\]/.test(l))).toBe(true);
+    });
+
+    it('skips and names the dirty path when the restore refuses', async () => {
+      const { state, git } = dirtyUntilRestored();
+      const h = harness({ git, restoreCheckout: () => ({ ok: false, reason: 'head-mismatch' }) });
+      const result = await run(h);
+      expect(state.dirty).toBe(true);
+      expect(result.reason).toBe('dirty-checkout(1)');
+      expect(h.slices).toHaveLength(0);
+      expect(h.logs.some((l) => /state=dirty count=1 restore=refused\(head-mismatch\) paths=\["M lib\/x\.ts"\]/.test(l))).toBe(true);
+    });
+
+    it('a restore that throws is a refusal, never a crash', async () => {
+      const { git } = dirtyUntilRestored();
+      const h = harness({ git, restoreCheckout: () => { throw new Error('boom'); } });
+      const result = await run(h);
+      expect(result.reason).toBe('dirty-checkout(1)');
+      expect(h.logs.some((l) => /restore=refused\(restore-threw\(boom\)\)/.test(l))).toBe(true);
+    });
+
+    it('without a restore dep still skips, and names the dirty path', async () => {
+      const { git } = dirtyUntilRestored();
+      const h = harness({ git });
+      expect((await run(h)).reason).toBe('dirty-checkout(1)');
+      expect(h.logs.some((l) => /state=dirty count=1 restore=none paths=\["M lib\/x\.ts"\]/.test(l))).toBe(true);
+    });
+  });
+
   it('skips when the suite never ran the pure lane at this sha', async () => {
     const h = harness({ loadShaOutcomes: async () => ({ failed: new Set(), passedInSuite: new Set(), ranInSuite: 0 }) });
     expect(await run(h)).toMatchObject({ state: 'skipped', reason: 'pure-lane-not-run-at-sha' });

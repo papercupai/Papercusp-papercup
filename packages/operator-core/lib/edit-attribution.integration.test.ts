@@ -17,6 +17,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: h.db!.sql }),
 }));
+// P-002: the interface capture's peer read must not reach a real lock plane here.
+vi.mock('./agent-tools/locks/live-lock-paths', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/locks/live-lock-paths')>()),
+  liveLockHoldingsStrict: async () => { throw new Error('lock plane unavailable in this test'); },
+}));
 const { lookupDriftCauseWorkItems, recordEditAttribution } = await import('./edit-attribution');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -183,5 +188,44 @@ describe('recordEditAttribution symbols capture (real PG + real git, migration 1
     writeFileSync(join(root, 'notes.md'), '# base\nchanged\n');
 
     expect(await record(root, 'notes.md')).toBeNull();
+  });
+
+  /** P-002 (D-018): the same write journals edit-time interface eligibility. */
+  async function recordInterface(root: string, file: string, workspaceId?: string) {
+    await recordEditAttribution({ repoRoot: root, files: [file], agentId: 'agent-p002', workspaceId }, { awaitSymbols: true });
+    const rows = await h.db!.sql<{ harness_slug: string | null; signal_eligibility: Record<string, any> | null }[]>`
+      SELECT harness_slug, signal_eligibility FROM harness_shared.edit_attribution_ledger
+       WHERE repo_root = ${root} AND file = ${file}`;
+    expect(rows).toHaveLength(1);
+    return rows[0]!;
+  }
+
+  it('journals a body-only edit as ineligible on a NULL-harness row (P-002)', async () => {
+    const root = repoWith({ 'mod.ts': BASE });
+    writeFileSync(join(root, 'mod.ts'), BASE.replace('return n * 2;', 'return n * 3;'));
+
+    const row = await recordInterface(root, 'mod.ts', 'ws-p002');
+    expect(row.harness_slug).toBeNull();
+    expect(row.signal_eligibility?.interface).toMatchObject({
+      version: 1, verdict: 'ineligible', reason: 'no exported signature change', changedExports: [],
+    });
+  });
+
+  it('journals an exported-signature edit as unknown when live peers cannot be read (P-002)', async () => {
+    const root = repoWith({ 'mod.ts': BASE });
+    writeFileSync(join(root, 'mod.ts'), BASE.replace('beta(n: number)', 'beta(n: number, m = 1)'));
+
+    const row = await recordInterface(root, 'mod.ts', 'ws-p002');
+    expect(row.signal_eligibility?.interface).toMatchObject({
+      verdict: 'unknown', reason: 'edit-time peer evidence unavailable', changedExports: ['beta'],
+      peerEvidence: { status: 'unknown', peers: [] },
+    });
+  });
+
+  it('journals nothing without a workspace, the journal identity (P-002)', async () => {
+    const root = repoWith({ 'mod.ts': BASE });
+    writeFileSync(join(root, 'mod.ts'), BASE.replace('return n * 2;', 'return n * 3;'));
+
+    expect((await recordInterface(root, 'mod.ts')).signal_eligibility).toBeNull();
   });
 });

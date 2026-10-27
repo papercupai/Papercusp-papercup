@@ -4423,8 +4423,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // P-016 (pot-review-integration-mode): a working-copy pot's sync-back conflict
     // becomes ONE fix-it work-item in the pot, deduped on the sha-free title prefix
     // (watchdogKey) so a stuck merge never re-files on every upstream advance.
-    // Best-effort: a filing failure never fails the tick.
-    if (cfg.syncBack && outcome.syncBack?.status === 'conflict') {
+    // Best-effort: a filing failure never fails the tick. A merged / up-to-date result
+    // resolves the open item (EI-27142578298088040), so a later different conflict files
+    // a fresh item instead of deduping into a stale one.
+    const syncBackStatus = outcome.syncBack?.status;
+    if (cfg.syncBack && outcome.syncBack && (syncBackStatus === 'conflict' || syncBackStatus === 'merged' || syncBackStatus === 'up-to-date')) {
       const syncBackCfg = cfg.syncBack;
       try {
         const filing = await fileSyncBackConflict(
@@ -4434,7 +4437,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             slug,
             workspaceId,
             cfg: syncBackCfg,
-            conflictedFiles: outcome.syncBack.conflictedFiles,
+            conflictedFiles: outcome.syncBack.status === 'conflict' ? outcome.syncBack.conflictedFiles : [],
           }),
         );
         if (filing.action !== 'none') console.log(`[git-sync] ${slug}: sync-back conflict work-item ${filing.action}: ${filing.id}`);

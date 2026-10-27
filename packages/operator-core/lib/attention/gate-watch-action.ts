@@ -22,9 +22,20 @@
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
 import { tickGateWatch } from './gate-watch';
 import { sweepSessionIndependentGates } from './gate-reaper';
-import { sweepWorkItemBlockerDefaults } from './work-item-blocker-reaper';
+import { backfillUnprovableWaitRecheckDates, sweepWorkItemBlockerDefaults } from './work-item-blocker-reaper';
 import { sweepOmittedReviews } from './review-stall-reaper';
 import { sweepOwnerDirectiveRecovery } from '../owner-directive-recovery';
+import { pinModuleState } from '@papercusp/module-singleton';
+
+/** Default gap between full unprovable-wait backfill passes (WI-6554700010029948). */
+export const UNPROVABLE_WAIT_BACKFILL_EVERY_MS = 10 * 60_000;
+const unprovableBackfill = pinModuleState('@papercusp/operator-core.unprovableWaitBackfillThrottle', () => ({
+  lastCompletedAt: 0,
+}));
+
+export function resetUnprovableWaitBackfillThrottleForTest(): void {
+  unprovableBackfill.lastCompletedAt = 0;
+}
 
 registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
@@ -85,6 +96,32 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
     );
   } catch (err) {
     console.warn(`[gate-reaper]   ! sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // WI-6554700010029948: the unprovable-wait backfill as a RECURRING leg, not a one-shot.
+  // Admission refuses an unprovable wait at write (wait-ref-admission.ts), but only on a build
+  // that carries it. An older deployed build, or a path that writes externalBlockers without
+  // set_blocker, can still create one. EI-27144615875235926: :3070 on d740fc3802 wrote a broad
+  // coord:inbox-wake wait after the one-shot backfill, which failed the R-12 live oracle.
+  // It runs BEFORE the sweep below, so a row stamped `recheckAt: now` is escalated to its holder
+  // on this same tick instead of staying silent. A full pass re-classifies every provable
+  // wait (94 items took 33s on 2026-10-27), so it is throttled, not run on every tick. A failed
+  // pass does not advance the throttle, so the next tick retries it.
+  const backfillEveryMs = readPositiveMs(cfg.unprovable_wait_backfill_every_ms) ?? UNPROVABLE_WAIT_BACKFILL_EVERY_MS;
+  if (Date.now() - unprovableBackfill.lastCompletedAt >= backfillEveryMs) {
+    try {
+      const b = await backfillUnprovableWaitRecheckDates({ limit: readPositiveMs(cfg.unprovable_wait_backfill_limit) });
+      unprovableBackfill.lastCompletedAt = Date.now();
+      if (b.stamped > 0 || b.truncatedByLimit || Object.keys(b.skipped).length > 0) {
+        console.log(
+          `[unprovable-wait-backfill] ${b.items} item(s), ${b.examined} wait(s) → ${b.stamped} stamped ` +
+            `${JSON.stringify(b.byReason)}, ${b.provable} provable; skipped ${JSON.stringify(b.skipped)}` +
+            (b.truncatedByLimit ? ' — TRUNCATED BY LIMIT, more remain' : ''),
+        );
+      }
+    } catch (err) {
+      console.warn(`[unprovable-wait-backfill]   ! pass skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // WI-10005010: the WORK-ITEM sibling of the session-gate reaper — applies the TYPED

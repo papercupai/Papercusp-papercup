@@ -371,6 +371,14 @@ export interface SyncBackConflictFilingDeps {
   findOpenByTitlePrefix(titlePrefix: string): Promise<string | null>;
   /** Create the fix-it work-item; returns its id. */
   create(input: { title: string; summary: string }): Promise<string>;
+  /**
+   * Resolve the OPEN fix-it item once sync-back succeeds (`merged` / `up-to-date`),
+   * with `completionRef` naming the upstream sha it absorbed. EI-27142578298088040:
+   * without this, a fixed conflict left its item open, and a LATER, different conflict
+   * deduped into that stale item (`exists`), so the pot stalled for days with no fresh
+   * signal. Optional: a deps object without it never resolves.
+   */
+  resolve?(id: string, completionRef: string): Promise<void>;
 }
 
 /**
@@ -404,11 +412,22 @@ export interface SyncBackConflictCaptureInput {
 export interface SyncBackConflictFilingSinks {
   findIssuesByWatchdogKeys(keys: string[]): Promise<ReadonlyArray<{ id: unknown; state?: unknown }>>;
   captureImprovement(input: SyncBackConflictCaptureInput): Promise<{ issue?: { id?: unknown } | null }>;
+  /** Comment + resolve the item on positive sync-back evidence. Absent ⇒ never resolves. */
+  resolveIssue?(id: string, completionRef: string): Promise<void>;
 }
+
+/** The principal a sync-back auto-resolve is recorded under. */
+export const SYNC_BACK_RESOLVE_OWNER = 'system:git-sync';
 
 const defaultFilingSinks: SyncBackConflictFilingSinks = {
   findIssuesByWatchdogKeys: async (keys) => (await import('../../issues-engineer')).findIssuesByWatchdogKeys(keys),
   captureImprovement: async (input) => (await import('../improvements/capture-core')).captureImprovement(input),
+  resolveIssue: async (id, completionRef) => {
+    const { commentIssue, setIssueState } = await import('../../issues-engineer');
+    await commentIssue(id, `Auto-resolved on positive sync-back evidence: ${completionRef}`, SYNC_BACK_RESOLVE_OWNER);
+    // NOT skipCompletionGate: the merge sha is genuine, checkable completion evidence.
+    await setIssueState(id, 'resolved', SYNC_BACK_RESOLVE_OWNER, completionRef);
+  },
 };
 
 /**
@@ -443,13 +462,17 @@ export function makeSyncBackConflictFilingDeps(
       });
       return String(res.issue?.id ?? '');
     },
+    ...(sinks.resolveIssue
+      ? { resolve: (id: string, completionRef: string) => sinks.resolveIssue!(id, completionRef) }
+      : {}),
   };
 }
 
 export type SyncBackConflictFiling =
   | { action: 'none' }
   | { action: 'exists'; id: string }
-  | { action: 'filed'; id: string };
+  | { action: 'filed'; id: string }
+  | { action: 'resolved'; id: string };
 
 /**
  * P-016: "Conflicts become a fix-it work-item in the pot." git-sync's own conflict path
@@ -462,10 +485,26 @@ export async function fileSyncBackConflict(
   cfg: SyncBackConfig,
   deps: SyncBackConflictFilingDeps,
 ): Promise<SyncBackConflictFiling> {
-  if (!result || result.status !== 'conflict') return { action: 'none' };
-  const existing = await deps.findOpenByTitlePrefix(syncBackConflictTitlePrefix(cfg.upstreamRemote, cfg.upstreamBranch));
-  if (existing) return { action: 'exists', id: existing };
+  if (!result) return { action: 'none' };
   const upstreamRef = `${cfg.upstreamRemote}/${cfg.upstreamBranch}`;
+  const prefix = syncBackConflictTitlePrefix(cfg.upstreamRemote, cfg.upstreamBranch);
+  // EI-27142578298088040: success is positive evidence the stuck merge is gone, so the
+  // open fix-it item resolves. A later, different conflict then files a FRESH item
+  // instead of deduping into a stale one.
+  if (result.status === 'merged' || result.status === 'up-to-date') {
+    if (!deps.resolve) return { action: 'none' };
+    const open = await deps.findOpenByTitlePrefix(prefix);
+    if (!open) return { action: 'none' };
+    const completionRef =
+      result.status === 'merged'
+        ? `sync-back merged ${upstreamRef} @ ${result.upstreamSha.slice(0, 12)} into staging as ${result.mergedSha.slice(0, 12)}`
+        : `sync-back found ${upstreamRef} @ ${result.upstreamSha.slice(0, 12)} already contained in staging (up-to-date)`;
+    await deps.resolve(open, completionRef);
+    return { action: 'resolved', id: open };
+  }
+  if (result.status !== 'conflict') return { action: 'none' };
+  const existing = await deps.findOpenByTitlePrefix(prefix);
+  if (existing) return { action: 'exists', id: existing };
   const files = result.conflictedFiles.map((f) => `- ${f}`).join('\n');
   const summary = [
     `git-sync could not merge the main repository's ${upstreamRef} (${result.upstreamSha.slice(0, 12)}) into this working copy's staging branch.`,

@@ -226,7 +226,7 @@ function isViteConfigFilename(file) {
 /** Vite's config bundler embeds its esbuild input source map in both CJS and ESM output. */
 function viteInlineSourceMap(bytes) {
   const source = bytes.toString('utf8');
-  const match = /(?:^|\n)\/\/[#@]\s*sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)\s*$/.exec(source);
+  const match = /(?:^|\n)\/\/[#@]\s*sourceMappingURL=data:application\/json(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)\s*$/i.exec(source);
   if (!match) return null;
   try {
     const map = JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));

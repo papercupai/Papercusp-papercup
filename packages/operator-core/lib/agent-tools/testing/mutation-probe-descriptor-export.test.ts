@@ -101,6 +101,13 @@ function probe(args: string[], env: Record<string, string | undefined>, script =
   const r = spawnSync('bash', [script, ...args], {
     encoding: 'utf8',
     timeout: 90_000,
+    // Write containment overlays the checkout of the subject AND of the cwd
+    // (scripts/mutation-probe.sh contain_preflight). Inheriting the runner's
+    // cwd made each run cost ~25s in the shared papercusp root, which has
+    // mounts beneath it and splits into 86 overlays, versus one overlay in a
+    // clean clone (WI-6554700010030330). Every subject, guard and reader here
+    // lives under `dir`, so running there keeps containment on at ~3s a run.
+    cwd: dir,
     // A refused reader is final on the first read unless a case opts into the
     // restart-retry budget (EI-27128359939578808), so these cases stay fast.
     env: { ...process.env, PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '0', ...env },
@@ -254,6 +261,10 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     });
 
     expect(code, out).toBe(0);
+    // Hermetic: containment covers ONLY the fixture repo. If the runner's
+    // checkout cwd leaks back in, it becomes a second root (86 overlays in the
+    // shared papercusp root) and these cases time out (WI-6554700010030330).
+    expect(out).toMatch(/^MUTATION_PROBE_CONTAINMENT status=contained overlays=1 /m);
     const seen = legs(log);
     expect(seen.map((l) => l.phase)).toEqual(expect.arrayContaining(['baseline', 'mutant']));
     const raw = seen[0]!.descriptor;

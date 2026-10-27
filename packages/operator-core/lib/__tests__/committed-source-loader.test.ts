@@ -19,7 +19,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   COMMITTED_SOURCE_LOADER,
@@ -670,6 +670,47 @@ describe('committed-source loader — Vite config bundles', () => {
 
     put(fixture, 'esm-config/vitest.config.ts', 'export default { marker: "DIRTY" };\n');
     const dirty = runViteConfig(configDirectory);
+    expect(dirty.status).not.toBe(0);
+    expect(dirty.stderr).toContain('COMMITTED_SOURCE refused esm-config/vitest.config.ts');
+    expect(dirty.stdout).not.toContain('CONFIG=DIRTY');
+  }, 60_000);
+
+  it('accepts charset-qualified inline maps and still refuses dirty Vite config source', () => {
+    const configDirectory = join(fixture, 'esm-config');
+    const configFile = join(configDirectory, 'vitest.config.ts');
+    const bundleFile = join(fixture, 'node_modules/.vite-temp/vitest.config.ts.timestamp-1-abc.mjs');
+    const writeBundle = (marker: string, source: string) => {
+      const injected = 'const __vite_injected_original_dirname = '
+        + JSON.stringify(dirname(configFile)) + ';'
+        + 'const __vite_injected_original_filename = '
+        + JSON.stringify(configFile) + ';'
+        + 'const __vite_injected_original_import_meta_url = '
+        + JSON.stringify(pathToFileURL(configFile).href) + ';';
+      const map = {
+        version: 3,
+        file: bundleFile,
+        sourceRoot: pathToFileURL(dirname(configFile) + '/').href,
+        sources: [configFile],
+        sourcesContent: [injected + source],
+        names: [],
+        mappings: '',
+      };
+      mkdirSync(dirname(bundleFile), { recursive: true });
+      writeFileSync(bundleFile, 'console.log("CONFIG=' + marker + '");\n'
+        + '//# sourceMappingURL=data:application/json;charset=utf-8;base64,'
+        + Buffer.from(JSON.stringify(map)).toString('base64') + '\n');
+    };
+
+    const headSource = 'export default { marker: "HEAD" };\n';
+    put(fixture, 'esm-config/vitest.config.ts', headSource);
+    writeBundle('HEAD', headSource);
+    const clean = run(['--import', COMMITTED_SOURCE_LOADER, bundleFile], cleanEnv());
+    expect(clean.status, clean.stderr).toBe(0);
+    expect(clean.stdout).toContain('CONFIG=HEAD');
+
+    put(fixture, 'esm-config/vitest.config.ts', 'export default { marker: "DIRTY" };\n');
+    writeBundle('DIRTY', readFileSync(configFile, 'utf8'));
+    const dirty = run(['--import', COMMITTED_SOURCE_LOADER, bundleFile], cleanEnv());
     expect(dirty.status).not.toBe(0);
     expect(dirty.stderr).toContain('COMMITTED_SOURCE refused esm-config/vitest.config.ts');
     expect(dirty.stdout).not.toContain('CONFIG=DIRTY');

@@ -162,6 +162,16 @@ export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceM
         runSlice: typeof defaultRunSlice;
         /** @returns {Promise<number | null>} epoch ms of the next scheduled gate fire, null = unknown */
         readNextFireAtMs: () => Promise<number | null>;
+        /**
+         * WI-6554700010030332: restore a dirty checkout to `sha` before capture, or null to skip a dirty
+         * tree as before. Returns `{ ok, restored?, reason? }` (restoreDisposableCheckpoint's contract).
+         * @type {((sha: string) => { ok: boolean, restored?: boolean, reason?: string }) | null}
+         */
+        restoreCheckout: ((sha: string) => {
+            ok: boolean;
+            restored?: boolean;
+            reason?: string;
+        }) | null;
         now: () => number;
         makeTempDir: () => string;
         removeTempDir: (dir: any) => void;

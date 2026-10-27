@@ -415,6 +415,12 @@ const defaultDeps = {
   runSlice: defaultRunSlice,
   /** @returns {Promise<number | null>} epoch ms of the next scheduled gate fire, null = unknown */
   readNextFireAtMs: async () => null,
+  /**
+   * WI-6554700010030332: restore a dirty checkout to `sha` before capture, or null to skip a dirty
+   * tree as before. Returns `{ ok, restored?, reason? }` (restoreDisposableCheckpoint's contract).
+   * @type {((sha: string) => { ok: boolean, restored?: boolean, reason?: string }) | null}
+   */
+  restoreCheckout: null,
   now: () => Date.now(),
   makeTempDir: () => mkdtempSync(path.join(tmpdir(), "pc-pure-proof-capture-")),
   removeTempDir: (dir) => rmSync(dir, { recursive: true, force: true }),
@@ -511,10 +517,38 @@ export async function runPureLaneProofCapture({
   const sha = (d.git(root, ["rev-parse", "HEAD"]) ?? "").trim();
   if (!/^[0-9a-f]{40}$/.test(sha)) return skip("no-judged-sha");
   summary.sha = sha;
-  const status = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
-  if (status == null) return skip("checkout-status-unknown");
-  const dirty = status.split("\n").filter((l) => l.trim().length > 0).length;
-  if (dirty > 0) return skip(`dirty-checkout(${dirty})`);
+  const statusLines = () => {
+    const status = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
+    return status == null ? null : status.split("\n").filter((l) => l.trim().length > 0);
+  };
+  let dirtyLines = statusLines();
+  if (dirtyLines == null) return skip("checkout-status-unknown");
+  // WI-6554700010030332: capture runs after every gate leg, so the legs' test artifacts left the
+  // disposable checkpoint dirty and capture skipped (dirty-checkout(1) on 4 runs 2026-10-26/27).
+  // The caller may inject the same root/sha-gated restore the targeted reuse path uses
+  // (restoreDisposableCheckpoint); it refuses anything but the configured checkpoint at HEAD.
+  let restoreNote = "none";
+  if (dirtyLines.length > 0 && typeof d.restoreCheckout === "function") {
+    const before = dirtyLines;
+    let restore;
+    try {
+      restore = d.restoreCheckout(sha);
+    } catch (err) {
+      restore = { ok: false, reason: `restore-threw(${token(err)})` };
+    }
+    restoreNote = restore && restore.ok ? "restored" : `refused(${(restore && restore.reason) || "unknown"})`;
+    if (restore && restore.ok) {
+      dirtyLines = statusLines();
+      if (dirtyLines == null) return skip("checkout-status-unknown");
+    }
+    emit(` state=restore dirty=${before.length} result=${restoreNote} paths=${JSON.stringify(before.slice(0, 3).map((l) => l.trim()))}`);
+  }
+  const dirty = dirtyLines.length;
+  if (dirty > 0) {
+    // Name what is dirty: the bare count left four skipped runs undiagnosable.
+    emit(` state=dirty count=${dirty} restore=${restoreNote} paths=${JSON.stringify(dirtyLines.slice(0, 3).map((l) => l.trim()))}`);
+    return skip(`dirty-checkout(${dirty})`);
+  }
   evidence.clean = true;
 
   const wsAbsDir = path.join(root, PURE_PROOF_CAPTURE_WORKSPACE.dir);

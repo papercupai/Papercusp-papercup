@@ -334,9 +334,9 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
     // scope on the box. Assert the CORRECTED, stronger contract rather than
     // dropping the doc-claim: the description must still disclaim completeness
     // and must still point the reader at the response fields that settle it.
-    expect(factsListTool.args.shape.all.description).toMatch(/not a guarantee of completeness/i);
-    expect(factsListTool.args.shape.all.description).toMatch(/truncatedByLimit/);
-    expect(factsListTool.args.shape.all.description).toMatch(/Orthogonal to full:true/);
+    expect(factsListTool.args.out.shape.all.description).toMatch(/not a guarantee of completeness/i);
+    expect(factsListTool.args.out.shape.all.description).toMatch(/truncatedByLimit/);
+    expect(factsListTool.args.out.shape.all.description).toMatch(/Orthogonal to full:true/);
   });
 
   it('excerpts a long body and says so, instead of returning 500 chars per row', () => {
@@ -536,7 +536,7 @@ describe('facts:list key lookup — distinguish projection omission from live ab
   });
 
   it('documents that key without versions performs a direct live read', () => {
-    const description = factsListTool.args.shape.key.description ?? '';
+    const description = factsListTool.args.out.shape.key.description ?? '';
     expect(description).toMatch(/without versions/i);
     expect(description).toMatch(/ONE live fact/i);
   });

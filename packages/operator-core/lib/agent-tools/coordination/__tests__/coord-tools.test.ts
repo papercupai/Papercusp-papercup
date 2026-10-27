@@ -192,7 +192,9 @@ describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
   });
 
   it('keeps since UNDECLARED on the inbox schema (redirects fire only for unknown keys)', () => {
-    const shape = (inboxTool.args as { shape: Record<string, unknown> }).shape;
+    // inbox args are z.preprocess(normalizeInboxArgAliases, z.object(...)): a ZodPipe whose
+    // object schema is `.out`; reading `.shape` off the pipe yields undefined (TypeError in toHaveProperty).
+    const shape: Record<string, unknown> = inboxTool.args.out.shape;
     for (const key of redirectKeys) {
       expect(shape, `inbox must not declare \`${key}\``).not.toHaveProperty(key);
     }

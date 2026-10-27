@@ -387,7 +387,11 @@ import {
 import { recordGateReuseDecision, TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
 // EI-24538088938561684: a targeted TASK re-run (runGateAtRef — the frozen-repair verification's
 // `<ws> :: test:lane-*` re-run) arms the suite's per-file pass reuse and proof recording.
-import { armTargetedTaskReuse, defaultRunnerIdentity } from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import {
+  armTargetedTaskReuse,
+  defaultRunnerIdentity,
+  restoreDisposableCheckpoint,
+} from "../../../../scripts/lib/targeted-task-reuse.mjs";
 import { judgedTreeProofFormat } from "../../../../scripts/lib/test-pass-reuse.mjs";
 import { applyGitOptionalLocksDefault } from "../../../../scripts/lib/git-optional-locks.mjs";
 // gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1): after the verdict is recorded, capture
@@ -11593,7 +11597,8 @@ export const PURE_PROOF_CAPTURE_HARD_GRACE_MS = 5 * 60_000;
  * Never throws: capture can only cost reuse, never the run.
  */
 export async function runPostVerdictPureProofCapture(
-  cfg: Pick<ReleaseConfig, "checkpointRoot" | "checkpointLogDir" | "greenCheckpointCapacityMode">,
+  cfg: Pick<ReleaseConfig, "checkpointRoot" | "checkpointLogDir" | "greenCheckpointCapacityMode"> &
+    Partial<Pick<ReleaseConfig, "integrationRoot" | "releaseRoot">>,
   runId: string,
   cancelWatchdog: () => void,
   log: (line: string) => void = (line) => console.log(`${orchestratorStdoutTag()} ${line}`),
@@ -11658,6 +11663,22 @@ export async function runPostVerdictPureProofCapture(
               return runCeilingAtMs;
             }
           },
+          // WI-6554700010030332: the gate's legs leave test artifacts in the disposable checkpoint,
+          // so capture skipped with dirty-checkout(1) on four 2026-10-26/27 runs. Restore it with
+          // the same gate the targeted reuse path uses: it refuses unless the root IS the configured
+          // checkpoint (not the integration or release tree) and HEAD equals the sha.
+          ...(cfg.integrationRoot && cfg.releaseRoot
+            ? {
+                restoreCheckout: (sha: string) =>
+                  restoreDisposableCheckpoint({
+                    root: cfg.checkpointRoot,
+                    expectedSha: sha,
+                    checkpointRoot: cfg.checkpointRoot,
+                    integrationRoot: cfg.integrationRoot as string,
+                    releaseRoot: cfg.releaseRoot as string,
+                  }),
+              }
+            : {}),
         },
       }),
       new Promise<void>((resolve) => {

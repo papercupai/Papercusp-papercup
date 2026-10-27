@@ -40,6 +40,30 @@ function conflict(sha: string, files: string[]): SyncBackResult {
   return { status: 'conflict', upstreamSha: sha, conflictedFiles: files } as SyncBackResult;
 }
 
+describe('makeSyncBackConflictFilingDeps resolve wiring (EI-27142578298088040)', () => {
+  it('a merged sync-back resolves the stored open item, so the next conflict files fresh', async () => {
+    const { sinks, filed } = memorySinks();
+    sinks.resolveIssue = vi.fn(async (id: string) => {
+      const row = filed.find((i) => i.id === id);
+      if (row) row.state = 'resolved';
+    });
+    const deps = (files: string[]) =>
+      makeSyncBackConflictFilingDeps({ slug: 'widget', workspaceId: 'ws', cfg, conflictedFiles: files }, sinks);
+    expect((await fileSyncBackConflict(conflict('1'.repeat(40), ['src/a.ts']), cfg, deps(['src/a.ts']))).action).toBe('filed');
+    const merged = { status: 'merged', upstreamSha: '2'.repeat(40), mergedSha: '3'.repeat(40) } as SyncBackResult;
+    await expect(fileSyncBackConflict(merged, cfg, deps([]))).resolves.toEqual({ action: 'resolved', id: 'WI-1' });
+    expect(sinks.resolveIssue).toHaveBeenCalledWith('WI-1', expect.stringContaining('333333333333'));
+    const again = await fileSyncBackConflict(conflict('4'.repeat(40), ['raw.md']), cfg, deps(['raw.md']));
+    expect(again).toEqual({ action: 'filed', id: 'WI-2' });
+  });
+
+  it('sinks without resolveIssue never resolve (deps.resolve absent)', () => {
+    const { sinks } = memorySinks();
+    const deps = makeSyncBackConflictFilingDeps({ slug: 'widget', workspaceId: 'ws', cfg, conflictedFiles: [] }, sinks);
+    expect(deps.resolve).toBeUndefined();
+  });
+});
+
 describe('makeSyncBackConflictFilingDeps (production filing wiring)', () => {
   it('files once, then dedupes the same stuck merge across upstream advances', async () => {
     const { sinks, filed } = memorySinks();

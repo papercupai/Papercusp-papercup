@@ -255,6 +255,26 @@ describe('runPostVerdictPureProofCapture', () => {
     },
   );
 
+  // WI-6554700010030332: capture runs after every leg, so the legs' test artifacts left the
+  // disposable checkpoint dirty and capture skipped. The gate must hand capture the SAME
+  // root/sha-gated restore the targeted reuse path uses, and only when it knows every root.
+  it('injects the gated checkpoint restore only when the integration and release roots are known', async () => {
+    const capture = vi.fn(async (_o: Record<string, unknown>) => ({}) as never);
+    await runPostVerdictPureProofCapture(
+      { ...cfg, integrationRoot: '/nonexistent/integration', releaseRoot: '/nonexistent/release' },
+      'run-1', () => {}, () => {}, capture as never,
+    );
+    const deps = (capture.mock.calls[0][0] as { deps: { restoreCheckout?: (sha: string) => unknown } }).deps;
+    expect(typeof deps.restoreCheckout).toBe('function');
+    // Behavioural, not by name: unverifiable roots are refused before any reset/clean runs.
+    expect(deps.restoreCheckout!('a'.repeat(40))).toEqual({ ok: false, reason: 'checkpoint-root-unverified' });
+
+    capture.mockClear();
+    await runPostVerdictPureProofCapture(cfg, 'run-1', () => {}, () => {}, capture as never);
+    const bare = (capture.mock.calls[0][0] as { deps: Record<string, unknown> }).deps;
+    expect(bare).not.toHaveProperty('restoreCheckout');
+  });
+
   it('honours the kill switch: no capture, and the watchdog stays armed', async () => {
     process.env.PC_PURE_PROOF_CAPTURE = '0';
     const cancel = vi.fn();

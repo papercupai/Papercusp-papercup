@@ -25,6 +25,67 @@ function deps(existing: string | null): SyncBackConflictFilingDeps & {
   };
 }
 
+// EI-27142578298088040: a fixed conflict left its item open, so a LATER different conflict
+// deduped into the stale item and the fork pot stalled for 3 days with no fresh signal.
+describe('fileSyncBackConflict resolves the open item on sync-back success', () => {
+  function resolvingDeps(open: string | null) {
+    let openId = open;
+    const d = {
+      findOpenByTitlePrefix: vi.fn(async () => openId),
+      create: vi.fn(async () => 'WI-FRESH'),
+      resolve: vi.fn(async () => {
+        openId = null;
+      }),
+    };
+    return d;
+  }
+  const upstreamSha = '2336e41ab31bbe854f5bc3912e50fc0d71a8e266';
+
+  it('resolves the open item with the merged sha as completion evidence', async () => {
+    const d = resolvingDeps('EI-STALE');
+    const merged = { status: 'merged' as const, upstreamSha, mergedSha: '8abfd4f252aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+    await expect(fileSyncBackConflict(merged, cfg, d)).resolves.toEqual({ action: 'resolved', id: 'EI-STALE' });
+    expect(d.findOpenByTitlePrefix).toHaveBeenCalledWith(syncBackConflictTitlePrefix('origin', 'main'));
+    expect(d.resolve).toHaveBeenCalledTimes(1);
+    const [id, ref] = d.resolve.mock.calls[0] as unknown as [string, string];
+    expect(id).toBe('EI-STALE');
+    expect(ref).toContain('origin/main @ 2336e41ab31b');
+    expect(ref).toContain('8abfd4f252aa');
+    expect(d.create).not.toHaveBeenCalled();
+  });
+
+  it('resolves on up-to-date too (a hand-merged conflict is first seen as already contained)', async () => {
+    const d = resolvingDeps('EI-STALE');
+    await expect(fileSyncBackConflict({ status: 'up-to-date', upstreamSha }, cfg, d)).resolves.toEqual({
+      action: 'resolved',
+      id: 'EI-STALE',
+    });
+    expect((d.resolve.mock.calls[0] as unknown as [string, string])[1]).toContain('up-to-date');
+  });
+
+  it('does nothing on success when no item is open', async () => {
+    const d = resolvingDeps(null);
+    await expect(fileSyncBackConflict({ status: 'up-to-date', upstreamSha }, cfg, d)).resolves.toEqual({ action: 'none' });
+    expect(d.resolve).not.toHaveBeenCalled();
+  });
+
+  it('never resolves on skipped or error results', async () => {
+    for (const result of [{ status: 'skipped' as const, reason: 'x' }, { status: 'error' as const, message: 'fetch failed' }]) {
+      const d = resolvingDeps('EI-OPEN');
+      await expect(fileSyncBackConflict(result, cfg, d)).resolves.toEqual({ action: 'none' });
+      expect(d.resolve).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a conflict AFTER a successful sync-back files a FRESH item instead of deduping into the stale one', async () => {
+    const d = resolvingDeps('EI-STALE');
+    await fileSyncBackConflict({ status: 'merged', upstreamSha, mergedSha: 'b'.repeat(40) }, cfg, d);
+    const later = { status: 'conflict' as const, upstreamSha: 'c'.repeat(40), conflictedFiles: ['.papercusp/memory/raw.md'] };
+    await expect(fileSyncBackConflict(later, cfg, d)).resolves.toEqual({ action: 'filed', id: 'WI-FRESH' });
+    expect((d.create.mock.calls[0] as unknown as [{ summary: string }])[0].summary).toContain('- .papercusp/memory/raw.md');
+  });
+});
+
 describe('fileSyncBackConflict', () => {
   it('does nothing when sync-back did not conflict', async () => {
     for (const result of [

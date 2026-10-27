@@ -122,7 +122,8 @@ export interface EditedSymbolDeps {
   headText?: (absPath: string) => Promise<string | null>;
 }
 
-async function gitHeadText(absPath: string): Promise<string | null> {
+/** Shared with edit-interface-capture.ts (P-002): the same committed-blob read. */
+export async function gitHeadText(absPath: string): Promise<string | null> {
   try {
     const { stdout } = await run('git', ['-C', dirname(absPath), 'show', `HEAD:./${basename(absPath)}`],
       { maxBuffer: 32 * 1024 * 1024, timeout: 5_000, encoding: 'utf8' });

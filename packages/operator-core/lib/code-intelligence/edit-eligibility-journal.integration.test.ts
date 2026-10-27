@@ -50,6 +50,19 @@ describe('edit-time interface eligibility journal, real PG', () => {
     expect(stored.signal_eligibility).toEqual({ clone: { verdict: 'unknown' }, interface: captured });
   });
 
+  it('journals a NULL-harness row NULL-safely and refuses a named harness for it (P-002)', async () => {
+    const [saved] = await db.adminSql<{ id: string }[]>`
+      INSERT INTO harness_shared.edit_attribution_ledger
+        (workspace_id, harness_slug, repo_root, file, agent_id, acquired_via)
+      VALUES ('eligibility-ws', NULL, '/fixture', 'target.ts', 'author', 'claude:Edit')
+      RETURNING id::text`;
+    const identity: EditEligibilityIdentity = { id: saved.id, workspace: 'eligibility-ws', harness: null,
+      repoRoot: '/fixture', file: 'target.ts', owner: 'author' };
+    const captured = observation();
+    expect(await persistInterfaceEligibility({ ...identity, harness: 'papercusp' }, captured, db.adminSql)).toBe(false);
+    expect(await persistInterfaceEligibility(identity, captured, db.adminSql)).toBe(true);
+  });
+
   it('refuses foreign scope, a different edit and retrospective reconstruction', async () => {
     const identity = await row('capability:edit'), captured = observation();
     for (const patch of [{ workspace: 'foreign' }, { harness: 'foreign' }, { owner: 'peer' },

@@ -155,7 +155,16 @@ export async function recordEditAttribution(
       const capture = import('./code-intelligence/edited-symbols')
         .then(({ fillEditedSymbols }) => fillEditedSymbols(inserted, input.repoRoot, sql))
         .catch(() => 0);
-      if (opts.awaitSymbols) await capture;
+      // P-002 (same plan, D-018): journal edit-time interface eligibility on the same
+      // rows, the independent denominator the `interface` push leg's liveness reads.
+      // Peers are scoped by the row's harness, else the editor's presence pot.
+      const interfaceCapture = import('./code-intelligence/edit-interface-capture')
+        .then(({ fillInterfaceEligibility }) => fillInterfaceEligibility(inserted, {
+          repoRoot: input.repoRoot, workspaceId: input.workspaceId ?? null, harnessSlug,
+          scopeHarness: harnessSlug ?? presence?.potSlug ?? null, agentId: input.agentId,
+        }, sql))
+        .catch(() => 0);
+      if (opts.awaitSymbols) await Promise.all([capture, interfaceCapture]);
     }
   } catch (error) {
     // best-effort: edit attribution must NEVER break the lock path — except for the
