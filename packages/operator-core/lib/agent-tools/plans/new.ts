@@ -32,6 +32,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
 import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-context';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { authoringReuse } from '../../code-intelligence/reuse-authoring';
 import { productShapingScaffold, productShapingWriteAdvisory, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
 import { planDeclarationsScaffold, planDeclarationsWriteAdvisory } from './plan-declarations';
 import {
@@ -419,7 +420,7 @@ export default defineTool({
     notWhen:
       'Existing plan: plans:set-content / set-now / add-decision / add-item.',
     chaining:
-      'Shape → reuse + libraries → R-N JSON + Bar-to-work map for this plan (R-N → P-NNN) + items → audit/spec quality → plans:start. Before a code item, run graph:query impact on the symbols it changes; pass anchors (code links).',
+      'Shape → reuse + libraries → R-N JSON + bar-to-work map + items → audit/spec quality → plans:start. Before a code item, run graph:query impact and graph:query op similar on the symbols it changes; pass anchors (code links).',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',
@@ -812,6 +813,8 @@ export default defineTool({
 
     const shapingAdvisory = body != null && body.trim().length > 0 ? productShapingWriteAdvisory(body) : null;
     const declarationsAdvisory = body != null && body.trim().length > 0 ? planDeclarationsWriteAdvisory(body) : null;
+    const reuseAdvice = await authoringReuse(ctx, { workspaceId: result.scope.workspaceId,
+      harness: result.scope.harnessSlug, plan: value.slug, text: body ?? args.title });
     return {
       content: [
         {
@@ -831,6 +834,7 @@ export default defineTool({
             // plan-reuse-and-library-declarations R-1: same rule for the two
             // declaration sections (the default template embeds both scaffolds).
             ...(declarationsAdvisory ? { planDeclarations: declarationsAdvisory } : {}),
+            ...(reuseAdvice ? { reuseAdvice } : {}),
           }),
         },
       ],

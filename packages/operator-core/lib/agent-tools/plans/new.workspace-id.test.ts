@@ -18,6 +18,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppliedResult, WithPlanLockResult } from './with-plan-lock';
+import type { NewPlanVerificationProfile } from './plan-verification-profile-stamp';
 
 /** Mirrors new.ts's own (unexported) `NewPlanValue`: success and the slug_exists refusal. */
 type NewPlanValue = { ok: true; slug: string } | { ok: false; code: 'slug_exists' };
@@ -27,18 +28,20 @@ vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
   harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
 }));
-vi.mock('./source', () => ({
-  listPlanIndexRows: vi.fn(async () => []),
-  resolvePlanScope: vi.fn(async (opts: { workspaceId?: string } = {}) => ({
-    workspaceId: opts.workspaceId ?? 'default', harnessSlug: 'offsite-planner-demo',
+vi.mock('./source', () => ({ listPlanIndexRows: vi.fn(async () => []),
+  resolvePlanScope: vi.fn(async (opts: { workspaceId?: string; harnessSlug: string }) => ({
+    workspaceId: opts.workspaceId ?? 'default', harnessSlug: opts.harnessSlug,
   })),
-}));
-vi.mock('../../harness/routines/hive-release-env', () => ({
-  resolveHarnessIsCoding: vi.fn(async () => null),
 }));
 vi.mock('./semantic-dedup', () => ({ confirmSimilarPlans: vi.fn(async () => ({ verdict: false })) }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: vi.fn(() => ({ recorded: { current: null }, afterWrite: vi.fn() })),
+}));
+vi.mock('./plan-verification-profile-stamp', () => ({
+  resolveNewPlanVerificationProfile: vi.fn(async (): Promise<NewPlanVerificationProfile> => ({
+    profile: 'general', source: 'declared', basis: 'declared',
+  })),
+  stampNewPlanVerificationProfile: vi.fn(async () => {}),
 }));
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
 vi.mock('../../harness/usage-emitters', () => ({ emitPlanAuthored: vi.fn(async () => {}) }));

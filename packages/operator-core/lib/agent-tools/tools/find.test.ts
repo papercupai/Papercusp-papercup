@@ -254,11 +254,21 @@ describe('tools:find tool registration', () => {
     expect(withHint.hits.map((h) => h.tool)).toEqual(withoutHint.hits.map((h) => h.tool));
   });
 
-  it('binds returned schemas to the serving generation and explains the tools:invoke check', async () => {
+  it('keeps current discovery compatible with a legacy tools:invoke schema while retaining the transport fence', async () => {
     const out = await callHandler({ query: 'coord:inbox', limit: 1 });
 
     expect(out.servingGeneration).toBe('serving-generation-v1:test');
-    expect(out.howToCall).toContain('pass it unchanged as `servingGeneration` to tools:invoke');
+    const legacyInvokeArgs = z.object({
+      name: z.string(),
+      args: z.record(z.string(), z.unknown()).optional(),
+    }).strict();
+    const legacyCall = { name: 'coord:inbox', args: { limit: 1 } };
+    expect(legacyInvokeArgs.safeParse(legacyCall).success).toBe(true);
+    expect(legacyInvokeArgs.safeParse({ ...legacyCall, servingGeneration: out.servingGeneration }).success).toBe(false);
+    expect(out.howToCall).toContain('Use tools:invoke');
+    expect(out.howToCall).toContain('legacy callable schemas may reject it');
+    expect(out.howToCall).toContain('papercusp/servingGeneration');
+    expect(out.howToCall).not.toContain('pass it unchanged as `servingGeneration` to tools:invoke');
     expect(servingGenerationMocks.read).toHaveBeenCalledWith({
       toolRegistryRevision: out.registry.revision,
     });
@@ -1083,10 +1093,10 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const compact = compactSchemaForResult(schemaByTool.get('work_items:complete'));
 
     // A successful bug close is rejected without this conditional nested record.
-    // Keep both the field and its four required evidence keys visible even when
+    // Keep both the field and its required evidence keys visible even when
     // the surrounding completion schema exceeds the nested-field budget.
     expect(compact).toContain('rootCauseVerification?:object');
-    expect(compact).toMatch(/required:\s*hypothesis/);
+    expect(compact).toMatch(/required:\s*hypothesis\b/);
     expect(compact).toContain('alternativeHypothesis');
     expect(compact).toContain('distinguishingTest');
     expect(compact).toContain('testResult');
@@ -1666,9 +1676,9 @@ describe('handler — graceful degrade + result shape', () => {
     const out = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
     const description = out.hits.find((hit) => hit.tool === 'plans:bind-spec-evidence')?.description ?? '';
 
-    expect(description).toContain('omit canonicalTestPath for local/Playwright rows');
-    expect(description).toContain('only for a cargo test');
-    expect(description).toMatch(/or .*mutation-probe.*copy-out run/);
+    expect(description).toContain("canonicalTestPath only for cargo's defining .rs");
+    expect(description).toContain('or unavailable copy-out mirror');
+    expect(description).toContain('never ordinary local/Playwright rows');
   });
 
   it('publishes all loop:arm monitor-authority branch requirements in discovery', async () => {
@@ -2240,7 +2250,7 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
   it('prioritizes explicitly named tools and identifies requested names omitted by the result budget', async () => {
     const requested = [
       'work_items:link',
-      'work_items:set_state',
+      'work_items:checkpoint',
       'coord:send',
       'events:status',
       'scheduler:get_next',

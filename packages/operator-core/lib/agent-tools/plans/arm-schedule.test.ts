@@ -32,8 +32,10 @@ vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
   readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
 }));
-vi.mock('../../plan-types/pins', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../plan-types/pins')>()),
+// plan-start-gate wraps its checks in withPinnedPlanTypes, which reads the plan's
+// type pins from PG. Same pass-through seam as set-plan-status.test.ts.
+vi.mock('../../plan-types/pins', async (original) => ({
+  ...(await original<typeof import('../../plan-types/pins')>()),
   withPinnedPlanTypes: <T>(_scope: unknown, fn: () => Promise<T>) => fn(),
 }));
 

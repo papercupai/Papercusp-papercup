@@ -16,7 +16,11 @@ vi.mock('../_harness-scope', async (orig) => ({
 }));
 vi.mock('./source', () => ({
   listPlanIndexRows: vi.fn(async () => []),
-  resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercusp' })),
+  // plans:new resolves the pot scope for its authority/profile reads; keep it PG-free.
+  resolvePlanScope: vi.fn(async (o?: { workspaceId?: string; harnessSlug?: string }) => ({
+    workspaceId: o?.workspaceId ?? 'default',
+    harnessSlug: o?.harnessSlug ?? 'papercusp',
+  })),
 }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: vi.fn(() => ({ recorded: { current: null }, afterWrite: vi.fn() })),
@@ -236,8 +240,8 @@ describe('plans:new parse admission (EI-22005620513894909)', () => {
     expect(guidance.when).toContain('Requirements');
     expect(guidance.when).toContain('Design');
     expect(guidance.when).toContain('Bar-to-work map for this plan');
-    expect(guidance.chaining).toContain('Bar-to-work map for this plan');
-    expect(guidance.chaining).toContain('P-NNN');
-    expect(guidance.chaining).toContain('plans:start');
+    // chaining is the compact ordering (trimmed for the tool prompt-weight budget);
+    // the exact heading lives in `when`. It must still name the triad before plans:start.
+    expect(guidance.chaining).toMatch(/R-N JSON \+ bar-to-work map \+ items → .*plans:start/);
   });
 });
