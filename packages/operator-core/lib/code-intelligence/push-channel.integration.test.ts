@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_MAX_CHARS, CODE_INTEL_PUSH_TURN_CHARS, formatPushFact, recordIntentTaskBrief, snapshotFirstTouchLeg, snapshotGrepLeg,
+import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_MAX_CHARS, CODE_INTEL_PUSH_TURN_CHARS, formatPushFact, recordCompletionTimeBrief, recordIntentTaskBrief, snapshotFirstTouchLeg, snapshotGrepLeg,
   readNoteAnchorStaleness, readPushNotesContext, type PushFact, type PushInput, type PushLeg, type PushLegId } from './push-channel';
 import { parsePushSnapshot, type PushSnapshot } from './push-snapshot';
 import { readPushIncidentAttribution } from './push-channel';
@@ -323,6 +323,41 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     const hook = await db.adminSql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
       WHERE workspace_id = ${workspace} AND leg <> 'intent' ORDER BY subject`;
     expect(hook.map(row => row.subject)).toEqual(['i-1', 'i-2']);
+  });
+
+  it('code-intel-delivery-and-outcomes P-002: a delivered completion brief is one completion row that never spends the hook budget', async () => {
+    const workspace = 'push-integration-completion';
+    const brief = {
+      status: 'measured' as const,
+      changes: [{ file: 'target.ts', symbol: 'run', sourceFingerprint: 's'.repeat(64), consumers: ['caller.ts'] },
+        { file: '/etc/passwd', symbol: 'x', sourceFingerprint: 't'.repeat(64), consumers: [] }],
+      limitations: ['z'.repeat(2_000)],
+      recover: { tool: 'code:pack' as const, args: { op: 'diff' as const, include: ['target.ts'], rootPath: '/repo' } },
+    };
+    const owner = { workspace, owner: input.owner, workItem: 'WI-1' };
+    expect(await recordCompletionTimeBrief(owner, brief)).toBe(true);
+    expect(await recordCompletionTimeBrief(owner, brief)).toBe(false);
+    // Nothing measured, no change, or no work item: no code facts were delivered, so no row.
+    expect(await recordCompletionTimeBrief(owner, { ...brief, status: 'unknown' })).toBe(false);
+    expect(await recordCompletionTimeBrief(owner, { ...brief, changes: [] })).toBe(false);
+    expect(await recordCompletionTimeBrief({ ...owner, workItem: '' }, brief)).toBe(false);
+    const rows = await db.adminSql<{ leg: string; subject: string; chars: number; cited_paths: string[]; suggested_call: string }[]>`
+      SELECT leg, subject, chars, cited_paths, suggested_call FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ leg: 'completion', cited_paths: ['target.ts'],
+      suggested_call: 'code:pack {"op":"diff","include":["target.ts"],"rootPath":"/repo"}' });
+    // JSON subject: per-owner readers cast subject::jsonb without filtering by leg.
+    expect(JSON.parse(rows[0].subject)).toEqual({ schema: 'completion-brief-v1', workItem: 'WI-1',
+      changes: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(rows[0].chars).toBeGreaterThan(CODE_INTEL_PUSH_TURN_CHARS);
+    // A different change set on the same item is a new delivery.
+    expect(await recordCompletionTimeBrief(owner, { ...brief, changes: [{ ...brief.changes[0], sourceFingerprint: 'u'.repeat(64) }] }))
+      .toBe(true);
+    // Same turn: the ~2k-char brief rode in a tool result, so the hook still has its 1,500 chars.
+    expect(await deliver([fact('c-1'), fact('c-2')], workspace)).toContain(BODY);
+    const hook = await db.adminSql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${workspace} AND leg <> 'completion' ORDER BY subject`;
+    expect(hook.map(row => row.subject)).toEqual(['c-1', 'c-2']);
   });
 
   // plan-item-code-anchors-2026-10-20 P-001: replay real tool calls through the push channel

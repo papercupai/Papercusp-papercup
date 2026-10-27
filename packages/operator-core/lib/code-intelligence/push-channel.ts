@@ -1,5 +1,5 @@
 /** P-034/D-016: one code-intelligence leg at the existing PostToolBatch sink. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { snapshotCloneLeg } from './clone-advisory';
 import { AGENT_ANTIPATTERN_RULES } from './agent-antipatterns';
@@ -1163,9 +1163,10 @@ export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, 
     if (!turn || signal.aborted) return '';
     const epochs = await tx<{ epoch: number }[]>`SELECT epoch FROM harness_shared.memory_session_epochs WHERE session_id = ${input.owner}`;
     const epoch = Number(epochs[0]?.epoch ?? 0);
-    // The intent leg's rows are tool-result briefs, never hook text (recordIntentTaskBrief).
+    // Tool-result legs (intent, completion) are briefs in a tool response, never hook text.
     const spent = await tx<{ chars: number }[]>`SELECT COALESCE(SUM(chars), 0)::int AS chars FROM harness_shared.code_intel_pushes
-      WHERE workspace_id = ${input.workspace} AND owner_id = ${input.owner} AND turn_id = ${turn} AND leg <> 'intent'`;
+      WHERE workspace_id = ${input.workspace} AND owner_id = ${input.owner} AND turn_id = ${turn}
+        AND leg <> ALL(${[...TOOL_RESULT_LEGS]}::text[])`;
     let requestLeft = requestBudget;
     let turnLeft = CODE_INTEL_PUSH_TURN_CHARS - Number(spent[0]?.chars ?? 0);
     const budgetLeft = Math.max(0, Math.min(requestLeft, turnLeft));
@@ -1215,10 +1216,40 @@ export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, 
 export async function recordIntentTaskBrief(input: { workspace: string; owner: string; client?: string },
   brief: Pick<TaskBrief, 'status' | 'intent' | 'sourceFingerprint' | 'commit' | 'files' | 'recover'>): Promise<boolean> {
   if (brief.status !== 'current' || !input.workspace || !input.owner) return false;
-  const subject = `${brief.intent?.fingerprint ?? 'no-intent'}:${brief.sourceFingerprint ?? 'unmeasured'}`.slice(0, 1000);
-  const citedPaths = [...new Set(brief.files.map(file => file.path))].filter(safeSnapshotPath).slice(0, 20);
-  const suggestedCall = `${brief.recover.tool} ${JSON.stringify(brief.recover.args)}`.slice(0, 1000);
-  const chars = JSON.stringify(brief).length;
+  return recordToolResultBrief(input, { leg: 'intent',
+    subject: `${brief.intent?.fingerprint ?? 'no-intent'}:${brief.sourceFingerprint ?? 'unmeasured'}`,
+    commit: brief.commit, paths: brief.files.map(file => file.path), recover: brief.recover, chars: JSON.stringify(brief).length });
+}
+
+/** Legs that deliver through a tool RESULT instead of this hook. Their rows feed the outcome
+ * and liveness instruments but are never charged to the per-turn hook spend. */
+export const TOOL_RESULT_LEGS = ['intent', 'completion'] as const satisfies readonly PushLegId[];
+
+/** code-intel-delivery-and-outcomes-2026-10-26 P-002: the completion leg also delivers through a
+ * tool result: work_items:complete returns getCompletionTimeBrief as `completionBrief`. Its reuse
+ * sections were ledgered as reuse-* rows, but the leg itself never was, so the R-1 liveness check
+ * read zero completion outputs while 155 completion-surface reuse rows landed in 7 days. One row
+ * per delivered brief; a brief that measured no change delivered no code facts and is not recorded. */
+export async function recordCompletionTimeBrief(input: { workspace: string; owner: string; workItem: string; client?: string },
+  brief: { status: 'measured' | 'unknown'; changes: readonly { file: string; symbol: string; sourceFingerprint: string }[];
+    recover: { tool: string; args: unknown } }): Promise<boolean> {
+  if (brief.status !== 'measured' || !brief.changes.length || !input.workspace || !input.owner || !input.workItem) return false;
+  const changes = createHash('sha256')
+    .update(JSON.stringify(brief.changes.map(change => [change.file, change.symbol, change.sourceFingerprint]))).digest('hex');
+  // JSON like the reuse-* rows beside it: readers cast code_intel_pushes.subject::jsonb per owner
+  // without a leg filter (reuse-completion.integration.test.ts), so a bare-text subject breaks them.
+  const subject = JSON.stringify({ schema: 'completion-brief-v1', workItem: input.workItem, changes });
+  return recordToolResultBrief(input, { leg: 'completion', subject, commit: null,
+    paths: brief.changes.map(change => change.file), recover: brief.recover, chars: JSON.stringify(brief).length });
+}
+
+async function recordToolResultBrief(input: { workspace: string; owner: string; client?: string }, row: {
+  leg: (typeof TOOL_RESULT_LEGS)[number]; subject: string; commit: string | null; paths: readonly string[];
+  recover: { tool: string; args: unknown }; chars: number }): Promise<boolean> {
+  const subject = row.subject.slice(0, 1000);
+  const citedPaths = [...new Set(row.paths)].filter(safeSnapshotPath).slice(0, 20);
+  const suggestedCall = `${row.recover.tool} ${JSON.stringify(row.recover.args)}`.slice(0, 1000);
+  const { chars, commit } = row;
   try {
     return await withWorkspace(input.workspace, async tx => {
       await tx`SELECT set_config('lock_timeout', '100ms', true), set_config('statement_timeout', '150ms', true)`;
@@ -1231,13 +1262,13 @@ export async function recordIntentTaskBrief(input: { workspace: string; owner: s
       const epochs = await tx<{ epoch: number }[]>`SELECT epoch FROM harness_shared.memory_session_epochs WHERE session_id = ${input.owner}`;
       const inserted = await tx<{ id: number }[]>`INSERT INTO harness_shared.code_intel_pushes
         (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, cited_paths, suggested_call, chars, client)
-        VALUES (${input.workspace}, ${input.owner}, ${Number(epochs[0]?.epoch ?? 0)}, ${turn}, 'intent', ${subject},
-          ${brief.commit}, ${citedPaths}::text[], ${suggestedCall}, ${chars}, ${input.client ?? null})
+        VALUES (${input.workspace}, ${input.owner}, ${Number(epochs[0]?.epoch ?? 0)}, ${turn}, ${row.leg}, ${subject},
+          ${commit}, ${citedPaths}::text[], ${suggestedCall}, ${chars}, ${input.client ?? null})
         ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING RETURNING id`;
       return inserted.length > 0;
     });
   } catch (error) {
-    console.warn('[code-intel-push] intent brief record failed:', String(error).slice(0, 200));
+    console.warn(`[code-intel-push] ${row.leg} brief record failed:`, String(error).slice(0, 200));
     return false;
   }
 }

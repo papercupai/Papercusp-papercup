@@ -383,7 +383,13 @@ describe('boot wiring: hono-host.ts eagerly starts the invalidation LISTEN (EI-6
     const nextBoundary = src.indexOf('\nfunction ', fnStart + 1);
     const body = nextBoundary > -1 ? src.slice(fnStart, nextBoundary) : src.slice(fnStart);
     expect(body).toContain('ensureInvalidationListener()');
-    expect(body).toContain('closeAdditionalResources: stopInvalidationListener');
+    // Shutdown hands every server one host-wide closer (closeHostResources, since
+    // 2026-10-25), and that closer must still stop the LISTEN connection.
+    expect(body).toContain('closeAdditionalResources: closeHostResources');
+    const closerStart = src.indexOf('async function closeHostResources');
+    expect(closerStart).toBeGreaterThan(-1);
+    const closerEnd = src.indexOf('\n}', closerStart);
+    expect(src.slice(closerStart, closerEnd)).toContain('stopInvalidationListener()');
   });
 });
 

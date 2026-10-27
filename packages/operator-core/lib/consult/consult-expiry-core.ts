@@ -58,7 +58,7 @@ export interface DueConsultRow {
   /** PostgreSQL returns timestamptz as Date under the normal postgres-js client. */
   updated_at: unknown;
   /** Exact timestamp text preserves PostgreSQL microseconds lost by Date parsing. */
-  snapshot_updated_at?: string;
+  snapshot_updated_at: string;
   latency_contract: string;
   question: string;
   routing: unknown;
@@ -747,7 +747,7 @@ async function convertReviewConsult(
              ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2
              OR (
                ${unstampedDispatchFailed}::boolean
-               AND updated_at IS NOT DISTINCT FROM ${timestampToIso(row.updated_at)}::timestamptz
+               AND updated_at IS NOT DISTINCT FROM (${row.snapshot_updated_at}::text)::timestamptz
                AND ${nowIso}::timestamptz >= updated_at + (${HARD_BLOCKED_EXPIRY_MS}::bigint * interval '1 millisecond')
              )
            )
@@ -874,7 +874,7 @@ function timestampToIso(value: unknown): string {
 
 /** Whether the exact open consult snapshot selected for this sweep still exists. */
 async function isCurrentExpirySnapshot(sql: Sql, row: DueConsultRow): Promise<boolean> {
-  const snapshotUpdatedAt = row.snapshot_updated_at ?? timestampToIso(row.updated_at);
+  const snapshotUpdatedAt = row.snapshot_updated_at;
   const rows = await sql<{ conversation_id: string }[]>`
     SELECT conversation_id
       FROM harness_shared.consult_state
@@ -882,7 +882,7 @@ async function isCurrentExpirySnapshot(sql: Sql, row: DueConsultRow): Promise<bo
        AND conversation_id = ${row.conversation_id}
        AND closed_at IS NULL
        AND state = ${row.state}
-       AND updated_at = ${snapshotUpdatedAt}::timestamptz
+       AND updated_at = (${snapshotUpdatedAt}::text)::timestamptz
   `;
   return rows.length > 0;
 }

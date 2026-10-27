@@ -76,14 +76,17 @@ describe('queryNamesForTriggerEvent', () => {
   });
 
   it('maps workspace-host control tables while leaving append-heavy logs producer-pushed', () => {
-    for (const table of [
-      'workspace_host_connections',
-      'workspace_hosts',
-      'workspace_host_operations',
-      'workspace_host_resources',
-      'workspace_host_events',
-    ]) {
+    for (const table of ['workspace_host_operations', 'workspace_host_resources', 'workspace_host_events']) {
       expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toEqual(['workspaceHosts.control']);
+    }
+    // remoteAccess.overview renders the workspace's hosts and their live
+    // connections (both are its declared backing tables), so those two tables
+    // also refresh an open Remote access screen.
+    for (const table of ['workspace_host_connections', 'workspace_hosts']) {
+      expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toEqual([
+        'workspaceHosts.control',
+        'remoteAccess.overview',
+      ]);
     }
     expect(TABLE_TO_QUERY_NAMES['harness_shared.workspace_host_logs']).toBeUndefined();
   });

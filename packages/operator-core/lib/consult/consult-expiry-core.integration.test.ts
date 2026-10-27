@@ -158,7 +158,7 @@ async function seedConsult(opts: {
   if (opts.updatedAt !== undefined) {
     await rootSql`
       UPDATE harness_shared.consult_state
-         SET updated_at = ${opts.updatedAt}::timestamptz
+         SET updated_at = (${opts.updatedAt}::text)::timestamptz
       WHERE workspace_id = ${opts.workspaceId ?? WS} AND conversation_id = ${id}`;
   }
   await rootSql`
@@ -375,6 +375,23 @@ describe('sweepExpiredConsults', () => {
     });
     expect(seenKeys).toHaveLength(2);
     expect(seenKeys[0]).toBe(seenKeys[1]);
+  });
+
+  it('keeps an unchanged microsecond snapshot eligible for its expiry alert', async () => {
+    const updatedAt = new Date(NOW.getTime() - 30 * 60_000).toISOString().replace(/\.\d{3}Z$/, '.123456Z');
+    const id = await seedConsult({ latency: 'proceed', updatedAt });
+    const [snapshot] = await rootSql<Array<{ updated_at: string }>>`
+      SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(snapshot.updated_at).toBe(updatedAt);
+
+    const { deps, alerts } = makeDeps();
+    const result = await sweepExpiredConsults(deps);
+
+    expect(result).toMatchObject({ expired: 1, requesterAlerts: [id], requesterAlertFailures: [] });
+    expect(alerts).toHaveLength(1);
+    expect(await stateOf(id)).toMatchObject({ state: 'expired' });
   });
 
   it('does not send a pickup alert when the consult is answered and closed during silent detection', async () => {
@@ -1361,6 +1378,11 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
 
   it('converts an unstamped acceptance dispatch after pickup grace before half TTL', async () => {
     const id = await seedReview({ routing: GRADING, createdMin: -40, expiresMin: 200 });
+    const exactUpdatedAt = at(-40).replace(/\.\d{3}Z$/, '.123456Z');
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET updated_at = (${exactUpdatedAt}::text)::timestamptz
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
     await rootSql`
       UPDATE harness_shared.consult_state
          SET cascade_cursor = 1, responder_id = 'resp-2'
